@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="防休眠控制台 —— 本机运行、不联网、免登录的防休眠 / 防锁屏仪表台">
+<title data-i18n="page.title">防休眠控制台 · Keep-Awake Console</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<!-- atmosphere: noise + scanline + horizon glow. Pure CSS, no assets, no network. -->
+<div class="veil" aria-hidden="true">
+  <span class="veil__glow"></span>
+  <span class="veil__scan"></span>
+  <span class="veil__noise"></span>
+</div>
+
+<div class="shell">
+
+  <!-- ============================================================ masthead -->
+  <header class="mast">
+    <div class="mast__brand">
+      <svg class="mark" viewBox="0 0 44 44" aria-hidden="true">
+        <circle class="mark__halo" cx="22" cy="22" r="21"/>
+        <circle class="mark__ring" cx="22" cy="22" r="14.5"/>
+        <path class="mark__arc" d="M30.6 14.4a11.8 11.8 0 1 0 .0 15.2"/>
+        <path class="mark__stem" d="M22 10.4v11.4"/>
+        <circle class="mark__pip" cx="22" cy="22" r="2.6"/>
+      </svg>
+      <div class="mast__words">
+        <h1 data-i18n="page.name">防休眠控制台</h1>
+        <p class="mast__sub" data-i18n="mast.sub">Keep-Awake Console · 本机 127.0.0.1 · 不联网 / 免登录 / 免安装</p>
+      </div>
+    </div>
+
+    <nav class="mast__nav" id="nav" aria-label="面板导航" data-i18n-aria="nav.aria">
+      <a href="#panel-control" data-i18n="nav.control">控制</a>
+      <a href="#panel-evidence" data-i18n="nav.evidence">有效性</a>
+      <a href="#panel-machine" data-i18n="nav.machine">本机环境</a>
+      <a href="#panel-guard" data-i18n="nav.guard">无人值守</a>
+      <a href="#panel-log" data-i18n="nav.log">日志</a>
+      <a href="#panel-limits" data-i18n="nav.limits">能力边界</a>
+    </nav>
+
+    <div class="mast__meta">
+      <span id="conn" class="link link--bad"><i></i><b id="connText" data-i18n="conn.connecting">连接中…</b></span>
+      <div class="segs mast__lang" id="langSeg" role="group" aria-label="界面语言" data-i18n-aria="lang.aria"
+           title="自动 = 跟随浏览器语言；选择会写入 config.json，同时作用于命令行与托盘。" data-i18n-title="lang.tip">
+        <button type="button" class="seg is-on" data-lang="auto" data-i18n="lang.auto">自动</button>
+        <button type="button" class="seg" data-lang="zh" data-i18n="lang.zh">中文</button>
+        <button type="button" class="seg" data-lang="en" data-i18n="lang.en">English</button>
+      </div>
+      <span class="clock" id="clock" title="面板进程时钟" data-i18n-title="mast.clockTip">--:--:--</span>
+      <span class="ver" id="version">v—</span>
+    </div>
+  </header>
+
+  <!-- =============================================================== guide -->
+  <aside class="guide reveal" id="guide" hidden>
+    <div class="guide__text">
+      <h4 data-i18n="guide.title">第一次来？这个面板管三件事</h4>
+      <ul>
+        <li data-i18n="guide.p1">启动保护：在「控制台」选时长、点「启动保护」。之后关掉这个页面保护也不会停 —— 真正干活的是独立的 worker 进程。</li>
+        <li data-i18n="guide.p2">验证效果：「有效性」里的证据直接读内核电源日志，把「只是熄屏」和「真的睡了」分开计数。软件自己说没睡不算证据。</li>
+        <li data-i18n="guide.p3">无人值守：「无人值守」的看门狗是计划任务，登录自动启动，每 10 分钟按 intent 对账。</li>
+      </ul>
+    </div>
+    <button type="button" id="btnGuideDismiss" class="btn btn--quiet btn--sm" data-i18n="guide.dismiss">知道了，不再显示</button>
+  </aside>
+
+  <!-- =============================================================== dais -->
+  <section class="dais reveal" id="dais">
+
+    <div class="signal" style="grid-area:signal">
+      <span class="eyebrow" data-i18n="dais.eyebrow">当前状态 / LIVE</span>
+      <h2 class="signal__word"><i id="stateDot" class="dot dot--idle"></i><span id="stateTitle" data-i18n="dais.reading">正在读取状态…</span></h2>
+      <p class="signal__detail" id="stateDetail">—</p>
+      <div id="modes" class="pills"></div>
+      <div id="alerts" class="alerts"></div>
+    </div>
+
+    <div class="gauge" style="grid-area:gauge" title="定时保护的剩余时间" data-i18n-title="gauge.tip">
+      <div class="gauge__dial">
+        <svg class="ring" viewBox="0 0 120 120" aria-hidden="true">
+          <circle class="ring__track" cx="60" cy="60" r="52"/>
+          <circle class="ring__arc"  id="ringArc" cx="60" cy="60" r="52"/>
+        </svg>
+        <div class="gauge__cap">
+          <span class="eyebrow" data-i18n="gauge.eyebrow">剩余</span>
+          <strong class="gauge__value" id="mLeft">—</strong>
+        </div>
+      </div>
+      <em class="gauge__hint" id="mLeftHint" data-i18n="gauge.hint.idle">未在运行</em>
+    </div>
+
+    <ul class="ledger" id="gaugeMeta" style="grid-area:ledger"></ul>
+
+    <div class="engines" style="grid-area:engines">
+      <div class="engine">
+        <div class="engine__head">
+          <span class="engine__num" data-i18n="engine1.num">引擎 1</span>
+          <h4 data-i18n="engine1.heading">电源请求 <small>SetThreadExecutionState</small></h4>
+          <span class="engine__state" id="eng1State">—</span>
+        </div>
+        <div class="bits" id="bits"></div>
+        <p class="engine__note" id="eng1Note" data-i18n="engine1.noteStatic">位掩码是内核返回的事实，不是界面推测。</p>
+      </div>
+      <div class="engine">
+        <div class="engine__head">
+          <span class="engine__num" data-i18n="engine2.num">引擎 2</span>
+          <h4 data-i18n="engine2.heading">防锁屏心跳 <small>idle reset pulse</small></h4>
+          <span class="engine__state" id="eng2State">—</span>
+        </div>
+        <ul class="spec" id="eng2Spec"></ul>
+        <p class="engine__note" id="eng2Note" data-i18n="engine2.noteStatic">心跳只重置空闲计时，穿透不了 Win+L 与合盖。</p>
+      </div>
+    </div>
+
+    <figure class="trace" style="grid-area:trace">
+      <div class="trace__head">
+        <span class="eyebrow" data-i18n="trace.eyebrow">心跳波形 / 一个周期 = 一个 antiLockIntervalSec</span>
+        <span class="trace__legend" data-i18n-inline="trace.lg.sent trace.lg.next trace.lg.gap">
+          <i class="lg lg--pulse"></i>已发出
+          <i class="lg lg--next"></i>下一次
+          <i class="lg lg--gap"></i>未运行
+        </span>
+      </div>
+      <div class="trace__box">
+        <canvas id="traceCanvas" height="120"></canvas>
+        <div class="trace__idle" id="traceIdle" data-i18n="trace.idle">未运行 —— 没有心跳周期可画</div>
+      </div>
+      <figcaption class="trace__axis">
+        <span id="traceStart">—</span><span id="traceMid">—</span><span id="traceEnd">—</span>
+      </figcaption>
+    </figure>
+
+    <dl class="readouts" style="grid-area:readouts" id="readouts">
+      <div class="ro reveal"><dt data-i18n="ro.elapsed">已运行</dt><dd class="mono" id="mElapsed">—</dd><em id="mElapsedSub">—</em></div>
+      <div class="ro reveal"><dt data-i18n="ro.pulses">心跳</dt><dd class="mono" id="mPulses">—</dd><em id="mPulsesSub">—</em></div>
+      <div class="ro reveal"><dt data-i18n="ro.idle">当前空闲</dt><dd class="mono" id="mIdle">—</dd><em id="mIdleSub" data-i18n="ro.idleSub">无真实键鼠输入</em></div>
+      <div class="ro reveal"><dt data-i18n="ro.battery">电源</dt><dd class="mono" id="mBattery">—</dd><em id="mBatterySub">—</em></div>
+      <div class="ro reveal"><dt data-i18n="ro.efficacy">有效性</dt><dd class="mono" id="mEfficacy">—</dd><em id="mEfficacySub" data-i18n="ro.efficacySub">读内核电源日志，不自我宣称</em></div>
+    </dl>
+
+    <details class="explainer">
+      <summary data-i18n="help.dais.label" data-i18n-aria="help.aria">这些读数是什么？</summary>
+      <p data-i18n="help.dais.body">心跳 = worker 实际发出的防锁屏动作次数；空闲 = 系统上报的无输入时长，心跳生效时会不断把它推回去；有效性 = 本窗口内「睡没睡过」的结论，与「有效性」一栏的证据同源。</p>
+    </details>
+  </section>
+
+  <!-- ============================================================ 01 控制 -->
+  <section class="panel reveal" id="panel-control">
+    <div class="panel__head">
+      <span class="panel__num">01</span>
+      <div class="panel__titles">
+        <h3 data-i18n="panel.control.title">控制台</h3>
+        <p data-i18n="panel.control.desc">参数改完直接点「启动保护」。若已有 worker 在跑且参数不同，它会按新参数重启 —— 不会回一句「已在运行」然后什么都不做。</p>
+      </div>
+      <div class="panel__tools"><span class="kbd-hint" data-i18n-inline="kbd.start kbd.stop kbd.refresh"><b>S</b> 启动 <b>X</b> 停止 <b>R</b> 刷新</span></div>
+    </div>
+
+    <div class="panel__body">
+      <div class="field">
+        <label class="field__label" for="presets" data-i18n="ctl.duration">运行时长</label>
+        <div class="segs segs--wrap" id="presets">
+          <button type="button" class="seg" data-min="30" data-i18n="ctl.min30">30 分</button>
+          <button type="button" class="seg" data-min="60" data-i18n="ctl.hour1">1 小时</button>
+          <button type="button" class="seg" data-min="120" data-i18n="ctl.hour2">2 小时</button>
+          <button type="button" class="seg" data-min="480" data-i18n="ctl.hour8">8 小时</button>
+          <button type="button" class="seg is-on" data-min="0" data-i18n="common.unlimited">不限时长</button>
+          <span class="field__inline" data-i18n="ctl.custom">自定义
+            <input id="customMin" class="num" type="number" min="1" max="10080" step="1" placeholder="分钟" inputmode="numeric" data-i18n-placeholder="ctl.customPh">
+            <span class="unit" data-i18n="unit.min">分</span>
+          </span>
+        </div>
+      </div>
+
+      <div class="switches">
+        <label class="switch">
+          <input type="checkbox" id="optDisplay" checked>
+          <span class="switch__track"><i></i></span>
+          <span class="switch__text"><b data-i18n="sw.display.title">保持屏幕常亮</b><em data-i18n="sw.display.desc">ES_DISPLAY_REQUIRED —— 显示器不熄灭。插电时生效；电池低于阈值会自动降级（见下）</em></span>
+        </label>
+        <label class="switch">
+          <input type="checkbox" id="optAntiLock" checked>
+          <span class="switch__track"><i></i></span>
+          <span class="switch__text"><b data-i18n="sw.antiLock.title">防锁屏心跳</b><em data-i18n="sw.antiLock.desc">按周期发送一次无害输入，把空闲计时清零 —— 这是唯一能压住空闲锁屏的引擎</em></span>
+        </label>
+        <label class="switch">
+          <input type="checkbox" id="optAway">
+          <span class="switch__track"><i></i></span>
+          <span class="switch__text"><b data-i18n="sw.away.title">离场模式 ES_AWAYMODE</b><em data-i18n="sw.away.desc">微软给台式机媒体录制留的口子，明确写了便携机不该开，也不影响睡眠空闲计时器。现代待机机型上等于空操作，默认关闭</em></span>
+        </label>
+        <label class="switch">
+          <input type="checkbox" id="optBattOff" checked>
+          <span class="switch__track"><i></i></span>
+          <span class="switch__text"><b data-i18n="sw.battOff.title">电池上允许熄屏</b><em data-i18n="sw.battOff.desc">掉电时优先保住续航：只禁系统休眠、放行显示器熄灭。关掉它就始终常亮（会明显更耗电、更热）</em></span>
+        </label>
+      </div>
+
+      <div class="rows">
+        <div class="row" id="lockRow">
+          <span class="row__label" data-i18n="row.method">心跳方式</span>
+          <div class="segs" id="methodSegs">
+            <button type="button" class="seg is-on" data-method="key" data-i18n="method.key">F15 键</button>
+            <button type="button" class="seg" data-method="mouse" data-i18n="method.mouse">鼠标微移</button>
+          </div>
+          <span class="row__label" data-i18n="row.interval">间隔</span>
+          <input id="optInterval" class="num" type="number" min="10" max="3600" step="5" value="240" inputmode="numeric">
+          <span class="unit" data-i18n="unit.sec">秒</span>
+          <span id="intervalHint" class="hint"></span>
+        </div>
+
+        <div class="row">
+          <span class="row__label" data-i18n="row.reassert">重新声明</span>
+          <input id="optReassert" class="num" type="number" min="15" max="3600" step="15" value="60" inputmode="numeric">
+          <span class="unit" data-i18n="unit.sec">秒</span>
+          <span class="hint" data-i18n="hint.reassert">OEM 电源管理会抢占请求，按此周期重新申请一次</span>
+          <span class="grow"></span>
+          <span class="row__label" data-i18n="row.floor">电池阈值</span>
+          <input id="optFloor" class="num" type="number" min="0" max="90" step="5" value="20" inputmode="numeric">
+          <span class="unit" data-i18n="unit.pct">%</span>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="btnStart" class="btn btn--go" data-i18n="btn.start">启动保护</button>
+        <button id="btnStop" class="btn btn--stop" disabled data-i18n="btn.stop">停止</button>
+        <button id="btnSave" class="btn btn--quiet" data-i18n="btn.save">存为默认 <small data-i18n="btn.saveSub">写 config.json</small></button>
+        <span class="grow"></span>
+        <button id="btnRefresh" class="btn btn--quiet" data-i18n="btn.refresh">刷新</button>
+        <span id="busy" class="busy" hidden data-i18n="busy.text"><i></i>与 worker 通信中</span>
+      </div>
+
+      <div class="preview" id="preview" hidden>
+        <div class="preview__head">
+          <h4 data-i18n="preview.title">启动前确认</h4>
+          <p class="hint" data-i18n="preview.note">确认前改动参数，下面的预览会同步更新；点「确认启动」才真正发送电源请求。</p>
+        </div>
+        <dl class="preview__grid">
+          <div class="preview__row"><dt data-i18n="preview.dur">时长</dt><dd id="pvDur">—</dd></div>
+          <div class="preview__row preview__row--wide"><dt data-i18n="preview.flags">将发送的电源请求</dt><dd id="pvFlags" class="preview__flags"></dd><dd class="hint" data-i18n="preview.flagsHint">SetThreadExecutionState(ES_CONTINUOUS | 以下标志)</dd></div>
+          <div class="preview__row"><dt data-i18n="preview.hb">防锁屏心跳</dt><dd id="pvHb">—</dd></div>
+          <div class="preview__row"><dt data-i18n="preview.away">离开模式</dt><dd id="pvAway">—</dd></div>
+          <div class="preview__row"><dt data-i18n="preview.battery">电池行为</dt><dd id="pvBattery">—</dd></div>
+          <div class="preview__row"><dt data-i18n="preview.risks">本机适用风险</dt><dd id="pvRisks">—</dd></div>
+        </dl>
+        <div class="preview__actions">
+          <button type="button" id="pvConfirm" class="btn btn--go" data-i18n="preview.confirm">确认启动</button>
+          <button type="button" id="pvCancel" class="btn btn--quiet" data-i18n="preview.cancel">返回修改</button>
+        </div>
+      </div>
+
+      <p class="foot-note" data-i18n="panel.control.foot">保护跑在独立 worker 进程里：关掉这个页面、关掉浏览器都不影响它。真正决定机器睡不睡的是那个进程，不是这个窗口。</p>
+    </div>
+  </section>
+
+  <!-- ====================================================== 02 有效性证据 -->
+  <section class="panel reveal" id="panel-evidence">
+    <div class="panel__head">
+      <span class="panel__num">02</span>
+      <div class="panel__titles">
+        <h3 data-i18n="panel.evidence.title">保护是否真的有效</h3>
+        <p data-i18n="panel.evidence.desc">数据来自内核电源日志（Kernel-Power 506/507、Power-Troubleshooter），普通用户权限即可读。软件说自己没睡不算证据 —— 睡过就是睡过。</p>
+      </div>
+      <div class="panel__tools">
+        <div class="segs" id="evRange">
+          <button type="button" class="seg is-on" data-hours="6" data-i18n="ev.h6">6 小时</button>
+          <button type="button" class="seg" data-hours="24" data-i18n="ev.h24">24 小时</button>
+          <button type="button" class="seg" data-hours="72" data-i18n="ev.d3">3 天</button>
+        </div>
+        <button id="btnEvidence" class="btn btn--quiet btn--sm" data-i18n="btn.reread">重读</button>
+      </div>
+    </div>
+    <div class="panel__body">
+      <div class="verdict" id="evSummary">—</div>
+      <details class="explainer">
+        <summary data-i18n="help.ev.label" data-i18n-aria="help.aria">这些结论是什么意思？</summary>
+        <p data-i18n="help.ev.body">结论按内核电源日志逐条归因：「被绕过」= 电源请求还在被持有，机器却睡了，这是平台无视请求的唯一实锤；「睡眠时无请求持有」= 睡过，但那一刻没人要求保持清醒，责任不在保护；「无从判断」= 时间早于保留日志的覆盖范围，既不自证清白也不归罪；「仅熄屏」= 屏幕黑了但系统没有离场，506 事件也会计入它，所以不能只看 506 的数字。下方的筛选只是观察视角，不改变上面任何一个数字。</p>
+      </details>
+      <div class="evf">
+        <div class="evf__chips" id="evfChips" role="group" aria-label="证据筛选" data-i18n-aria="evf.aria">
+          <button type="button" class="chip is-on" data-evf="all" data-i18n="evf.all">全部</button>
+          <button type="button" class="chip" data-evf="sleep" data-i18n="evf.sleep">真睡眠</button>
+          <button type="button" class="chip" data-evf="screenOff" data-i18n="evf.screenOff">仅熄屏</button>
+          <button type="button" class="chip" data-evf="lid" data-i18n="evf.lid">合盖</button>
+          <button type="button" class="chip" data-evf="bypass" data-i18n="evf.bypass">被绕过</button>
+          <button type="button" class="chip" data-evf="out" data-i18n="evf.out">无请求持有</button>
+          <input id="evfSearch" class="evf__search" type="search" placeholder="搜索：原因 / lid / id…" data-i18n-placeholder="evf.search">
+          <span id="evfHits" class="hint"></span>
+        </div>
+        <p class="evf__lens hint" id="evfLens" data-i18n="evf.lens" hidden>筛选只是查看视角，上方结论与统计仍按整个时间窗计算</p>
+      </div>
+      <div class="timeline" id="timeline" aria-label="待机 / 唤醒事件时间轴" data-i18n-aria="timeline.aria"></div>
+      <div class="timeline__legend">
+        <span data-i18n="tl.enter"><i class="lg lg--enter"></i>真睡眠（请求正被持有 → 被绕过）</span>
+        <span data-i18n="tl.enterOut"><i class="lg lg--enter-out"></i>真睡眠（当时没有任何请求）</span>
+        <span data-i18n="tl.enterUnknown"><i class="lg lg--enter-unknown"></i>真睡眠（ka.log 够不到，无法判定）</span>
+        <span data-i18n="tl.s3"><i class="lg lg--enter-s3"></i>菱形 = Kernel-Power 42 的入睡转换（经典 S3 / 休眠）：填充、空心、虚线的含义与上面三个圆点相同</span>
+        <span data-i18n="tl.dim"><i class="lg lg--dim"></i>仅熄屏，未睡</span>
+        <span data-i18n="tl.exit"><i class="lg lg--exit"></i>唤醒 / 恢复</span>
+        <span data-i18n="tl.run"><i class="lg lg--run"></i>保护区间</span>
+        <span class="grow"></span>
+        <span id="evCounts" class="hint">—</span>
+      </div>
+      <p class="foot-note" id="evNote"></p>
+    </div>
+  </section>
+
+  <!-- ======================================================== 03 本机环境 -->
+  <section class="panel reveal" id="panel-machine">
+    <div class="panel__head">
+      <span class="panel__num">03</span>
+      <div class="panel__titles">
+        <h3 data-i18n="panel.machine.title">本机环境适配</h3>
+        <p data-i18n="panel.machine.desc">逐条从 powercfg / 注册表实读，交流电与电池分开。心跳建议值由本机最短锁屏计时推导，不是抄来的通用数字。</p>
+      </div>
+      <div class="panel__tools">
+        <button id="btnCheck" class="btn btn--quiet btn--sm" data-i18n="btn.recheck">重新检测并写入 machine.json</button>
+      </div>
+    </div>
+    <div class="panel__body">
+      <div class="cols2">
+        <div id="planTable" class="table"></div>
+        <div class="side">
+          <div id="machineCard" class="machine"></div>
+          <div id="riskList" class="risks"></div>
+          <div id="lidNow" class="lidnow"></div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:.4rem">
+        <span id="checkHint" class="hint"></span>
+      </div>
+      <details class="explainer">
+        <summary data-i18n="help.report.label" data-i18n-aria="help.aria">这些风险从哪来？</summary>
+        <p data-i18n="help.report.body">每一条都从 powercfg / 注册表 / 系统能力实时读取，不是缓存。标红的项会真实打断无人值守（比如合盖睡眠，任何软件都拦不住）；标黄的项需要注意但不必然出问题。心跳建议值由本机最短锁屏计时推导，不是通用数字。</p>
+      </details>
+    </div>
+  </section>
+
+  <!-- ===================================================== 04 远程无人值守 -->
+  <section class="panel reveal" id="panel-guard">
+    <div class="panel__head">
+      <span class="panel__num">04</span>
+      <div class="panel__titles">
+        <h3 data-i18n="panel.guard.title">远程无人值守</h3>
+        <p data-i18n="panel.guard.desc">看门狗是计划任务，不靠面板窗口活着：登录自动启动、每 10 分钟按 intent.json 对账。人对不上机器的时候，自愈就是主功能而不是附加项。</p>
+      </div>
+      <div class="panel__tools">
+        <button id="btnGuard" class="btn btn--quiet btn--sm" data-i18n="btn.guard.install">安装看门狗</button>
+      </div>
+    </div>
+    <div class="panel__body">
+      <div class="verdict verdict--neutral" id="guardText">—</div>
+      <div id="guardTable" class="table"></div>
+      <div class="recon">
+        <h5 data-i18n="recon.title">对账规则</h5>
+        <ul>
+          <li data-i18n="recon.1body"><b data-i18n="recon.1head">intent=awake 且未到期</b> 且没有 worker → 拉起，并恢复剩余时长。</li>
+          <li data-i18n="recon.2body"><b data-i18n="recon.2head">intent=off</b> → 看门狗什么都不做。你手动停止后它不会把你停的东西又开起来。</li>
+          <li data-i18n="recon.3body"><b data-i18n="recon.3head">定时保护到期</b> → 视为已了结，不会再被复活（到期不是故障）。</li>
+          <li data-i18n="recon.4body"><b data-i18n="recon.4head">参数不写 intent</b> → 重启后按 config.json 起。要让某组参数长期生效，点「存为默认」。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ 05 日志 -->
+  <section class="panel reveal" id="panel-log">
+    <div class="panel__head">
+      <span class="panel__num">05</span>
+      <div class="panel__titles">
+        <h3 data-i18n="panel.log.title">运行日志</h3>
+        <p data-i18n="panel.log.desc">启动、心跳、降级、恢复、退出原因都会落在这里。远程排障时，这台机器上的日志本身没用 —— 但它解释了上一次为什么没连上。</p>
+      </div>
+      <div class="panel__tools">
+        <button id="btnLog" class="btn btn--quiet btn--sm" data-i18n="btn.log">刷新日志</button>
+        <label class="check"><input type="checkbox" id="autoLog" checked><span data-i18n="check.autoLog">自动跟随</span></label>
+      </div>
+    </div>
+    <div class="panel__body">
+      <div class="log__path mono" id="logPath"></div>
+      <pre class="log mono" id="log" tabindex="0" aria-label="运行日志" data-i18n-aria="log.aria" data-i18n="log.empty">（暂无日志）</pre>
+      <div class="row" style="margin-top:.6rem">
+        <span class="hint" data-i18n="log.note">日志按 logMaxKb 自动轮转（超限即截断保留后半）。</span>
+        <span class="grow"></span>
+        <button id="btnStopServer" class="btn btn--quiet btn--sm" title="只关闭面板进程，保护会继续运行" data-i18n="btn.stopServer" data-i18n-title="btn.stopServerTip">关闭面板进程</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================================================= 06 能力边界 -->
+  <section class="panel reveal" id="panel-limits">
+    <div class="panel__head">
+      <span class="panel__num">06</span>
+      <div class="panel__titles">
+        <h3 data-i18n="panel.limits.title">能力边界</h3>
+        <p data-i18n="panel.limits.desc">这一栏写的是「做不到什么」。防休眠软件最常见的失败是让人以为它无所不能。</p>
+      </div>
+      <div class="panel__tools"><span class="hint" data-i18n="panel.limits.hint">对照 PowerToys Awake / Caffeine / mouse jiggler 的公开行为整理</span></div>
+    </div>
+    <div class="panel__body">
+      <div class="limits">
+        <div class="limit limit--can">
+          <h5 data-i18n="limits.can">能压住</h5>
+          <ul>
+            <li data-i18n-inline="limits.can.1a punct.close">空闲时自动进入的系统休眠 / 现代待机（<b>ES_SYSTEM_REQUIRED</b>）</li>
+            <li data-i18n-inline="limits.can.2a punct.close">空闲时显示器熄灭（<b>ES_DISPLAY_REQUIRED</b>）</li>
+            <li data-i18n="limits.can.3">空闲锁屏计时与需密码的屏保（心跳重置空闲计时）</li>
+            <li data-i18n="limits.can.4">OEM 电源管理中途抢占请求（按「重新声明」周期再申请）</li>
+            <li data-i18n="limits.can.5">重启、崩溃、被强杀后的自动恢复（计划任务看门狗）</li>
+          </ul>
+        </div>
+        <div class="limit limit--cant">
+          <h5 data-i18n="limits.cant">压不住</h5>
+          <ul>
+            <li data-i18n="limits.cant.1body"><b>Win+L</b>、开始菜单→电源→锁屏：显式操作，任何软件都不该去拦</li>
+            <li data-i18n="limits.cant.2body"><b data-i18n="limits.cant.2head">合上屏幕盖</b>：传感器触发，除非改掉合盖动作本身</li>
+            <li data-i18n-inline="limits.cant.3a limits.cant.3c">心跳<b data-i18n="limits.cant.3b">穿透不了锁屏</b>：已锁屏时输入不会送到会话里，只会显示在锁屏界面上</li>
+            <li data-i18n="limits.cant.4">组策略强制维护窗口、电池耗尽保护、平台强制待机</li>
+            <li data-i18n="limits.cant.5">动态锁（手机蓝牙）、第三方安全软件的自行锁定 —— 本机读不到</li>
+          </ul>
+        </div>
+        <div class="limit limit--note">
+          <h5 data-i18n="limits.verify">怎么验证</h5>
+          <ul>
+            <li data-i18n-inline="limits.verify.1a limits.verify.1b">启动保护 → 让机器空闲 10 分钟 → 看 <b>02</b> 的「进入待机」次数</li>
+            <li data-i18n-inline="limits.verify.2a limits.verify.2b limits.verify.2c">合盖实测：<span class="mono">ka.bat lid -LidAction apply</span>（自带备份，<span class="mono">restore</span> 可还原）</li>
+            <li data-i18n-inline="limits.verify.3a limits.verify.3b">到底是谁在起作用：<span class="mono">ka.bat status</span> 的「同类软件」一行</li>
+            <li data-i18n-inline="limits.verify.4a limits.verify.4b">是待机还是只是熄屏：<span class="mono">ka.bat evidence</span> 两者成因不同</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <span id="footInfo">—</span>
+    <span class="grow"></span>
+    <span class="foot__right" data-i18n="foot.right">所有请求只走向 127.0.0.1 · 面板不带跨域许可，外部页面无法驱动它</span>
+  </footer>
+</div>
+
+<div id="toasts" class="toasts" aria-live="polite"></div>
+
+<script src="/i18n.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

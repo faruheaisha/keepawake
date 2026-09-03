@@ -1,0 +1,19 @@
+# 默认按文本处理，但换行由仓库决定而不是各人的 git 配置决定：
+# .bat 只有 CRLF 才能可靠执行，LF 版本的 cmd 会在某些行上抽风。
+* text=auto
+
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+# .ps1 反过来锁 LF：仓库里每个脚本都是 UTF-8 BOM + LF，_tmp\probe-enc.ps1 见到 CRLF 就判失败。
+# 写成 eol=crlf 的话，clone 出来的文件和这里被测过的文件就不是同一份东西了。
+*.ps1  text eol=lf
+
+*.svg  text
+*.html text
+*.css  text
+*.js   text
+*.json text
+*.md   text
+
+*.png  binary
+*.ico  binary

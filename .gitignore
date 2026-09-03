@@ -1,0 +1,30 @@
+# 本机运行产物：换一台机器必须重新生成，跟着 clone 走就是骗人。
+# intent.json 尤其危险 —— 带着 desired=awake 提交，别人 clone 完，
+# 他机器上的看门狗会在登录时替他把保护开起来。
+intent.json
+state.json
+machine.json
+stop.flag
+.server.json
+ka.log
+ka.log.*
+*.log
+*.log.*
+*.tmp
+config.json
+
+# 探针脚手架：一次性副本、临时数据根都在里面。值得长期跑的门禁搬进 tests/，
+# 而不是把 40 个 probe-*.ps1 当产品发布。
+/_tmp/
+
+# 本机合盖动作的原值备份。换一台机器它就是错的，跟着 clone 走会让别人
+# 的 "lid restore" 还原一个他机器上从来没存在过的设置。
+ka-lid-backup.json
+
+# config.json（面板「存为默认」写的那个）曾经要提交，理由是首次 clone 就能用 ——
+# 但能用是 Get-KaDefaultConfig 给的，language 已经是 auto。提交一份本机配置等于
+# 拿这台机器的选择去覆盖下载者：德语机器上会被强行成中文，而且和代码里的默认值
+# 迟早对不上。所以本机文件留在本机。
+
+# pid 文件是上一次谁活着留的痕，不是内容。
+*.pid
