@@ -145,7 +145,8 @@ Write-Output ('  exit=' + $bat.Exit + ' chars=' + $bat.Out.Trim().Length + ' std
 Write-Output ('  first line: ' + $batFirst)
 if ($bat.Exit -ne 0) { $bad += "ka.bat status exited $($bat.Exit) from the marked copy" }
 if ($bat.Out.Trim().Length -lt 40) { $bad += 'ka.bat produced almost nothing from the marked copy' }
-Write-Output ('  marks still present after being run: ' + (Count-Marks $web) + ' of ' + (Get-ChildItem -LiteralPath $web -Recurse -File).Count)
+Write-Output ('  marks still present after being run: ' + (Count-Marks $web) + ' of ' + (Get-ChildItem -LiteralPath $web -Recurse -File).Count +
+              ' (one of them is motw-native-child.ps1, copied in by leg C; the product itself wrote nothing here)')
 
 Write-Output '--- B. marked zip -> Expand-Archive'
 $zip = Join-Path $work 'ka.zip'
@@ -155,7 +156,8 @@ $zipOut = Join-Path $work 'zipout'
 Expand-Archive -LiteralPath $zip -DestinationPath $zipOut -Force
 $zipFiles = (Get-ChildItem -LiteralPath $zipOut -Recurse -File).Count
 $inZip = Count-Marks $zipOut
-Write-Output ("  Expand-Archive of a marked zip: $inZip of $zipFiles extracted files carry a mark")
+Write-Output ("  Expand-Archive of a marked zip: $inZip of $zipFiles extracted files carry a mark" +
+              " ($($files.Count) shipped + the probe's own helper)")
 $zNative = Native-Leg $zipOut -Mark:([bool]$inZip)
 Write-Output ('  run from the extracted copy: ' + $zNative.Out.Trim())
 if ($zNative.Out -notmatch 'NATIVE=loaded KNOWN=True') { $bad += "the zip-extracted copy could not build the native layer: [$($zNative.Out.Trim())]" }
