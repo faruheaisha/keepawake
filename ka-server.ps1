@@ -404,12 +404,16 @@ if (-not $started) {
     exit 1
 }
 
-if (-not (Write-KaJson $paths.serverInfo @{ pid = $PID; port = $Port; url = "http://127.0.0.1:$Port/";
-                                           startedEpoch = Get-KaEpoch; root = (Get-KaProgramRoot);
-                                           data = (Get-KaDataRoot) } -Depth 3)) {
+# One handle per port, in a file this panel owns outright (see Get-KaServerHintPath): the
+# shared `.server.json` let the second panel overwrite the first's pid at start and delete it
+# at exit, which made a still-running panel unfindable.
+$serverHint = Get-KaServerHintPath $Port
+if (-not (Write-KaJson $serverHint @{ pid = $PID; port = $Port; url = "http://127.0.0.1:$Port/";
+                                      startedEpoch = Get-KaEpoch; root = (Get-KaProgramRoot);
+                                      data = (Get-KaDataRoot) } -Depth 3)) {
     # Worth a log line: without the hint, a panel started with a relative path cannot be
     # found again by Stop-KaServer and squats the port for the rest of the session.
-    Add-KaLog "WARN pid=$PID server-hint-unwritable $($paths.serverInfo)"
+    Add-KaLog "WARN pid=$PID server-hint-unwritable $serverHint"
 }
 Add-KaLog "SERVER pid=$PID port=$Port url=http://127.0.0.1:$Port/"
 Write-Host (Get-KaText 'server.console.ready' @{ port = $Port })
@@ -453,7 +457,14 @@ try {
 } finally {
     try { $listener.Stop() } catch { }
     try { $listener.Close() } catch { }
-    try { Remove-Item -LiteralPath $paths.serverInfo -Force -ErrorAction SilentlyContinue } catch { }
+    # Ours, and only while it is still ours: if a successor already re-bound this port it
+    # owns the file now, and deleting it would strand that panel without a handle.
+    try {
+        $mine = Read-KaJson $serverHint
+        if ($mine -and [int]$mine.pid -eq $PID) {
+            Remove-Item -LiteralPath $serverHint -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
     Add-KaLog "SERVER EXIT pid=$PID"
     Write-Host (Get-KaText 'server.console.exited')
 }

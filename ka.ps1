@@ -596,7 +596,9 @@ switch ($Action) {
 
     'stop-server' {
         $r = Stop-KaServer
-        Write-Host $(if ($r.Stopped) { Get-KaText 'cli.panelStopped' @{ n = $r.Stopped } } else { Get-KaText 'cli.panelNotRunning' }) -ForegroundColor Green
+        $col = 'Green'
+        if ([int]$r.Stopped -le 0) { $col = if (@($r.Answering).Count) { 'DarkYellow' } else { 'Gray' } }
+        Write-Host (Get-KaStopServerText $r) -ForegroundColor $col
     }
 
     'tray' {

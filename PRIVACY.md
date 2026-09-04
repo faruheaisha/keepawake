@@ -22,7 +22,7 @@
 | `%LOCALAPPDATA%\KeepAwake\intent.json` | `start` / `stop` | 你要什么：`desired`（`awake`/`off`）、`minutes`、`expiresEpoch`、`updatedAt`。看门狗靠它对账，"重启后自动恢复"就是靠它 |
 | `%LOCALAPPDATA%\KeepAwake\state.json` | worker 每 tick | 现场读数：`pid`、电源请求 flags、`pulses` / `lastPulseEpoch` / `lastPulseResult`、`lockSkips` / `ilSkips`、`batteryPercent` / `acOnline` / `batteryFloor`、`startedEpoch` / `expiresEpoch`、`note`（机器标记，如 `lock-screen`、`il-mismatch`、`battery-floor`） |
 | `%LOCALAPPDATA%\KeepAwake\ka.log`（超上限轮转成 `ka.log.1`） | 所有进程 | ASCII 事件行。词汇：`STARTED` / `STOPPED` / `STOP` / `STOP-REQUEST` / `STOP-UNCOOPERATIVE` / `STOP-INTENT-UNRECORDED` / `PULSE` / `PULSE-SKIP` / `HEARTBEAT` / `DOWNGRADE` / `SKIP` / `RESUMED` / `EARLY-EXIT` / `EXIT` / `SERVER` / `SERVER EXIT` / `REJECT` / `GUARD` / `GUARD-FAILED` / `LID` / `RESTORE` / `WARN` / `FAIL` / `STARTED-UNRECORDED` / `INTENT-WRITE-FAILED` / `MIGRATE-SKIP` / `LOG-FAILED` |
-| `%LOCALAPPDATA%\KeepAwake\.server.json` | `serve` | 面板进程的握手信息：`pid`、`port`、`url`、`data`、`root`、`startedEpoch`（`ka.bat stop-server` 用它找人） |
+| `%LOCALAPPDATA%\KeepAwake\.server-<端口>.json` | `serve` | 面板进程的握手信息：`pid`、`port`、`url`、`data`、`root`、`startedEpoch`（`ka.bat stop-server` 用它找人）。**按端口一份**，所以同时开两个面板不会互相抹掉对方的句柄。改版前那份共享的 `.server.json` 仍然**只读**（否则先起来的面板就找不回来了），它的进程一旦确实没了就被扫掉 |
 | `%LOCALAPPDATA%\KeepAwake\.migrated.json` | 首次升级 | 迁移记录：`from`（旧程序目录）、`copied`、`skipped`、`at`、`version`。只有在确实搬动了文件时才会写出来 |
 | `%LOCALAPPDATA%\KeepAwake\stop.flag` | 停 worker 的握手 | 生命周期极短，正常路径下会被消费掉 |
 | `%ProgramData%\KeepAwake\ka-lid-backup.json` | `ka.bat lid -LidAction apply` | 改合盖动作**之前**的原值：`schemeGuid`、`schemeName`、`dc`、`ac`、`capturedAt`、`found`。`restore` 靠它还回去 |
@@ -37,7 +37,7 @@
 诚实版，一条不漏：
 
 1. **你的 Windows 用户名和目录名会以"路径"的形式留下痕迹。**数据根本身就在 `C:\Users\<你>\AppData\...`
-   下面，所以 `.server.json` 的 `data`、`.migrated.json` 的 `from`、`ka.log` 里的报错行、计划任务里注册的
+   下面，所以 `.server-<端口>.json` 的 `data`、`.migrated.json` 的 `from`、`ka.log` 里的报错行、计划任务里注册的
    执行路径都含用户名。程序目录名同理（本仓库作者的那份就叫 `E:\claude code\防休眠`）。这是"文件放在
    哪里"的自然结果，不是记录下来的行为。
 2. **`machine.json` 存 Windows 版本字符串**，实测形如

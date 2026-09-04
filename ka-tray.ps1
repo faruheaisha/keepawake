@@ -344,8 +344,11 @@ if ($NoServerItem) { $MiStopServer.Visible = $false } else {
     $MiStopServer.Add_Click({
         try {
             $r = Stop-KaServer
-            Show-Balloon (Get-KaText 'tray.bal.panel') $(if ([int]$r.Stopped -gt 0) {
-                Get-KaText 'tray.bal.panelClosed' @{ n = $r.Stopped } } else { Get-KaText 'tray.bal.panelNone' }) 'ok'
+            $text = Get-KaStopServerText $r
+            # A panel still answering after we were asked to stop it is not "nothing to do" -
+            # the request failed, so the balloon has to look like that.
+            $kind = if ([int]$r.Stopped -gt 0) { 'ok' } elseif (@($r.Answering).Count) { 'error' } else { 'info' }
+            Show-Balloon (Get-KaText 'tray.bal.panel') $text $kind
         } catch { Show-Balloon (Get-KaText 'tray.bal.panel') $_.Exception.Message 'error' }
     })
 }

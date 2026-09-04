@@ -490,6 +490,9 @@ function Get-KaPath {
         state      = Join-Path $data 'state.json'
         stopFlag   = Join-Path $data 'stop.flag'
         log        = Join-Path $data 'ka.log'
+        # Legacy: the one handle file every panel used to share. Nothing writes it any more
+        # (see Get-KaServerHintPath), but it still has to be *read* - it is the only handle on
+        # a panel that started before this change, and forgetting it would strand that port.
         serverInfo = Join-Path $data '.server.json'
         lidBackup  = Join-Path (Get-KaMachineRoot) 'ka-lid-backup.json'
     }
@@ -1076,6 +1079,7 @@ $script:KaUi = @{
         'cli.panelManual'               = '请手动打开：{url}'
         'cli.panelStopped'              = '面板已关闭（{n} 个进程）。'
         'cli.panelNotRunning'           = '面板没有在运行。'
+        'cli.panelAnswering'            = '没有找到我们能停下的面板，但端口 {ports} 仍在应答 —— 它属于另一个数据根、另一个用户，或者不是本工具启动的进程。'
         'cli.missingTray'               = '缺少 ka-tray.ps1'
         'cli.trayStarted'               = '托盘图标已启动（系统托盘区）。'
         'cli.requestsHead'              = '当前电源请求（powercfg /requests，需管理员）'
@@ -1123,8 +1127,6 @@ $script:KaUi = @{
         'tray.bal.guardOnBody'          = '登录自动启动，每 10 分钟按 intent.json 自检。'
         'tray.bal.guardFail'            = '看门狗操作失败'
         'tray.bal.panel'                = '面板'
-        'tray.bal.panelClosed'          = '已关闭 {n} 个面板进程。'
-        'tray.bal.panelNone'            = '没有正在运行的面板进程。'
         'tray.state.stale'              = 'worker 已停止上报（看门狗会接管）'
         'tray.state.display'            = '保护中 · 屏幕常亮'
         'tray.state.degraded'           = '保护中 · 电池降级，已允许熄屏'
@@ -1454,6 +1456,7 @@ $script:KaUi = @{
         'cli.panelManual'               = 'please open by hand: {url}'
         'cli.panelStopped'              = 'panel closed ({n} process(es)).'
         'cli.panelNotRunning'           = 'the panel is not running.'
+        'cli.panelAnswering'            = 'no panel we could stop, but port {ports} still answers - it belongs to another data root, another user, or a process this tool did not start.'
         'cli.missingTray'               = 'ka-tray.ps1 is missing'
         'cli.trayStarted'               = 'tray icon started (system tray area).'
         'cli.requestsHead'              = 'Current power requests (powercfg /requests; needs admin)'
@@ -1501,8 +1504,6 @@ $script:KaUi = @{
         'tray.bal.guardOnBody'          = 'Auto-starts at logon and self-checks against intent.json every 10 minutes.'
         'tray.bal.guardFail'            = 'Watchdog operation failed'
         'tray.bal.panel'                = 'Panel'
-        'tray.bal.panelClosed'          = '{n} panel process(es) closed.'
-        'tray.bal.panelNone'            = 'No panel process is running.'
         'tray.state.stale'              = 'the worker stopped reporting (the watchdog takes over)'
         'tray.state.display'            = 'protecting · display held on'
         'tray.state.degraded'           = 'protecting · battery step-down, display may turn off'
@@ -2396,32 +2397,79 @@ function Stop-KaWorker {
 }
 
 # ---------------------------------------------------------------- dashboard server
+function Get-KaServerHintPath([int]$Port) {
+    <#
+        One handle file per port. A TCP port can only be held by one live listener, so
+        per-port is per-panel: two panels never write the same file, and no panel ever
+        deletes another one's on exit. The shared `.server.json` did both - the second
+        panel overwrote the first's pid at start and removed the file at exit, which left
+        the still-running first panel unfindable.
+    #>
+    Join-Path (Get-KaPath).data ('.server-{0}.json' -f $Port)
+}
+
+function Get-KaServerHints {
+    <#
+        Every panel handle this data root has on disk, live process or not - the caller
+        decides. A handle whose process is gone is stale and gets cleaned up; a live one is
+        the only lead on a panel started with a relative path.
+
+        The glob deliberately also matches the legacy `.server.json`, so a panel that started
+        before this change is still findable and stoppable; its file disappears the first time
+        it is stopped. Handles naming another data root are not ours to trust or to delete.
+    #>
+    $out = @()
+    try {
+        $p = Get-KaPath
+        foreach ($f in @(Get-ChildItem -LiteralPath $p.data -Filter '.server*.json' -File -ErrorAction SilentlyContinue)) {
+            $h = Read-KaJson $f.FullName
+            if (-not $h) { continue }
+            if ("$($h.data)" -ne "$($p.data)") { continue }
+            $port = 0
+            if ($f.Name -match '\.server-(\d+)\.json$') { $port = [int]$Matches[1] }
+            if ($port -le 0) { try { $port = [int]$h.port } catch { $port = 0 } }
+            $pid2 = 0
+            try { $pid2 = [int]$h.pid } catch { }
+            $started = 0
+            try { $started = [long]$h.startedEpoch } catch { }
+            $out += [PSCustomObject]@{ Pid = $pid2; Port = $port; Url = "$($h.url)"
+                                       StartedEpoch = $started; Path = $f.FullName }
+        }
+    } catch { }
+    return $out
+}
+
 function Get-KaServer {
     $found = @()
     try {
         $p = Get-KaPath
-        # .server.json is written by this project's own panel, so its pid identifies our
-        # server without depending on the command line. Start-KaServer passes an absolute
+        # A hint is written by this project's own panel, so its pid identifies our server
+        # without depending on the command line. Start-KaServer passes an absolute
         # path and is matched by root; a panel launched by hand from inside this folder
         # ("-File ka-server.ps1") is not - and was then impossible to stop, leaving the
         # port squatted and every restart failing with a prefix conflict.
-        $ownPid = 0
-        $info = Read-KaJson $p.serverInfo
-        # Trust the recorded pid only when the hint says it belongs to *this* data root -
-        # otherwise a leftover file from another user or another install could point us at
-        # an unrelated process, and Stop-KaServer kills by pid.
-        if ($info -and "$($info.data)" -eq "$($p.data)") { $ownPid = [int]$info.pid }
+        $hintsByPid = @{}
+        foreach ($h in @(Get-KaServerHints)) {
+            if ($h.Pid -gt 0 -and -not $hintsByPid.ContainsKey([int]$h.Pid)) { $hintsByPid[[int]$h.Pid] = $h }
+        }
         $procs = Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" -ErrorAction SilentlyContinue
         foreach ($proc in $procs) {
             $cl = "$($proc.CommandLine)"
             if ($cl -notlike '*ka-server.ps1*') { continue }
-            $byPath = ($cl -like "*$($p.root)*")
-            $byInfo = ($ownPid -gt 0 -and [int]$proc.ProcessId -eq $ownPid)
-            if (-not ($byPath -or $byInfo)) { continue }
-            if ([int]$proc.ProcessId -eq $PID) { continue }
             $startEpoch = 0
             try { $startEpoch = ([DateTimeOffset]::new($proc.CreationDate)).ToUnixTimeSeconds() } catch { }
-            $found += [PSCustomObject]@{ Pid = [int]$proc.ProcessId; StartEpoch = $startEpoch; CommandLine = $cl }
+            $byPath = ($cl -like "*$($p.root)*")
+            $hint = $hintsByPid[[int]$proc.ProcessId]
+            # A recorded pid is a lead, not a fact: Windows hands the number to an unrelated
+            # process, and Stop-KaServer kills by pid. The start time the panel wrote and this
+            # process's real creation time have to agree within 15 minutes - a recycled pid
+            # pointing at a powershell.exe from another session is the case this catches.
+            if ($hint -and $hint.StartedEpoch -gt 0 -and $startEpoch -gt 0 -and
+                [math]::Abs($startEpoch - $hint.StartedEpoch) -gt 900) { $hint = $null }
+            if (-not ($byPath -or $hint)) { continue }
+            if ([int]$proc.ProcessId -eq $PID) { continue }
+            $found += [PSCustomObject]@{ Pid = [int]$proc.ProcessId; StartEpoch = $startEpoch
+                                         CommandLine = $cl; Port = $(if ($hint) { [int]$hint.Port } else { 0 }) }
         }
     } catch { }
     return $found
@@ -2491,14 +2539,13 @@ function Stop-KaServer {
     # panel to stop itself via /api/server/stop lets it call listener.Stop()/Close(),
     # which deregisters the prefix cleanly. Measured: a gracefully stopped panel lets
     # its successor answer the first request in under a second.
-    $p = Get-KaPath
     $cfg = Get-KaConfig
     $servers = @(Get-KaServer)
     $graceful = 0
     $killed = 0
     foreach ($s in $servers) {
-        $port = $cfg.port
-        if ($s.CommandLine -match '-Port\s+(\d+)') { $port = $Matches[1] }
+        $port = if ([int]$s.Port -gt 0) { [int]$s.Port } else { [int]$cfg.port }
+        if ($s.CommandLine -match '-Port\s+(\d+)') { $port = [int]$Matches[1] }
         $asked = $false
         try {
             $uri = "http://127.0.0.1:$port/api/server/stop"
@@ -2525,17 +2572,39 @@ function Stop-KaServer {
             Start-Sleep -Milliseconds 150
         }
     }
-    # Keep the hint when a recorded panel is still alive: it is the only handle on a server
-    # launched with a relative path, and deleting it would strand the port squatter for good.
-    $info = Read-KaJson $p.serverInfo
-    $alive = $false
-    if ($info -and "$($info.data)" -eq "$($p.data)" -and [int]$info.pid -gt 0) {
-        $alive = [bool](Get-Process -Id ([int]$info.pid) -ErrorAction SilentlyContinue)
+    # A handle whose process is gone is now wrong, and a wrong handle is worse than none: it
+    # is what makes a future "面板没有在运行" a lie. Delete exactly those. A handle whose
+    # process is still alive stays - it is the only way to find a panel again, including one
+    # this call could not stop.
+    $left = @()
+    foreach ($h in @(Get-KaServerHints)) {
+        if ($h.Pid -gt 0 -and (Get-Process -Id ([int]$h.Pid) -ErrorAction SilentlyContinue)) {
+            $left += $h
+            continue
+        }
+        try { Remove-Item -LiteralPath $h.Path -Force -ErrorAction Stop } catch { $left += $h }
     }
-    if (-not $alive) {
-        try { Remove-Item -LiteralPath $p.serverInfo -Force -ErrorAction SilentlyContinue } catch { }
-    }
-    return @{ Stopped = ($graceful + $killed); Graceful = $graceful; Killed = $killed; Found = $servers.Count; Squatting = $alive }
+    # "I found no process of ours" and "nothing is answering" are different facts, and only
+    # the second one entitles anyone to print 面板没有在运行. So ask the ports.
+    $candidatePorts = @(foreach ($h in $left) { if ($h.Port -gt 0) { $h.Port } }
+                        foreach ($s in $servers) { if ([int]$s.Port -gt 0) { [int]$s.Port } }
+                        [int]$cfg.port) | Select-Object -Unique
+    $answering = @($candidatePorts | Where-Object { Test-KaUrl ("http://127.0.0.1:$_/api/ping") })
+    return @{ Stopped = ($graceful + $killed); Graceful = $graceful; Killed = $killed
+              Found = $servers.Count; Left = $left.Count; Answering = $answering }
+}
+
+function Get-KaStopServerText($Result) {
+    <#
+        One judgement for both surfaces that report a stopped panel (CLI and tray), because
+        they used to pick their own strings and drift. The middle branch is the reason this
+        function exists: a green "面板没有在运行" printed while a panel answers on 8791 is the
+        kind of sentence that makes a person distrust every other line the tool prints.
+    #>
+    if ([int]$Result.Stopped -gt 0) { return (Get-KaText 'cli.panelStopped' @{ n = $Result.Stopped }) }
+    $ports = @($Result.Answering)
+    if ($ports.Count) { return (Get-KaText 'cli.panelAnswering' @{ ports = ($ports -join ', ') }) }
+    return (Get-KaText 'cli.panelNotRunning')
 }
 
 # ---------------------------------------------------------------- desired state / watchdog

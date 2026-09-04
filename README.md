@@ -116,15 +116,16 @@ tests/ka-encoding.ps1 / ka-syntax.ps1 / ka-privacy.ps1 / ka-privacy-mutation.ps1
                     独立门禁：BOM + 纯 LF、可解析、不外传、以及"隐私门禁真的会红"
 tests/ka-release-files.ps1
                     便携 zip 的文件清单——唯一真源，打包和探针都从它取，不再各自抄一份
-tests/probe-*.ps1   13 个实测探针：迁移、互斥体标识、CLM、下载标记(MOTW)、32 位 PowerShell、
-                    区域文化、布尔配置、保存默认值、原生编译、全新解压时的数据根，外加三个"自检"
+tests/probe-*.ps1   15 个实测探针：迁移、互斥体标识、CLM、下载标记(MOTW)、32 位 PowerShell、
+                    区域文化、布尔配置、保存默认值、原生编译、全新解压时的数据根、面板句柄按端口分离，
+                    外加四个"自检"
                     逐个跑法和本机判定见下方《独立门禁与实测探针》
 README.md / SECURITY.md / PRIVACY.md / CHANGELOG.md / LICENSE (Apache-2.0) / NOTICE
 ```
 
 进程之间不靠 PID 文件通信：
 
-- **谁是活的**：`Get-Process` + 命令行里的 `-DataDir`（归属判定的主键）；worker 没报告数据根时才退回脚本路径匹配，另有 `.server.json` 记录的 pid/root 兜底。**这一步刻意朝"是我的"失败**（`Test-KaOwnWorker`）：一个认不出归属的 worker 也算进来，因为"扫到一个都没有"在每个界面上都被读成"保护已停止"，那个误判比多算一个进程贵得多。
+- **谁是活的**：`Get-Process` + 命令行里的 `-DataDir`（归属判定的主键）；worker 没报告数据根时才退回脚本路径匹配，另有面板句柄 `.server-<端口>.json` 记录的 pid/root 兜底——**按端口一份**，因为一个 TCP 端口只可能被一个活监听者占着，按端口就是按面板；旧的共享 `.server.json` 仍然**读**（改版前起来的面板还得找得回来），只在它的进程确实没了之后才被扫掉。**句柄不是无条件信的**：`startedEpoch` 和进程创建时间对不上（>900 秒）就当它是回收来的 pid，不许据此去杀进程。**2026-09-04 实测**：两个面板各写各的句柄，停掉其中一个，另一个的句柄还在、还能单独被找回来。**这一步刻意朝"是我的"失败**（`Test-KaOwnWorker`）：一个认不出归属的 worker 也算进来，因为"扫到一个都没有"在每个界面上都被读成"保护已停止"，那个误判比多算一个进程贵得多。
 - **单实例**：`Local\KA-{Worker|Guard|Tray}-<sha256(数据根 | 用户SID)[0..12]>`。锁的是**数据根 + 谁在用**，不是安装目录——一份 `state.json`、一份 `stop.flag` 天然只属于一个 worker。**2026-09-04 实测**：两个不同的程序目录解析出同一个 `Local\KA-Worker-DCA86D0FFFB8`，另一个进程持有它时 `OpenExisting` 当场可见。所以同一用户复制两份目录时，第二份会撞上互斥体并退出，而不是留下两份谁也停不掉的电源请求；带上 `KA_DATA` 指向另一个目录才会拿到另一个哈希（实测改变）。SID 进哈希是为了让多人共用一份安装时互不排队。
 - **状态真相**：`state.json` 是 worker 写的自述，但 `status` 只把它当成"锦上添花"——`Get-KaFullState` 里的 `$live` 判定要求真实进程存在才成立。
 - **想不想要保护**：`intent.json`。这是看门狗的唯一依据 —— 你 `stop` 了，它就不会在 10 分钟后自作主张把你刚关掉的保护又开起来（上一版就是这么惹恼用户的）。定时运行到期会被判定为 `expired`，不算"该保护却没保护"。
@@ -239,7 +240,7 @@ $env:KA_LANG = 'en'                 # 只影响当前这个进程，不动配置
 | | 位置 | 里面是什么 |
 | --- | --- | --- |
 | **程序** | 脚本所在目录（`ka.bat config` 打印的 `program`） | 只有 `.ps1` / `.bat` / `dashboard/`。日志、配置、状态全在下面两处，所以整个目录可以随时替换、覆盖、升级。唯一可能出现在这里的是 `ka-guard-missing-core.txt`——`ka-core.ps1` 已经不在了、看门狗没法用正常途径报告时的最后一搏（那个目录也写不动就落到 `%TEMP%\KeepAwake-guard-missing-core.txt`） |
-| **数据（按用户）** | `%LOCALAPPDATA%\KeepAwake` | `config.json`、`intent.json`、`state.json`、`ka.log`（+轮转的 `ka.log.1`）、`machine.json`、`.server.json`、`stop.flag`、`.migrated.json` |
+| **数据（按用户）** | `%LOCALAPPDATA%\KeepAwake` | `config.json`、`intent.json`、`state.json`、`ka.log`（+轮转的 `ka.log.1`）、`machine.json`、`.server-<端口>.json`（面板句柄，按端口一份）、`stop.flag`、`.migrated.json` |
 | **数据（按机器）** | `%ProgramData%\KeepAwake` | 只有 `ka-lid-backup.json`——合盖动作的原值备份。它是**全机**设置，备份到按用户目录就会张冠李戴，所以单独放 |
 
 拆分是为"下载即用"服务的：程序目录是**可替换的**，你的选择是**要留下的**。`KA_DATA` 可把数据根改到别处，它设了就用——哪怕指到一个不可写的目录，也绝不偷偷换个地方写，因为探针和测试要求的就是那个目录。`%LOCALAPPDATA%` 本身取不到时才退到 `%TEMP%\KeepAwake`（记 `no-localappdata`）；取到了却不可写**没有兜底**，路径原样留着，好让每条消息都点得出失败的那个位置（面板红条 `alert.dataDirUnwritable`，`/api/state` 里的 `dataError`）。
@@ -315,9 +316,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\ka-tests.ps1
   - 现在三处同说一套话：`state.json` 多一个 `lastLockEpoch`（最后一次被安全桌面挡住的具体时刻）、worker 每跳在被锁时写 `PULSE-SKIP pid=… reason=lock-screen secureDesktop=true`（第 1 次以及每 20 次才写一行，否则一次过夜锁屏会刷满日志）、status/report/面板在**锁屏仍然成立期间**发红色提醒条 `alert.sessionLocked`，把"电源请求仍然有效、电脑不会休眠，但远程接入只会看到锁屏"直接说破，撤锁后自动消失。心跳规格表也多了「最后锁屏」一列。新测试不走"改 `state.json` 再读回来"那条路 —— 活着的 worker 大约 1 秒内就会把它重写掉（这一点在本仓库被实证过三次），任何回填式断言都是竞态；锁屏检测用的原语是"有没有叫 `logonui` 的进程"，所以把一个 `cmd.exe` 副本改名成 `logonui.exe` 跑起来就是一个**端到端**的合法夹具：真的被检测到、真的跳过心跳、真的写下时间戳与日志行、真的弹出提醒条，撤掉夹具后检测与提醒条一起消失。
 - 本地主机边界：裸 socket 伪造 Host / Origin / 缺头 / 路径穿越 / 非法方法。
 
-套件会先把 `config.json`、`intent.json`、`state.json`、`ka.log`、`.server.json` 备份，跑完在 `finally` 里还原，并停掉自己启动的 worker —— 中途崩了也不会让这台机器处于"意外被保护/意外没保护"的状态。已安装的看门狗计划任务也在同一段 `finally` 里停用并按捕获到的状态还原：看门狗每 10 分钟对账的就是这些测试正在改写的 `intent.json`/`state.json`，实测它会把自己启动的 worker 按 `reason=stopped` 收割掉，让两个测试看起来像产品 bug。
+套件会先把 `config.json`、`intent.json`、`state.json`、`ka.log`、`.server.json` 备份，跑完在 `finally` 里还原，并停掉自己启动的 worker —— 中途崩了也不会让这台机器处于"意外被保护/意外没保护"的状态。同一段 `finally` 还会把**进程已经不在了**的面板句柄扫掉（含被强杀的测试面板留下的 `.server-<端口>.json`），但**pid 还活着的句柄一个都不碰**，所以你开着的面板不会因为这些测试而失联。已安装的看门狗计划任务也在同一段 `finally` 里停用并按捕获到的状态还原：看门狗每 10 分钟对账的就是这些测试正在改写的 `intent.json`/`state.json`，实测它会把自己启动的 worker 按 `reason=stopped` 收割掉，让两个测试看起来像产品 bug。
 
-当前状态：**82 个 `It` 用例，最后一次全量实机运行为 2026-08-30（通过 82，失败 0，跳过 0）**。用例数与文件里 `grep -c "It '"` 的 82 一致，但"失败 0"是那一天那次运行的结果 —— 这一行新立的规矩对它自己同样成立：想引用当天状态就得当天跑一遍，跑不了就别替它说话。
+当前状态：**82 个 `It` 用例，最后一次全量实机运行为 2026-08-30（通过 82，失败 0，跳过 0）**。用例数与文件里 `grep -c "It '"` 的 82 一致，但"失败 0"是那一天那次运行的结果 —— 这一行新立的规矩对它自己同样成立：想引用当天状态就得当天跑一遍，跑不了就别替它说话。**2026-09-04 又动了套件两处**（面板句柄那条断言改走 `Get-KaServerHints`，`finally` 加了陈旧句柄清扫），改后**没有再全量实跑**，所以上面那个"失败 0"不顺延到今天。
 
 ### 独立门禁与实测探针
 
@@ -345,6 +346,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\probe-motw.ps1      # 
 | `probe-fresh-data.ps1` | 按 zip 清单拼一份"刚下载的目录" + 空数据根，看首条命令到底写了什么、只读命令一个文件都不许多写 | `a fresh download runs, writes only what it is told to, survives a hand-mangled config.json, and shows one version` |
 | `probe-save-default.ps1` | 面板「存为默认」走真 HTTP、真进程、真文件：存它所显示的，拒它不能兑现的 | `存为默认 over HTTP stores what the form showed, and refuses what it cannot honour` |
 | `probe-mutex-identity.ps1` | 单实例互斥体锁的是**数据根 + SID**，不是安装目录；跨进程真的抢得到 | `the mutex keys on data root + SID, not on the install folder` |
+| `probe-server-hint.ps1` / `-selftest.ps1` | 两个真面板两个真端口：句柄**按端口**各一份、停掉一个不许把另一个变成孤儿、端口还在应答就不许说"面板没有在运行"；自测分别退回修复前的两种写法（共享 `.server.json` + 退出即删 / 不探端口），要求各自红在自己的断言上 | `two panels hold two handles, stopping one leaves the other findable...` / `reverting either half of the fix turns this probe red on its own assertion, and the untouched mutant stays green` |
 
 探针的脚手架要么写在仓库根的 `_tmp/`（gitignore 里，所以探针自己带 `-Force` 创建——全新 clone 时它并不存在），要么写在
 `%TEMP%` 下的独立目录里（`probe-native` / `probe-wow64` 的编译沙箱、`probe-culture-mutation` 捕获的子进程输出走这条）。总之内嵌

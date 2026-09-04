@@ -5,7 +5,8 @@ intent.json
 state.json
 machine.json
 stop.flag
-.server.json
+/.server.json
+/.server-*.json
 ka.log
 ka.log.*
 *.log

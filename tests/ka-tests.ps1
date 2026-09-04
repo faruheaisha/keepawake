@@ -2236,7 +2236,11 @@ some-driver.sys   SYSTEM
             Assert-Eq ([int]$s.Stopped) 1 'Stop-KaServer 仍是空操作'
             Start-Sleep -Milliseconds 800
             Assert (-not (Test-KaUrl "http://127.0.0.1:$free/api/ping")) '停掉后端口仍在响应'
-            Assert (-not (Test-Path -LiteralPath $paths.serverInfo)) '.server.json 未被清掉，会误导后续发现'
+            # Not "the legacy .server.json is gone" - panels now write .server-<port>.json, so
+            # that path would be absent no matter what. The fact worth pinning is that no
+            # handle survives the process it describes.
+            $left = @(Get-KaServerHints | Where-Object { $_.Port -eq $free })
+            Assert ($left.Count -eq 0) "面板已退出，句柄却留着：$(($left.Path | Split-Path -Leaf) -join ', ')"
             "pid=$($proc.Id) port=$free"
         } finally {
             try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch { }
@@ -2322,6 +2326,15 @@ finally {
     if ($script:SrvPid) { try { Stop-Process -Id $script:SrvPid -Force -ErrorAction Stop } catch { } }
     try { [void](Stop-KaWorker -Reason 'test-cleanup') } catch { }
     try { if (@(Get-KaWorker).Count -eq 0) { Remove-Item -LiteralPath $paths.stopFlag -Force -ErrorAction SilentlyContinue } } catch { }
+    # Stop-Process above cannot run the panel's own finally, so its .server-<port>.json would
+    # leak. Only handles with no process behind them get deleted - a panel the user left
+    # running keeps its handle, which is the only lead on how to find and stop it later.
+    try {
+        foreach ($h in @(Get-KaServerHints)) {
+            if ($h.Pid -gt 0 -and (Get-Process -Id ([int]$h.Pid) -ErrorAction SilentlyContinue)) { continue }
+            Remove-Item -LiteralPath $h.Path -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
     Restore-Files
     Restore-GuardTasks
     if (-not $LeaveOutputs) {
