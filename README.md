@@ -1,4 +1,4 @@
-# 防休眠 Keep-Awake v3
+# 防休眠 Keep-Awake
 
 让 Windows 在 AI 编程（vibe coding）、长任务、远程无人值守时**不休眠、不熄屏、不锁屏**。
 
@@ -6,7 +6,10 @@
 - **免登录**：clone/复制即用，双击 `.bat` 就跑，不联网、不注册、不上传任何数据。
 - **本地面板**：浏览器打开 `http://127.0.0.1:8791/`，只监听回环地址。
 - **说真话**：面板上"有没有效"不是猜的，是读内核电源日志数出来的（见下文《有效性是实测的》）。
+- **数据和边界摊开写**：磁盘上每一个文件、每一个字段见 [PRIVACY.md](PRIVACY.md)；面板端口、提权、合成输入、没有代码签名这四件事的威胁模型见 [SECURITY.md](SECURITY.md)；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
 - **许可**：Apache-2.0。可商用、可修改、可闭源集成，自带专利授权；不授予任何商标或本项目名称的使用权（见下文《许可》）。
+
+版本号只有一个真源：`ka-core.ps1` 里的 `$script:KaVersion`（面板页脚、托盘提示、`/api/state` 读的都是它）。本文标题**不带**版本号，因为两份版本号写在一起迟早会互相打脸。
 
 ## 30 秒上手
 
@@ -87,7 +90,7 @@ SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED [| ES_DISPLAY_REQUIRE
 | 看门狗自启 | **非管理员也能装**：`New-ScheduledTaskTrigger -AtLogOn` 不加 `-User` 注册的是"任意用户登录"任务，那是管理员专属；范围收到当前用户就能装 | 踩过一次坑后修正并加测试 |
 | 路径含空格 / 中文 | 适配。全部脚本用 `$PSScriptRoot` 定位自己，不写死绝对路径 | 本机就在 `E:\claude code\防休眠`；GitHub 默认解压名 `防休眠-main (1)` 也验过 |
 | 无人值守时自启 | 适配。计划任务在"带空格 + 中文"的脚本路径上每 10 分钟自行触发， Last Task Result `0x0` | `ka.bat report` 实读 |
-| 复制两份目录 | 两份各自跑自己的 worker（单实例互斥体按目录哈希），**并且**本目录会点名"另有 N 个 worker 属于别的目录，这里停不掉" —— 不会因为扫不到就报"已停止、电脑会休眠" | 用临时目录起一个真 worker 双向验证 |
+| 复制两份目录 | **不再各跑一份**（这条改口是有原因的）：互斥体锁的是「数据根 + 用户 SID」，同一用户的两份目录解析出**同一个**互斥体名字，第二份撞车就退，不会留下两份谁也停不掉的电源请求。要真并行，得给其中一份 `KA_DATA` 指到别的目录（实测哈希随之改变） | 2026-09-04 实测：两个程序目录 → 同一个 `Local\KA-Worker-DCA86D0FFFB8`，另一进程持有时 `OpenExisting` 跨进程可见。**旧结论"两份各跑自己 worker、本目录点名另一份"是在数据目录还跟着脚本走时测的，已随阶段 1 作废**；对外来 worker 的点名代码还在（`foreignWorkers`），但"两份并行且互点名"这个场景没有重测，别当已验证 |
 | 其他语言的 Windows | `powercfg` 的输出只有标签是本地化的，GUID 和十六进制数不是。中英标签直接命中；其他语言靠缩进结构（当前交流/直流恰好缩进 4 空格、属性行 6 空格）；两条都对不上就返回**未知**，不再退回"前两个十六进制值" —— 那个旧兜底读到的其实是设置的 `最小/最大可能值`，会把所有超时都读成 0 | 夹具测试 3 项（中/英/其他标签 + 结构失效 + 与本机直查比对） |
 | S3（传统待机）机型、台式机 | 未实测。引擎一正是微软给这类机器的官方推荐用法，但本机的验证全部发生在 S0 现代待机上，`evidence` 读的事件 ID 在 S3 上不同 | —— |
 | PowerShell 7（`pwsh`） | 未实测（本机只有 5.1）。代码里没有 `Get-WmiObject`、`winmgmts`、COM 这些 PS7 已移除/易踩的写法，托盘走 `Add-Type -AssemblyName` 在 PS7 下可用；`.bat` 入口显式调 `powershell.exe`，所以 5.1 是保证 | 静态检查 + `tests/ka-syntax.ps1` |
@@ -99,20 +102,30 @@ SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED [| ES_DISPLAY_REQUIRE
 ka.bat / on.bat / off.bat / panel.bat / tray.bat     双击入口（ASCII 内容，纯转调 ka.ps1）
 └── ka.ps1          CLI：status start stop report check config guard unguard
                     log evidence serve stop-server tray requests lid
-    └── ka-core.ps1 共享库：电源请求、原生 API、powercfg 解析、进程发现、
-        │            原子 JSON、计划任务、日志、状态聚合（约 1250 行）
+    ├── ka-gate.ps1    语言模式闸门：CLM / AllSigned 下按代码 2 拒绝启动，不改本机任何东西
+    └── ka-core.ps1 共享库：电源请求、原生 API、powercfg 解析、进程发现、zh/en 词典、
+        │            原子 JSON、数据目录与迁移、计划任务、日志、状态聚合
         ├── ka-worker.ps1  保护本体。独立进程 + 命名互斥体，只写 state.json 和 ka.log
         ├── ka-guard.ps1   看门狗。计划任务载体，只做 intent↔实况对账
         ├── ka-server.ps1  本地 HTTP 面板（HttpListener，127.0.0.1）
+        ├── ka-lid.ps1     合盖动作读改还原（唯一需要管理员的路径）
         └── ka-tray.ps1    WinForms 托盘图标
 dashboard/          index.html + styles.css + app.js + i18n.js（原生 JS，无框架、无 CDN、无构建；i18n.js 是中英两套词典）
-tests/ka-tests.ps1  79 个行为测试，实机跑
+tests/ka-tests.ps1  82 个行为测试，实机跑
+tests/ka-encoding.ps1 / ka-syntax.ps1 / ka-privacy.ps1 / ka-privacy-mutation.ps1
+                    独立门禁：BOM + 纯 LF、可解析、不外传、以及"隐私门禁真的会红"
+tests/ka-release-files.ps1
+                    便携 zip 的文件清单——唯一真源，打包和探针都从它取，不再各自抄一份
+tests/probe-*.ps1   13 个实测探针：迁移、互斥体标识、CLM、下载标记(MOTW)、32 位 PowerShell、
+                    区域文化、布尔配置、保存默认值、原生编译、全新解压时的数据根，外加三个"自检"
+                    逐个跑法和本机判定见下方《独立门禁与实测探针》
+README.md / SECURITY.md / PRIVACY.md / CHANGELOG.md / LICENSE (Apache-2.0) / NOTICE
 ```
 
 进程之间不靠 PID 文件通信：
 
-- **谁是活的**：`Get-Process` + 命令行里的项目根路径匹配，外加 `.server.json` 记录的 pid/root 作为兜底。面板可以用相对路径启动、可以从别的目录启动，都能被发现和停掉。
-- **单实例**：`Local\KA-{Worker|Guard|Tray}-<sha256(项目根路径)[0..12]>` 命名互斥体。哈希里带根路径，所以同一台机器上复制两份目录互不干扰，各自管各自。
+- **谁是活的**：`Get-Process` + 命令行里的 `-DataDir`（归属判定的主键）；worker 没报告数据根时才退回脚本路径匹配，另有 `.server.json` 记录的 pid/root 兜底。**这一步刻意朝"是我的"失败**（`Test-KaOwnWorker`）：一个认不出归属的 worker 也算进来，因为"扫到一个都没有"在每个界面上都被读成"保护已停止"，那个误判比多算一个进程贵得多。
+- **单实例**：`Local\KA-{Worker|Guard|Tray}-<sha256(数据根 | 用户SID)[0..12]>`。锁的是**数据根 + 谁在用**，不是安装目录——一份 `state.json`、一份 `stop.flag` 天然只属于一个 worker。**2026-09-04 实测**：两个不同的程序目录解析出同一个 `Local\KA-Worker-DCA86D0FFFB8`，另一个进程持有它时 `OpenExisting` 当场可见。所以同一用户复制两份目录时，第二份会撞上互斥体并退出，而不是留下两份谁也停不掉的电源请求；带上 `KA_DATA` 指向另一个目录才会拿到另一个哈希（实测改变）。SID 进哈希是为了让多人共用一份安装时互不排队。
 - **状态真相**：`state.json` 是 worker 写的自述，但 `status` 只把它当成"锦上添花"——`Get-KaFullState` 里的 `$live` 判定要求真实进程存在才成立。
 - **想不想要保护**：`intent.json`。这是看门狗的唯一依据 —— 你 `stop` 了，它就不会在 10 分钟后自作主张把你刚关掉的保护又开起来（上一版就是这么惹恼用户的）。定时运行到期会被判定为 `expired`，不算"该保护却没保护"。
 - **写文件**：一律 write-then-move，读方永远看不到半截 JSON。
@@ -176,7 +189,9 @@ ka.bat unguard       # 不想要了就删掉
 
 ## 配置
 
-`config.json` 是唯一配置文件，改完下次 `start` 生效；如果 worker 正在跑且参数不同，会自动重启成新配置（面板上会提示）。所有值在使用前都会过校验和夹取（`Get-KaBounded`），非法值回落到默认而不是把系统设成最激进的读数。
+配置文件是 **`%LOCALAPPDATA%\KeepAwake\config.json`**（`ka.bat config` 会把它的全路径打印出来；`KA_DATA` 可改到别处）。它**不在脚本旁边**——脚本目录是程序，你的选择归数据目录，这样升级、换目录、开两份 clone 都不会互相踩配置。改完下次 `start` 生效；如果 worker 正在跑且参数不同，会自动重启成新配置（面板上会提示）。
+
+值在使用前一律过校验：数字过夹取（`Get-KaBounded`），枚举和布尔键在**写入端直接拒绝**并说明接受什么，**读取端宽容**——认不出的值回落到**该键自己的**默认值，绝不把缺失的数字夹到最小（0 和"没配过"是两件事）。布尔键手写成 `"false"` / `"off"` / `"否"` 都算假，`"true"` / `"1"` / `"yes"` / `"是"` 都算真；**写成别的会被拒绝**——PowerShell 的 `[bool]"false"` 是 True，这个坑不能留给你踩。文件里**只存与默认值不同的键**，所以升级改了某个默认值时，只要你没动过那个键，你就拿到新默认值。
 
 | 键 | 默认 | 取值 | 含义 |
 | --- | --- | --- | --- |
@@ -216,6 +231,22 @@ $env:KA_LANG = 'en'                 # 只影响当前这个进程，不动配置
 - `language` 在读写两端规则不同，是有意的：**写入端拒绝**（`ka.bat config -Set language=de` 与面板上点一个非法值都会报错，且不落盘），因为你刚打错的那个字符应该当场知道；**读取端宽容**（config.json 是手改的、从别的机器同步来的、上个版本写的，任何一种都不能让工具起不来，只能回落默认）。
 - 当前覆盖范围：**全部界面中英全量** —— 面板 `dashboard/i18n.js` 两套词典 459 个键；命令行 `status` / `report` / `check` / `start` / `stop` / `config` / `guard` / `serve` 等全部输出、托盘菜单与气泡、`ka.bat lid` 的合盖文案、看门狗与面板进程的控制台行，统一走服务端 zh/en 词典（缺键、占位符对不上、英文值里混进中文，测试直接失败）。两条兜底测试把成品抓在手里：把 `/api/state`（面板每 2 秒轮询的那个负载）按英文渲染后逐字符串叶子查汉字，以及真实跑一遍 `ka.ps1 status` 的英文输出逐行查汉字（两处都放行路径——项目目录名本身就是中文，而路径是你的数据不是我们的话术）。唯一的例外：`ka-guard-missing-core.txt` 那一行天生双语，因为它写下的前提是 `ka-core.ps1` 已经丢了、词典跟着一起丢了。
 - **`report` 与 `status` 只发数据，不发句子**：风险条目、建议理由、红色提醒条、同类软件名在 JSON 里长这样 —— `{"id":"report.risk.lid-hidden"}`、`{"id":"report.why.half-of-lock-timer","secs":180}`、`{"level":"bad","id":"alert.multiWorker","count":2}`、`{"id":"competitor.powerToys"}`。`id` 就是三本词典（服务端 zh、服务端 en、面板 i18n.js）里共同的键名，所以一条测试就能从**发出端**向外查覆盖：词典缺键、占位符少给了数、面板少写一行，都会在测试里失败，而不是等用户看到一个空句子。认不出的 `id` 显示成 `id` 本身（可 grep），不会显示成空白。代价是命令行不再"顺手 Write-Host 一句话"，好处是两种界面永远说同一套话。
+
+## 东西写在哪儿
+
+三个目录，各管各的事：
+
+| | 位置 | 里面是什么 |
+| --- | --- | --- |
+| **程序** | 脚本所在目录（`ka.bat config` 打印的 `program`） | 只有 `.ps1` / `.bat` / `dashboard/`。日志、配置、状态全在下面两处，所以整个目录可以随时替换、覆盖、升级。唯一可能出现在这里的是 `ka-guard-missing-core.txt`——`ka-core.ps1` 已经不在了、看门狗没法用正常途径报告时的最后一搏（那个目录也写不动就落到 `%TEMP%\KeepAwake-guard-missing-core.txt`） |
+| **数据（按用户）** | `%LOCALAPPDATA%\KeepAwake` | `config.json`、`intent.json`、`state.json`、`ka.log`（+轮转的 `ka.log.1`）、`machine.json`、`.server.json`、`stop.flag`、`.migrated.json` |
+| **数据（按机器）** | `%ProgramData%\KeepAwake` | 只有 `ka-lid-backup.json`——合盖动作的原值备份。它是**全机**设置，备份到按用户目录就会张冠李戴，所以单独放 |
+
+拆分是为"下载即用"服务的：程序目录是**可替换的**，你的选择是**要留下的**。`KA_DATA` 可把数据根改到别处，它设了就用——哪怕指到一个不可写的目录，也绝不偷偷换个地方写，因为探针和测试要求的就是那个目录。`%LOCALAPPDATA%` 本身取不到时才退到 `%TEMP%\KeepAwake`（记 `no-localappdata`）；取到了却不可写**没有兜底**，路径原样留着，好让每条消息都点得出失败的那个位置（面板红条 `alert.dataDirUnwritable`，`/api/state` 里的 `dataError`）。
+
+第一次以"数据目录独立"这个版本启动时，它会**把程序目录里已有的那几个文件复制**进 `%LOCALAPPDATA%\KeepAwake`（不是移动——原件留着），并把结论记进 `.migrated.json`。**已经存在的文件一律不覆盖**，冲突时跳过并在日志里留 `MIGRATE-SKIP files=... from=...`；哪个文件都没复制也没跳过，就不写这个标记。
+
+逐文件写的是什么字段、含不含个人信息、怎么一键擦干净：见 **[PRIVACY.md](PRIVACY.md)**。
 
 ## 本地面板
 
@@ -288,6 +319,37 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\ka-tests.ps1
 
 当前状态：**82 个 `It` 用例，最后一次全量实机运行为 2026-08-30（通过 82，失败 0，跳过 0）**。用例数与文件里 `grep -c "It '"` 的 82 一致，但"失败 0"是那一天那次运行的结果 —— 这一行新立的规矩对它自己同样成立：想引用当天状态就得当天跑一遍，跑不了就别替它说话。
 
+### 独立门禁与实测探针
+
+`tests/` 里除了 `ka-tests.ps1` 还有一批**各自独立、几秒到几分钟跑完、不碰这台机器的电源状态**的检查。它们不进套件是刻意的：有的要一份临时 clone，有的要第二个进程真的去抢互斥体，有的要把成品下载伪装成带 Web 标记的文件，有的要**短暂改坏 `ka-core.ps1` 再改回来**——这些都不该塞进一个"在正在工作的机器上随手跑跑看"的套件里。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\ka-encoding.ps1     # 也可 -Apply 补 BOM
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\probe-motw.ps1      # 探针同理
+```
+
+| 文件 | 钉住什么 | 2026-09-04 实跑末行 |
+| --- | --- | --- |
+| `ka-encoding.ps1` | 每个 `.ps1` 都是 UTF-8 **带 BOM** 且 **纯 LF**（`.gitattributes` 锁了 `*.ps1 eol=lf`） | `all scripts carry a UTF-8 BOM and are LF-only` |
+| `ka-syntax.ps1` | 递归解析每个 `.ps1`，只解析不执行；能看见自己 | `all files parse clean` |
+| `ka-privacy.ps1` | 成品里没有任何非回环 URL、没有未登记的联网 API、监听前缀全在回环、从不发 `Access-Control-*` | `PRIVACY GATE OK: ...` |
+| `ka-privacy-mutation.ps1` | 上面四条**真的会红**：往临时副本里各注入一个缺陷，要求逐个点名 | `MUTATION CHECK OK: all four privacy rules fire on injected defects` |
+| `ka-release-files.ps1` | **便携 zip 装了什么，只有一份清单**：探针读它，CI 打包也读它 | `-File` 直接跑会打印清单 |
+| `probe-native.ps1` | 从 `ka-core.ps1` 里按 AST 抠出内嵌 C#，用同一个 csc 真编译，并核对产品调用的 15 个成员都在 | `... compiles, exposes all 15 members the product calls, and answers when run` |
+| `probe-culture.ps1` / `-mutation.ps1` | 7 种区域设置下机器可读通道不变味（小数点、佛历、数字替换）；再把三处修复改回旧写法要求它变红 | `machine-readable output holds across 7 cultures` / `all 4 assertions are red on the reverted code and green on the shipped one` |
+| `probe-clm-gate.ps1` | CLM 闸门的三条腿：静态接线、真降级后按代码 2 干净拒绝、去掉闸门必须炸在 `Add-Type` 上 | `9 cases green now, 7 red without the gate, 6 entry points gated before ka-core` |
+| `probe-motw.ps1` / `-selftest.ps1` | 带 Zone.Identifier 的下载与不带的那份**输出逐行同形**，内嵌 C# 照样编译；`Expand-Archive` 实测不传播标记；自测用 CLM 注入一次真实阻塞证明它会红 | `a Zone-3 download of 23 files behaves exactly like an unmarked one...` / `catches a blocked native build on the marked leg and stays green when nothing is blocked` |
+| `probe-wow64.ps1` / `-selftest.ps1` | 32 位与 64 位 PowerShell 的逐项差分；自测注入一个假的 32 位分歧，要求差分点名它 | `32-bit and 64-bit PowerShell give 37 identical answers...` |
+| `probe-migrate.ps1` | 首次迁移：只填空缺、**永不覆盖**数据目录已有的文件 | `migration brings an old install forward without ever replacing a file the data root already has` |
+| `probe-config-value.ps1` | 布尔词表：`"false"`/`"off"`/`"否"` 是假，词表外的值被拒绝且不落盘 | `a hand-edited config.json means what the person who edited it wrote` |
+| `probe-fresh-data.ps1` | 按 zip 清单拼一份"刚下载的目录" + 空数据根，看首条命令到底写了什么、只读命令一个文件都不许多写 | `a fresh download runs, writes only what it is told to, survives a hand-mangled config.json, and shows one version` |
+| `probe-save-default.ps1` | 面板「存为默认」走真 HTTP、真进程、真文件：存它所显示的，拒它不能兑现的 | `存为默认 over HTTP stores what the form showed, and refuses what it cannot honour` |
+| `probe-mutex-identity.ps1` | 单实例互斥体锁的是**数据根 + SID**，不是安装目录；跨进程真的抢得到 | `the mutex keys on data root + SID, not on the install folder` |
+
+探针的脚手架要么写在仓库根的 `_tmp/`（gitignore 里，所以探针自己带 `-Force` 创建——全新 clone 时它并不存在），要么写在
+`%TEMP%` 下的独立目录里（`probe-native` / `probe-wow64` 的编译沙箱、`probe-culture-mutation` 捕获的子进程输出走这条）。总之内嵌
+C# 的 `.cs`、临时 clone、被改坏的副本都不会落在 `tests/` 旁边，中途被打断也不会留下第二份 `ka-core.ps1`。`probe-culture-mutation.ps1` 会**临时修改** `ka-core.ps1` 与 `ka-lid.ps1` 再逐字节还原，并在还原后用 md5 自查——如果它被打断，`git diff` 里会留下痕迹，别把那当成产品问题。
+
 ## 本机实测（2026-08-28，`ka.bat report` / `evidence` 原样输出）
 
 ```
@@ -317,7 +379,15 @@ ka.bat stop-server  # 关掉面板进程
 ka.bat lid -LidAction restore   # 若曾改过合盖动作，还原备份值
 ```
 
-之后删掉整个目录即可。它不留服务、不留驱动、不改电源计划、不写注册表策略。两个例外都是你明确下达过的命令：`ka.bat guard` 注册的那两个计划任务（`ka.bat unguard` 删除），以及 `ka.bat lid -LidAction apply` 对合盖动作的修改（自带备份，`restore` 还原）。
+然后删掉三处（后两处只在你用过对应功能时存在）：
+
+```powershell
+Remove-Item -LiteralPath "$env:LOCALAPPDATA\KeepAwake" -Recurse -Force   # 配置、日志、状态
+Remove-Item -LiteralPath "$env:ProgramData\KeepAwake" -Recurse -Force    # 合盖动作备份（改过才有）
+Remove-Item -LiteralPath "脚本目录" -Recurse -Force                        # 程序本身
+```
+
+它不留服务、不留驱动、不改电源计划、不写注册表策略。三个例外都是你明确下达过的命令：`ka.bat guard` 注册的那两个计划任务（`ka.bat unguard` 删除），`ka.bat lid -LidAction apply` 对合盖动作的修改（自带备份，`restore` 还原），以及上面那两个数据目录（**只删脚本目录不会带走它们**——配置和日志会留在 `%LOCALAPPDATA%` 里）。逐文件说明与更彻底的清理见 [PRIVACY.md](PRIVACY.md)。
 
 ## 常见问题
 

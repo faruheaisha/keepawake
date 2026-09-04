@@ -4,7 +4,7 @@
 
 *.bat  text eol=crlf
 *.cmd  text eol=crlf
-# .ps1 反过来锁 LF：仓库里每个脚本都是 UTF-8 BOM + LF，_tmp\probe-enc.ps1 见到 CRLF 就判失败。
+# .ps1 反过来锁 LF：仓库里每个脚本都是 UTF-8 BOM + LF，tests/ka-encoding.ps1 见到 CRLF 就判失败。
 # 写成 eol=crlf 的话，clone 出来的文件和这里被测过的文件就不是同一份东西了。
 *.ps1  text eol=lf
 
