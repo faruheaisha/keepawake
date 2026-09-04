@@ -302,7 +302,7 @@ public static class Native {
 # Captured while this file is being dot-sourced, so $PSScriptRoot is unambiguously
 # the project directory rather than whatever called into it.
 $script:KaProgramRoot = $PSScriptRoot
-$script:KaVersion = '3.0.0'
+$script:KaVersion = '1.0.0'
 $script:KaLogMaxBytes = 512KB
 $script:KaDataRoot = $null
 $script:KaDataError = $null
@@ -372,10 +372,19 @@ function Get-KaDataRoot { Initialize-KaDataRoot }
 function Initialize-KaMigration {
     <#
         First run after the upgrade: copy the files that used to live beside the scripts
-        into the data root. Copy, never move - the old clone has to keep working, the
-        history must survive a half-finished migration (so it can simply be redone), and
-        a move would delete the evidence the tests compare against. The marker is written
-        last, so an interrupted run migrates again.
+        into the data root. Two rules, and they are not symmetric:
+
+        * Copy, never move - the old clone has to keep working, the history must survive a
+          half-finished migration (so it can simply be redone), and a move would delete the
+          evidence the tests compare against.
+        * The data root wins. If the destination already exists, the file beside the scripts
+          is the older copy by definition - the tool has been writing to the data root since
+          it was installed there. Measured 2026-09-04: with -Force, extracting a new clone
+          over an install replaced a config.json the user had edited with whatever the zip
+          carried. A migration must never overwrite; it only fills gaps.
+
+        The marker is written last, so an interrupted run migrates again. Both lists are
+        recorded, because "we skipped it" is a fact someone needs later.
     #>
     $data = $script:KaDataRoot
     if (-not $data) { return $false }
@@ -383,11 +392,14 @@ function Initialize-KaMigration {
     if (Test-Path -LiteralPath $marker) { return $false }
     $from = Get-KaProgramRoot
     $copied = @()
+    $skipped = @()
     foreach ($name in @('config.json', 'machine.json', 'intent.json', 'state.json', 'ka.log', 'ka.log.1')) {
         $src = Join-Path $from $name
         if (-not (Test-Path -LiteralPath $src)) { continue }
+        $dst = Join-Path $data $name
+        if (Test-Path -LiteralPath $dst) { $skipped += $name; continue }
         try {
-            Copy-Item -LiteralPath $src -Destination (Join-Path $data $name) -Force -ErrorAction Stop
+            Copy-Item -LiteralPath $src -Destination $dst -ErrorAction Stop
             $copied += $name
         } catch { }
     }
@@ -403,7 +415,17 @@ function Initialize-KaMigration {
             $copied += 'ka-lid-backup.json'
         } catch { }
     }
-    Write-KaJson $marker @{ from = $from; copied = $copied; at = (Get-Date).ToString('o'); version = $script:KaVersion } -Depth 3 | Out-Null
+    if (-not $copied.Count -and -not $skipped.Count) {
+        # A fresh download has nothing beside the scripts, and a marker recording "nothing
+        # happened" is still a file that a read-only command created. Leave the data root
+        # exactly as it was; the next run asks again, which costs six Test-Path calls.
+        return $false
+    }
+    Write-KaJson $marker @{ from = $from; copied = $copied; skipped = $skipped;
+                            at = (Get-Date).ToString('o'); version = $script:KaVersion } -Depth 3 | Out-Null
+    if ($skipped.Count) {
+        Add-KaLog ("MIGRATE-SKIP files={0} from={1}" -f ($skipped -join ','), $from)
+    }
     return $true
 }
 
@@ -560,6 +582,14 @@ $script:KaConfigEnums = @{
     language       = @{ values = @('auto', 'zh', 'en'); default = 'auto' }
 }
 
+# Boolean keys in one place, with the words a person may hand-write for them. A [bool]
+# cast cannot be used to read any of this: in PowerShell every non-empty string is True,
+# so "false" would mean on. Both ends consult this list - the reader falls back to the key
+# default, the writer refuses and says what it accepts.
+$script:KaBoolKeys = @('keepDisplayOn', 'antiLock', 'awayMode', 'batteryAllowDisplayOff')
+$script:KaBoolWords = @('true', 'false', '1', '0', 'yes', 'no', 'on', 'off', '是', '否')
+$script:KaBoolTrue = @('true', '1', 'yes', 'on', '是')
+
 function Get-KaDefaultConfig {
     @{
         version                = 3
@@ -583,6 +613,10 @@ function Get-KaDefaultConfig {
 
 function Get-KaConfig {
     $cfg = Get-KaDefaultConfig
+    # $cfg is about to be overwritten by whatever config.json says, so hold on to the
+    # pristine defaults - a value nobody recognised has to fall back to *its own* key's
+    # default, not to some global one.
+    $defaults = Get-KaDefaultConfig
     $saved = Read-KaJson (Get-KaPath).config
     if ($saved) {
         foreach ($k in @($cfg.Keys)) {
@@ -605,11 +639,30 @@ function Get-KaConfig {
     $cfg.batteryFloorPercent = [int](Get-KaBounded $cfg.batteryFloorPercent 0 90 20)
     $cfg.logMaxKb = [int](Get-KaBounded $cfg.logMaxKb 64 20480 512)
     $script:KaLogMaxBytes = $cfg.logMaxKb * 1KB
-    $cfg.keepDisplayOn = [bool]$cfg.keepDisplayOn
-    $cfg.antiLock = [bool]$cfg.antiLock
-    $cfg.awayMode = [bool]$cfg.awayMode
-    $cfg.batteryAllowDisplayOff = [bool]$cfg.batteryAllowDisplayOff
+    foreach ($k in $script:KaBoolKeys) { $cfg[$k] = Get-KaBool $cfg[$k] $defaults[$k] }
     return $cfg
+}
+
+function Get-KaBool($Value, $Default) {
+    <#
+        Reading a config value as [bool]$value is wrong for anything a person typed:
+        PowerShell casts every non-empty string to True, so "keepDisplayOn": "false" in a
+        hand-edited config.json means *keep the screen on*, and "antiLock": "false" means
+        keep sending fake keystrokes to a machine whose owner just asked it to stop. Both
+        measured 2026-09-04. This tool writes real JSON booleans, so the strings only ever
+        arrive from a human or from an older file - and a mystery value must not be allowed
+        to choose a behaviour, which is the same rule Get-KaConfig applies everywhere else.
+    #>
+    if ($null -eq $Value) { return $Default }
+    if ($Value -is [bool]) { return $Value }
+    if ($Value -is [ValueType]) {
+        # A number from the file: zero is off, anything else is on.
+        try { return [bool]$Value } catch { return $Default }
+    }
+    $s = "$Value".Trim().ToLowerInvariant()
+    if ($script:KaBoolTrue -contains $s) { return $true }
+    if ($script:KaBoolWords -contains $s) { return $false }
+    return $Default
 }
 
 function Get-KaBounded($value, [double]$min, [double]$max, $fallback) {
@@ -640,15 +693,35 @@ function Set-KaConfig {
                 })
             }
             $v = $s
+        } elseif ($script:KaBoolKeys -contains $k) {
+            # The same vocabulary the reader uses, and a real boolean out of it: storing
+            # "off" because someone typed "off" would leave the trap in the file for the
+            # next reader, which is exactly what this branch is here to close.
+            $s = "$v".Trim().ToLowerInvariant()
+            if (($v -isnot [bool]) -and ($s -notin $script:KaBoolWords)) {
+                throw (Get-KaText 'config.enum' @{
+                    key      = $k
+                    allowed  = ($script:KaBoolWords -join ' | ')
+                    received = "$v"
+                })
+            }
+            $v = Get-KaBool $v $false
         }
         $clean[$k] = $v
     }
-    $cfg = Get-KaDefaultConfig
-    $saved = Read-KaJson (Get-KaPath).config
-    if ($saved) { foreach ($k in @($cfg.Keys)) { if ($null -ne $saved.$k) { $cfg[$k] = $saved.$k } } }
-    foreach ($k in $clean.Keys) { if ($cfg.ContainsKey($k)) { $cfg[$k] = $clean[$k] } }
-    $ok = Write-KaJson (Get-KaPath).config ([hashtable]$cfg) -Pretty
-    return $ok
+    # Write what will actually run (validated, clamped, normalised), and only the keys the
+    # user is really choosing. These defaults are measured numbers that later releases may
+    # change; a file that copies all of them would freeze this release's answers onto every
+    # future one, and "I never touched that key" would stop being true.
+    $defaults = Get-KaDefaultConfig
+    $effective = Get-KaConfig
+    foreach ($k in $clean.Keys) { if ($effective.ContainsKey($k)) { $effective[$k] = $clean[$k] } }
+    $out = @{ version = $defaults.version }
+    foreach ($k in @($effective.Keys)) {
+        if ($k -eq 'version') { continue }
+        if ($clean.ContainsKey($k) -or ("$($effective[$k])" -ne "$($defaults[$k])")) { $out[$k] = $effective[$k] }
+    }
+    return (Write-KaJson (Get-KaPath).config ([hashtable]$out) -Pretty)
 }
 
 function Get-KaOsUiLanguages {
@@ -985,6 +1058,7 @@ $script:KaUi = @{
         'cli.configWriteFail'           = '配置写入失败'
         'cli.saved'                     = '已保存。'
         'cli.configHead'                = '生效配置（config.json + 校验/夹取）'
+        'cli.configPath'                = '  配置文件  {path}'
         'cli.configHint'                = '  改动只有在下次 start 时生效；若已有 worker 在跑，参数不同会自动重启它。'
         'cli.guardInstalled'            = '看门狗已安装：开机登录自动启动保护（按 intent），每 10 分钟自检并拉起。'
         'cli.guardBootS4u'              = '开机任务 KeepAwake-Boot 已注册（S4U）：通电即保护，无需登录；登录前心跳不可用，只有"不睡眠"生效，登录后看门狗会把 worker 迁回桌面会话。'
@@ -1362,6 +1436,7 @@ $script:KaUi = @{
         'cli.configWriteFail'           = 'could not write the config'
         'cli.saved'                     = 'Saved.'
         'cli.configHead'                = 'Effective config (config.json + validation/clamping)'
+        'cli.configPath'                = '  config file: {path}'
         'cli.configHint'                = '  changes take effect on the next start; a running worker with different parameters restarts itself.'
         'cli.guardInstalled'            = 'Watchdog installed: protection auto-starts at logon (per intent) and self-checks every 10 minutes.'
         'cli.guardBootS4u'              = 'Boot task KeepAwake-Boot registered (S4U): protection starts at power-on, no logon needed. The heartbeat cannot work pre-logon - only the no-sleep request is active, and the watchdog adopts the worker into the desktop session once you log on.'

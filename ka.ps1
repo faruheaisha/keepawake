@@ -536,6 +536,7 @@ switch ($Action) {
         $cfg = Get-KaConfig      # after revalidation, so what is printed is what will run
         if ($Json) { Write-Host ($cfg | ConvertTo-Json -Depth 5); return }
         Write-Head (Get-KaText 'cli.configHead')
+        Write-Host (Get-KaText 'cli.configPath' @{ path = (Get-KaPath).config }) -ForegroundColor DarkGray
         foreach ($k in ($cfg.Keys | Sort-Object)) { Write-Kv $k "$($cfg[$k])" }
         Write-Host ''
         Write-Host (Get-KaText 'cli.configHint') -ForegroundColor DarkGray
