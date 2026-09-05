@@ -7,6 +7,12 @@
 # .ps1 反过来锁 LF：仓库里每个脚本都是 UTF-8 BOM + LF，tests/ka-encoding.ps1 见到 CRLF 就判失败。
 # 写成 eol=crlf 的话，clone 出来的文件和这里被测过的文件就不是同一份东西了。
 *.ps1  text eol=lf
+# Actions 的 YAML 锁 LF：tests/ka-workflow.ps1 解析的就是工作树里这几行，runner 上 checkout 出来的
+# 必须是同一份字节（这台机器 core.autocrlf=true，不锁的话默认落成就带 CR）。
+*.yml  text eol=lf
+# Inno 的 .iss 反过来给它一定吃得下的 CRLF：ISCC 是纯 Windows 工具，而这份脚本在本机一次都没编译过，
+# 第一次发布不该拿"应该没问题"去赌换行符。
+*.iss  text eol=crlf
 
 *.svg  text
 *.html text

@@ -34,12 +34,36 @@
   自动备份原值，失败时打印一条让管理员代跑的命令而不是假装成功。
 - 文档：`README.md`（含适配矩阵：哪些是**一台机器上实测**、哪些**只是推理**）、
   `SECURITY.md`、`PRIVACY.md`、`CHANGELOG.md`。
-- 测试：82 个行为测试跑真电源 API、真事件日志、真计划任务。另有四道**独立门禁**——
+- 测试：82 个行为测试跑真电源 API、真事件日志、真计划任务。另有五道**独立门禁**——
   `tests/ka-encoding.ps1`（BOM + 纯 LF）、`tests/ka-syntax.ps1`（能解析）、`tests/ka-privacy.ps1`（不外传）、
-  `tests/ka-privacy-mutation.ps1`（证明隐私门禁真的会红）；一份 zip 文件清单 `tests/ka-release-files.ps1`
-  （打包与探针共用，不再各抄一份）；以及 15 个 `tests/probe-*.ps1` 实测探针，各自独立、几分钟跑完、
-  不碰本机电源状态。其中四个是**自检**：往探针里注入一个真实缺陷，要求它点名变红——
-  只见过绿色的检查等于没做过检查。逐个判定记在 README《独立门禁与实测探针》。
+  `tests/ka-privacy-mutation.ps1`（证明隐私门禁真的会红）、`tests/ka-workflow.ps1`（`.github/workflows` 里
+  每个 `run:` 块能被 PowerShell 5.1 解析、YAML 里没有 tab 缩进）；一份文件清单 `tests/ka-release-files.ps1`
+  （zip / Inno 暂存 / 探针脚手架 / CI 发布校验共用，不再各抄一份）；`tests/ka-ci.ps1` 是本地与 CI 共用的
+  同一个入口；以及 17 个 `tests/probe-*.ps1` 实测探针，各自独立、几分钟跑完、
+  不碰本机电源状态。其中六个是**自检**：往被测对象里注入一个真实缺陷，要求它点名变红——
+  只见过绿色的检查等于没做过检查。红也必须看得懂：2026-09-05 一次扫描里 `probe-wow64` 红了一回
+  （32 位那腿的 `ka.ps1 check` 回 2、64 位回 0，紧挨着的前后两次都是绿的），而**当时无法判断原因**——
+  子进程说的话只存在两行之后就被删掉的临时文件里。现在它的失败行会把子进程的原话带出来，这条红
+  仍然挂着"原因未知"，下次再红就有证据。逐个判定记在 README《独立门禁与实测探针》。
+- 发布链路（阶段 5）：`packaging/build.ps1` 出 `dist/KeepAwake-<ver>-portable.zip`、`-Stage` 出 Inno 的
+  暂存目录、`-Sum` 出 `SHA256SUMS`；`-Smoke` 把做好的 zip 解压到临时目录、用系统自带 5.1 实跑
+  `status -Json`，核对退出码 / 版本 / `programRoot` / `dataRoot` / `dataError`，并要求**程序目录里一个文件都不许多**。
+  这个闸门被 `tests/probe-build-selftest.ps1` 证明会红：三种事故（数据根指回程序目录、入口脚本一跑就炸、
+  运行时往程序目录里写文件）在 2026-09-04 那次 42 秒的实跑里各红在自己那条断言上，未注入的那一棵保持绿。
+  2026-09-05 它又红了一次，这回是**我自己弄出来的回退**：把找编译器的逻辑抽成 `packaging/ka-iscc.ps1` 之后
+  `build.ps1` 加载了树里不存在的那个文件，四棵树一律红在同一句 `CommandNotFoundException` 上、连绿的那棵都不绿。
+  一次性树从此显式列出"build.ps1 会加载但不进 zip 的那几个文件"。
+  `packaging/KeepAwake.iss`（每用户、不提权、文件表从清单派生）在 2026-09-05 用本机装的 **Inno Setup 6.7.3**
+  第一次真编译通过（用户级安装，`/CURRENTUSER /VERYSILENT`，全程没要管理员）：`Successful compile (3.454 sec)`
+  → `dist\KeepAwake-1.0.0-setup.exe`，2.16 MB。第一次编译就抓到一个读不出来的缺陷——卸载回调写成了
+  `procedure InitializeUninstall()`，ISCC 回 `Invalid prototype for 'InitializeUninstall'` 并中止。
+  守这件事的换成了 `tests/probe-iss.ps1`（六条断言：原样字节和 CRLF 那份都要过、产物文件名要和 `release.yml`
+  找的一致、缺 `/DMyAppVersion` 必须被 `#error` 挡下、回调原型写错必须被拒，再加一条记录"Inno 6.7.3 看不出
+  漏写 `Result`"这个盲点——所以那行 `Result := True` 只有探针守得住）。找编译器的搜索顺序抽成
+  `packaging/ka-iscc.ps1` 一份，`build.ps1` 和探针共用，CI 装完 Inno 后还要用同一个函数再找一遍。
+  **还有两件事没验证**，各自的原因都写明：`setup.exe` 从未被执行安装过（卸载钩子会跑 `ka.ps1 unguard`，
+  它删的任务名是固定字符串 `KeepAwake-Guard` / `KeepAwake-Logon`，在本机会连带删掉用户留着的那两份停用任务），
+  `.github/workflows/`（`ci.yml` + 可复用 `build-test.yml` + `release.yml`）一次都没跑过——这个仓库还没有 git remote。
 
 ### 发布前实测修掉的缺陷
 
@@ -72,8 +96,8 @@
 
 ## 未发布 / 下一步
 
-- CI 一键 release（tag → 测试门禁 → zip → per-user 安装器 → `SHA256SUMS` → GitHub Release）与
-  winget 清单。
+- **把 release 真跑一次**：建仓 + 加 remote + 推 `v1.0.0` tag，看第一次 Actions 到底过不过，并验证
+  `setup.exe` 在真实 Inno 下的第一次编译（它在本机一次都没编过）。跑通之后再补 winget 清单。
 - README 面向下载者的安装章节 + 机器支持矩阵独立成页。
 - v1.1 候选：PID 绑定、`PowerCreateRequest`/`PowerSetRequest` 熄屏模式、全局热键、托盘预设、
   被守护应用、全屏自动释放、更多语言、更新检查（那会是这个工具第一次对外发请求，会写进 PRIVACY.md）。

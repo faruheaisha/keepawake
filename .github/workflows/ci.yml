@@ -1,0 +1,20 @@
+name: ci
+
+# Every push and every pull request runs exactly what a release runs, through the same file.
+# Tag pushes are deliberately absent: release.yml owns those and calls the same workflow.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    uses: ./.github/workflows/build-test.yml

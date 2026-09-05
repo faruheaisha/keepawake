@@ -112,14 +112,29 @@ ka.bat / on.bat / off.bat / panel.bat / tray.bat     双击入口（ASCII 内容
         └── ka-tray.ps1    WinForms 托盘图标
 dashboard/          index.html + styles.css + app.js + i18n.js（原生 JS，无框架、无 CDN、无构建；i18n.js 是中英两套词典）
 tests/ka-tests.ps1  82 个行为测试，实机跑
-tests/ka-encoding.ps1 / ka-syntax.ps1 / ka-privacy.ps1 / ka-privacy-mutation.ps1
-                    独立门禁：BOM + 纯 LF、可解析、不外传、以及"隐私门禁真的会红"
+tests/ka-encoding.ps1 / ka-syntax.ps1 / ka-privacy.ps1 / ka-privacy-mutation.ps1 / ka-workflow.ps1
+                    独立门禁：BOM + 纯 LF、可解析、不外传、"隐私门禁真的会红"、
+                    ".github/workflows 里每个 run: 块都能被 PowerShell 5.1 解析，且 YAML 没被 tab 毁掉"
+tests/ka-ci.ps1     一条命令跑完上面五个门禁 + 全部探针（CI 和本地用同一个入口，不分叉）
 tests/ka-release-files.ps1
-                    便携 zip 的文件清单——唯一真源，打包和探针都从它取，不再各自抄一份
-tests/probe-*.ps1   15 个实测探针：迁移、互斥体标识、CLM、下载标记(MOTW)、32 位 PowerShell、
+                    装了什么，只有一份清单——便携 zip、Inno 的暂存目录、探针拼的"刚下载的目录"、
+                    CI 发布的三件套，全都从这一个函数取，不再各自抄一份
+tests/probe-*.ps1   17 个实测探针：迁移、互斥体标识、CLM、下载标记(MOTW)、32 位 PowerShell、
                     区域文化、布尔配置、保存默认值、原生编译、全新解压时的数据根、面板句柄按端口分离，
-                    外加四个"自检"
+                    外加六个"自检"
                     逐个跑法和本机判定见下方《独立门禁与实测探针》
+packaging/build.ps1
+                    真正跑过的打包逻辑：按清单出 zip、校验 zip 里每个文件的字节数、
+                    解压实跑一遍（-Smoke）、出 staging、出 SHA256SUMS、调 Inno 出 setup.exe
+packaging/ka-iscc.ps1
+                    找 ISCC.exe 的唯一一份搜索顺序——build.ps1 和 probe-iss 都用它，
+                    不然会出现"打包找得到编译器、门禁说没装"
+packaging/KeepAwake.iss
+                    每用户安装的 Inno 脚本。本机 Inno Setup 6.7.3 **编译通过**（tests/probe-iss.ps1
+                    六条断言：两个注入的缺陷必须红、一个编译器抓不到的盲点必须还是绿）；**从未被执行过**——
+                    做出来的 setup.exe 没有在这台机器上装过。见《怎么出一次 release》
+.github/workflows/  ci.yml（push/PR）→ build-test.yml（装 Inno + 门禁 + 探针 + 套件 + 打包冒烟，可复用）
+                    release.yml（打 tag 即出三件套并发布）
 README.md / SECURITY.md / PRIVACY.md / CHANGELOG.md / LICENSE (Apache-2.0) / NOTICE
 ```
 
@@ -327,30 +342,63 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\ka-tests.ps1
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\ka-encoding.ps1     # 也可 -Apply 补 BOM
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\probe-motw.ps1      # 探针同理
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\ka-ci.ps1 -Gates -Probes
+                                                                             # 一次跑完五道门禁 + 全部探针
+                                                                             # （-Suite 是另一个入口，见上）
 ```
 
-| 文件 | 钉住什么 | 2026-09-04 实跑末行 |
+| 文件 | 钉住什么 | 最近一次本机实跑末行（2026-09-04，`probe-iss` 为 09-05） |
 | --- | --- | --- |
 | `ka-encoding.ps1` | 每个 `.ps1` 都是 UTF-8 **带 BOM** 且 **纯 LF**（`.gitattributes` 锁了 `*.ps1 eol=lf`） | `all scripts carry a UTF-8 BOM and are LF-only` |
 | `ka-syntax.ps1` | 递归解析每个 `.ps1`，只解析不执行；能看见自己 | `all files parse clean` |
 | `ka-privacy.ps1` | 成品里没有任何非回环 URL、没有未登记的联网 API、监听前缀全在回环、从不发 `Access-Control-*` | `PRIVACY GATE OK: ...` |
 | `ka-privacy-mutation.ps1` | 上面四条**真的会红**：往临时副本里各注入一个缺陷，要求逐个点名 | `MUTATION CHECK OK: all four privacy rules fire on injected defects` |
-| `ka-release-files.ps1` | **便携 zip 装了什么，只有一份清单**：探针读它，CI 打包也读它 | `-File` 直接跑会打印清单 |
+| `ka-workflow.ps1` | `.github/workflows/*.yml` 里每个 `run:` 块都能被 PowerShell 5.1 **解析**，且 YAML 缩进里没有 tab（Actions 会整个文件拒绝）。它抓不到的是 Actions 自己的求值器——那一层只有真跑 CI 才知道 | `every run: block parses as PowerShell 5.1 and no YAML indentation tabs were found` |
+| `ka-release-files.ps1` | **装了什么，只有一份清单**：便携 zip、Inno 暂存目录、探针的"刚下载目录"、CI 的发布校验都从它取 | `-File` 直接跑会打印清单 |
 | `probe-native.ps1` | 从 `ka-core.ps1` 里按 AST 抠出内嵌 C#，用同一个 csc 真编译，并核对产品调用的 15 个成员都在 | `... compiles, exposes all 15 members the product calls, and answers when run` |
 | `probe-culture.ps1` / `-mutation.ps1` | 7 种区域设置下机器可读通道不变味（小数点、佛历、数字替换）；再把三处修复改回旧写法要求它变红 | `machine-readable output holds across 7 cultures` / `all 4 assertions are red on the reverted code and green on the shipped one` |
 | `probe-clm-gate.ps1` | CLM 闸门的三条腿：静态接线、真降级后按代码 2 干净拒绝、去掉闸门必须炸在 `Add-Type` 上 | `9 cases green now, 7 red without the gate, 6 entry points gated before ka-core` |
 | `probe-motw.ps1` / `-selftest.ps1` | 带 Zone.Identifier 的下载与不带的那份**输出逐行同形**，内嵌 C# 照样编译；`Expand-Archive` 实测不传播标记；自测用 CLM 注入一次真实阻塞证明它会红 | `a Zone-3 download of 23 files behaves exactly like an unmarked one...` / `catches a blocked native build on the marked leg and stays green when nothing is blocked` |
-| `probe-wow64.ps1` / `-selftest.ps1` | 32 位与 64 位 PowerShell 的逐项差分；自测注入一个假的 32 位分歧，要求差分点名它 | `32-bit and 64-bit PowerShell give 37 identical answers...` |
+| `probe-wow64.ps1` / `-selftest.ps1` | 32 位与 64 位 PowerShell 的逐项差分（37 项）；自测注入一个假的 32 位分歧，要求差分点名它、注入关掉必须回到绿。**2026-09-05 记录一次没查清的红**：整套扫描里 32 位那腿的 `ka.ps1 check` 回了 2、64 位回 0，而它前面和后面各跑一次都是绿的——当时**没法知道它为什么红**，因为子进程说的话只存在于两行之后就被删掉的临时文件里。所以现在失败的那一行会把子进程的原话带出来（`KA_DIAG_*`，刻意不参与差分，内容里全是路径和时间）。这条红的原因仍然未知，下次再出现就有证据了 | `32-bit and 64-bit PowerShell give 37 identical answers...` |
 | `probe-migrate.ps1` | 首次迁移：只填空缺、**永不覆盖**数据目录已有的文件 | `migration brings an old install forward without ever replacing a file the data root already has` |
 | `probe-config-value.ps1` | 布尔词表：`"false"`/`"off"`/`"否"` 是假，词表外的值被拒绝且不落盘 | `a hand-edited config.json means what the person who edited it wrote` |
 | `probe-fresh-data.ps1` | 按 zip 清单拼一份"刚下载的目录" + 空数据根，看首条命令到底写了什么、只读命令一个文件都不许多写 | `a fresh download runs, writes only what it is told to, survives a hand-mangled config.json, and shows one version` |
 | `probe-save-default.ps1` | 面板「存为默认」走真 HTTP、真进程、真文件：存它所显示的，拒它不能兑现的 | `存为默认 over HTTP stores what the form showed, and refuses what it cannot honour` |
 | `probe-mutex-identity.ps1` | 单实例互斥体锁的是**数据根 + SID**，不是安装目录；跨进程真的抢得到 | `the mutex keys on data root + SID, not on the install folder` |
 | `probe-server-hint.ps1` / `-selftest.ps1` | 两个真面板两个真端口：句柄**按端口**各一份、停掉一个不许把另一个变成孤儿、端口还在应答就不许说"面板没有在运行"；自测分别退回修复前的两种写法（共享 `.server.json` + 退出即删 / 不探端口），要求各自红在自己的断言上 | `two panels hold two handles, stopping one leaves the other findable...` / `reverting either half of the fix turns this probe red on its own assertion, and the untouched mutant stays green` |
+| `probe-build-selftest.ps1` | 打包冒烟闸门 `build.ps1 -Smoke` **真的会红**：在 `_tmp` 里按清单搭三棵一次性树，分别注入"数据根指回程序目录"、"入口脚本一跑就炸"、"运行时往自己程序目录里写文件"，要求逐个红在自己那条断言上，没动过的那棵必须还是绿的。**2026-09-05 它抓到了我自己造成的回退**：把找编译器的逻辑抽成 `packaging/ka-iscc.ps1` 之后，`build.ps1` 加载了树里不存在的那个文件，四棵树一律红在同一句 `CommandNotFoundException` 上、绿的那棵也不绿了——这条探针不是装饰 | `each of the three broken artifacts turns the smoke red on its own assertion, and the intact one stays green` |
+| `probe-iss.ps1` | 真编译 `packaging/KeepAwake.iss`：原样字节和 CRLF 那份（`.gitattributes` 交给 clone 的形状）都要过；产物必须叫 `release.yml` 找的那个名字；不给 `/DMyAppVersion` 要被 `#error` 挡下；把卸载回调写成 `procedure` 要被拒（**这就是修复前的写法**）。最后一条是记录盲点：删掉 `Result := True` **照样编译**，所以那行只有这条探针守得住 | `6 assertions - ... refuses a build with no version and a callback with the wrong prototype, and records the one mistake the compiler will not catch for us`。没有 Inno 的机器上它打印 `PROBE SKIPPED` 并按 0 退出——"没跑"不说成"过了" |
 
 探针的脚手架要么写在仓库根的 `_tmp/`（gitignore 里，所以探针自己带 `-Force` 创建——全新 clone 时它并不存在），要么写在
 `%TEMP%` 下的独立目录里（`probe-native` / `probe-wow64` 的编译沙箱、`probe-culture-mutation` 捕获的子进程输出走这条）。总之内嵌
 C# 的 `.cs`、临时 clone、被改坏的副本都不会落在 `tests/` 旁边，中途被打断也不会留下第二份 `ka-core.ps1`。`probe-culture-mutation.ps1` 会**临时修改** `ka-core.ps1` 与 `ka-lid.ps1` 再逐字节还原，并在还原后用 md5 自查——如果它被打断，`git diff` 里会留下痕迹，别把那当成产品问题。
+
+### 怎么出一次 release
+
+三件套（`portable.zip` / `setup.exe` / `SHA256SUMS`）都由同一份清单产出，本地一条命令：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File packaging\build.ps1 -Stage -Smoke
+```
+
+产物落在 `dist/`，`SHA256SUMS` 是最后一步顺手算的（`-Sum` 可以只重算哈希，不重新打包）。`-ShowVersion` 只打印版本号就退出，CI 用它把 tag 和代码里的 `$script:KaVersion` 对起来。
+
+`-Smoke` 是这一步真正值钱的地方：它把刚做好的 zip 解压到 `_tmp` 下的独立目录，把 `KA_DATA` 指到一个**空的**临时数据根，用系统自带的 PowerShell 5.1 跑 `ka.ps1 status -Json`，然后要求——退出码 0、JSON 能解析、报回来的 `version` 就是这次打包的版本、`programRoot`/`dataRoot` 确实是我们递给它的那两个临时路径（不是 `%LOCALAPPDATA%`，也不是解压目录）、`dataError` 为空、**跑完之后程序目录里一个文件都没多**。这一条是"产品绝不往自己的安装目录写东西"这个承诺在发布链路上的复检。它自己被 `probe-build-selftest.ps1` 钉住了会红（见上表），所以下面这句话不是"我们写了个冒烟测试"，而是"这个冒烟测试被证明抓得住三种事故形状"。
+
+`setup.exe` 需要 Inno Setup 6。2026-09-05 在本机装了 **Inno Setup 6.7.3**（winget 下载、哈希由 winget 校验、`/CURRENTUSER /VERYSILENT` 装进 `%LOCALAPPDATA%\Programs\Inno Setup 6`，全程没有提权），`build.ps1 -Installer -Smoke` 第一次真编译过 `KeepAwake.iss`：`Successful compile (3.454 sec)`，出 `dist\KeepAwake-1.0.0-setup.exe`（2.16 MB）。以后这件事由 `tests/probe-iss.ps1` 守着，不再靠人读。
+
+编译确实抓到了一个**人读不出来**的缺陷：卸载回调写成了 `procedure InitializeUninstall()`，而 Inno 要求的是返回 Boolean 的 `function`——ISCC 的原文是 `Invalid prototype for 'InitializeUninstall'`，编译直接中止。同一次审查改掉的另外两处要靠分开说：`{commondesktop}` 换成 `{autodesktop}` 是**实测编译通过**的（每用户安装写不了"所有用户桌面"，那是安装时才炸的问题，ISCC 不管）；删掉一个还不存在的仓库 URL 更是任何编译器都无从判断的东西——这两处只有"读"这一道防线，说清楚免得下次误以为 ISCC 会替我们挡下来。
+
+编译器不在的时候 `-Installer` 也不会假装成功：本机实测退出码 1 + `Inno Setup 6 (or 7) is not installed here. …  the setup.exe is not optional in a release.`。少一个产物的 release 和一次失败的 release 是同一回事，所以这里没有"静默跳过"这个选项。
+
+还剩一块没验证的：**这个 setup.exe 从来没有被运行过**。装一遍会真改这台机器的开始菜单和 HKCU 卸载项，而卸载钩子会跑 `ka.ps1 unguard` —— `unguard` 删的计划任务名是固定字符串（`ka-core.ps1:2641` 的 `KeepAwake-Guard` / `KeepAwake-Logon`），跟数据根无关，所以在这台还留着（已停用）看门狗任务的机器上跑一次卸载测试，就会把用户那两份任务一起删掉。这个试验留给一次性虚拟机做，也就是 CI。找编译器这一步 `packaging/ka-iscc.ps1` 只有一份实现，`build.ps1` 和探针共用它，CI 装完之后还要用同一个函数再找一遍（机器级安装落在 `Program Files (x86)`，和本机这次的用户级路径不是同一个目录）。
+
+CI 侧两个 workflow：
+
+- `ci.yml`（push `main` / 每个 PR）复用 `build-test.yml`：先装 Inno Setup 并用 `Get-KaIscc` 复核找得到编译器（这样 `probe-iss` 在 CI 上永远不会走到"跳过"那个分支），再 `-Gates -Probes`，然后跑 `ka-tests.ps1` 全量行为套件（这一步在 GitHub 的临时 Windows runner 上跑，不动任何人的机器——这正是本地不允许随手跑它的那个理由），最后 `build.ps1 -Stage -Installer -Smoke`，把包含 `setup.exe` 的 `dist` 作为 artifact 上传。
+- `release.yml`（打 `v*` tag 或手动 dispatch）先 `needs: build-test`，再核对 tag 与 `-ShowVersion` 一致、`choco install innosetup`、`build.ps1 -Installer -Smoke`、**当场把 `dist` 里的文件数死锁为三件套并逐个拿 `SHA256SUMS` 重算比对**，然后建 GitHub Release 上传。
+
+要说清楚的：**这个仓库现在还没有配 git remote**（`git remote -v` 是空的），所以上面两个 workflow 从来没有执行过；`tests/ka-workflow.ps1` 能保证的只是每个 `run:` 块能被 5.1 解析、YAML 没有 tab 缩进，Actions 自己的求值器那一层只有真跑一次才知道。建仓、加 remote、推 `v1.0.0` tag 这三步是人的动作。`NOTICE` 里的 `https://github.com/<your-name>/keepawake` 也还留着占位符，等真实地址定了再填。
 
 ## 本机实测（2026-08-28，`ka.bat report` / `evidence` 原样输出）
 

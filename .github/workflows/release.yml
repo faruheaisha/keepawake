@@ -1,0 +1,156 @@
+name: release
+
+# Push a tag named v<version> and this publishes the release: it re-runs the exact checks ci.yml
+# runs, builds both artifacts from this commit, hashes them, and uploads them to a GitHub
+# Release. Nothing here is a step a person has to remember - including the tag/version match,
+# which is checked rather than assumed, because a release whose file name and product disagree
+# about the version is worse than no release.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    # A manual run has no tag. It publishes v<ka-core version> from this commit, which is what
+    # you want after a failed attempt: same version, same artifacts, no re-tagging.
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build-test:
+    uses: ./.github/workflows/build-test.yml
+
+  release:
+    needs: build-test
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: powershell     # in-box 5.1, same reason as build-test.yml
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tag and ka-core.ps1 must name the same version
+        run: |
+          $raw = powershell -NoProfile -ExecutionPolicy Bypass -File packaging\build.ps1 -ShowVersion
+          $ver = ($raw | Select-Object -Last 1).Trim()
+          if (-not $ver) { throw 'packaging\build.ps1 -ShowVersion printed nothing' }
+          $ref = '${{ github.ref }}'
+          if ($ref -like 'refs/tags/v*') {
+              $tag = $ref.Substring(10)
+              if ($tag -ne ('v' + $ver)) {
+                  Write-Host "refusing to publish: the tag says $tag, ka-core.ps1 says v$ver" -ForegroundColor Red
+                  exit 1
+              }
+          } else {
+              $tag = 'v' + $ver
+              Write-Host "triggered by $ref, so there is no tag to read - publishing $tag from this commit" -ForegroundColor Yellow
+          }
+          "KA_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+          "KA_TAG=$tag"     | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+          Write-Host "publishing $tag"
+
+      - name: Inno Setup
+        # The compiler is a separate tool, so it is installed here rather than assumed. If this
+        # step goes red the release stops with it: a release with only a zip in it is a silent
+        # half-delivery, and the reason -Installer throws instead of skipping is the same.
+        run: |
+          choco install innosetup -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "choco install innosetup exited $LASTEXITCODE" }
+
+      - name: Build both artifacts (zip + setup.exe + SHA256SUMS)
+        # -Installer implies -Stage, and -Smoke re-verifies the zip this job is about to publish,
+        # in this job, from these bytes - not the copy the other job happened to test.
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File packaging\build.ps1 -Installer -Smoke
+          if ($LASTEXITCODE -ne 0) { throw "packaging\build.ps1 exited $LASTEXITCODE" }
+
+      - name: The release carries three files and the hashes describe them
+        run: |
+          $want = @("KeepAwake-$env:KA_VERSION-portable.zip", "KeepAwake-$env:KA_VERSION-setup.exe", 'SHA256SUMS')
+          $got = @(Get-ChildItem dist -File | ForEach-Object { $_.Name })
+          $extra = @($got | Where-Object { $want -notcontains $_ })
+          $missing = @($want | Where-Object { $got -notcontains $_ })
+          if ($extra.Count -or $missing.Count) { throw "dist is not what a release should carry: extra=[$($extra -join ' ')] missing=[$($missing -join ' ')]" }
+          # Re-hash from disk. SHA256SUMS is written by the build; this checks the published
+          # bytes against it instead of trusting that nothing rewrote a file in between.
+          $lines = @{}
+          foreach ($l in [IO.File]::ReadAllLines((Join-Path 'dist' 'SHA256SUMS'))) {
+              if (-not $l.Trim()) { continue }
+              $kv = $l -split '\s+', 2
+              $lines[$kv[1].TrimStart('*')] = $kv[0].ToLowerInvariant()
+          }
+          $bad = @()
+          foreach ($f in @($got | Where-Object { $_ -ne 'SHA256SUMS' })) {
+              $h = (Get-FileHash -LiteralPath (Join-Path 'dist' $f) -Algorithm SHA256).Hash.ToLowerInvariant()
+              if (-not $lines.ContainsKey($f)) { $bad += "$f is not listed in SHA256SUMS" }
+              elseif ($lines[$f] -ne $h) { $bad += "$($f): SHA256SUMS says $($lines[$f]), the file is $h" }
+          }
+          foreach ($f in @($lines.Keys | Where-Object { $got -notcontains $_ })) { $bad += "SHA256SUMS names $f, which is not in dist" }
+          if ($bad.Count) { foreach ($b in $bad) { Write-Host "  FAIL $b" -ForegroundColor Red }; throw "$($bad.Count) hash problem(s)" }
+          Get-ChildItem dist -File | ForEach-Object { Write-Host ('  {0,10:N0} B  {1}' -f $_.Length, $_.Name) }
+
+      - name: Release notes
+        # Single-quoted lines throughout: inside a double-quoted PowerShell string the backtick
+        # is the escape character, so markdown's triple and double backticks quietly eat the
+        # closing quote. The version is substituted after the join rather than interpolated,
+        # because a comma binds tighter than the format operator and -f would swallow the rest
+        # of the array.
+        run: |
+          $t = @(
+            'Two ways to run it:',
+            '',
+            '- **`KeepAwake-@VERSION@-portable.zip`** - unzip it and double-click `panel.bat`. Nothing is installed and nothing is registered.',
+            '- **`KeepAwake-@VERSION@-setup.exe`** - per-user installer, no admin prompt, Start Menu entries for the dashboard and the tray.',
+            '',
+            'Check what you downloaded:',
+            '',
+            '```powershell',
+            'Get-FileHash .\KeepAwake-@VERSION@-portable.zip -Algorithm SHA256',
+            '```',
+            '',
+            'Compare that with `SHA256SUMS` (same format as `sha256sum`).',
+            '',
+            'This build is **not code-signed**. SmartScreen will warn the first time you run either',
+            'file, and Defender may flag an unsigned PowerShell launcher. `SECURITY.md` explains both',
+            'and why no certificate is in this release. `README.md` is the manual.',
+            '',
+            'Full history: `CHANGELOG.md`.'
+          ) -join "`n"
+          $t = $t.Replace('@VERSION@', $env:KA_VERSION)
+          $p = Join-Path $env:RUNNER_TEMP 'notes.md'
+          [IO.File]::WriteAllText($p, ($t + "`n"), (New-Object Text.UTF8Encoding($false)))
+          Get-Content $p
+
+      - name: Publish
+        run: |
+          $files = @("dist\KeepAwake-$env:KA_VERSION-portable.zip", "dist\KeepAwake-$env:KA_VERSION-setup.exe", 'dist\SHA256SUMS')
+          $notes = Join-Path $env:RUNNER_TEMP 'notes.md'
+          $extra = @()
+          if ($env:KA_VERSION -match '-') { $extra += '--prerelease' }
+          # Re-running a failed release is normal, so publish into an existing release rather
+          # than dying on it. --clobber replaces the files; the notes and title are re-set.
+          #
+          # The existence probe drops ErrorActionPreference on purpose: the Actions wrapper sets
+          # it to Stop, and in Windows PowerShell a native command that writes to stderr while
+          # redirected then throws instead of returning a non-zero code to branch on.
+          $eap = $ErrorActionPreference
+          $ErrorActionPreference = 'SilentlyContinue'
+          gh release view $env:KA_TAG *> $null
+          $seen = [int]$LASTEXITCODE
+          $ErrorActionPreference = $eap
+          if ($seen -eq 0) {
+              Write-Host "release $env:KA_TAG already exists - replacing its files and notes"
+              gh release upload $env:KA_TAG --clobber @files
+              if ($LASTEXITCODE -ne 0) { throw "gh release upload exited $LASTEXITCODE" }
+              gh release edit $env:KA_TAG --title "KeepAwake $env:KA_TAG" --notes-file $notes
+              if ($LASTEXITCODE -ne 0) { throw "gh release edit exited $LASTEXITCODE" }
+          } else {
+              gh release create $env:KA_TAG --title "KeepAwake $env:KA_TAG" --notes-file $notes --target '${{ github.sha }}' @extra
+              if ($LASTEXITCODE -ne 0) { throw "gh release create exited $LASTEXITCODE" }
+          }
+          gh release view $env:KA_TAG

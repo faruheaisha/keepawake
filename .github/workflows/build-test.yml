@@ -1,0 +1,67 @@
+name: build-test
+
+# The verification half of every pipeline, as a reusable workflow. ci.yml and release.yml both
+# call this file, so "what a release was checked against" can never drift from "what a push was
+# checked against" - the same reason the release manifest is one list.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      # In-box Windows PowerShell 5.1, not pwsh 7. This product ships to whatever
+      # C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe a user has, and a green run
+      # under a different engine would be measuring something nobody can install.
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Engine under test
+        run: 'Write-Host ("PowerShell {0} on {1}" -f $PSVersionTable.PSVersion, [Environment]::OSVersion.VersionString)'
+
+      - name: Inno Setup
+        # tests/probe-iss.ps1 compiles packaging\KeepAwake.iss for real. Without a compiler all it
+        # can say is SKIPPED, and then the one artifact a downloader double-clicks would still be
+        # unverified - so CI installs the compiler here and then checks that the build's own finder
+        # sees it. That second half matters: choco installs machine-wide under Program Files
+        # (x86), which is a different path from the per-user one the finder was first used on.
+        run: |
+          choco install innosetup -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "choco install innosetup exited $LASTEXITCODE" }
+          . packaging\ka-iscc.ps1
+          $iscc = Get-KaIscc
+          if (-not $iscc) { throw 'Inno Setup installed but Get-KaIscc does not find ISCC.exe - packaging\build.ps1 would fail on the same line, so fix the finder' }
+          Write-Host "  compiler: $iscc"
+
+      - name: Gates and probes
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\ka-ci.ps1 -Gates -Probes
+
+      - name: Suite
+        # The full tests\ka-tests.ps1. It is a runner's job precisely because it touches the
+        # machine - power settings, scheduled tasks, real workers - and a throwaway VM is the
+        # only place that is safe. If this step is red, the suite is wrong or the product is:
+        # fix one of them. Do not delete the step.
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\ka-ci.ps1 -Suite
+
+      - name: Package (zip + staging + setup.exe + smoke)
+        # -Installer here as well, so the artifact a developer downloads from a CI run is the same
+        # three files a release publishes. release.yml still re-builds and re-verifies in its own
+        # job: this zip was tested here, not there.
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File packaging\build.ps1 -Stage -Installer -Smoke
+
+      - name: What dist holds
+        run: Get-ChildItem dist -Recurse | Select-Object FullName, Length | Format-Table -AutoSize
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14

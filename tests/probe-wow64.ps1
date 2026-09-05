@@ -81,12 +81,27 @@ if ($Child) {
 
     # The three read-only CLI surfaces a downloader actually types, run the way the tool runs
     # them: as a separate -File process under the same bitness as the caller.
+    # KA_DIAG_* is not a measurement - it is what the child said, kept for the moment a red needs
+    # reading. On 2026-09-05 a sweep turned this probe red with "ka.ps1 check exit code differs by
+    # bitness: 64-bit=[0] 32-bit=[2]" and nothing else, because the only copy of the child's own
+    # words was a temp file deleted two lines later; the red was undiagnosable and the next run was
+    # green. Exit 2 has more than one cause (the language-mode gate, a bad argument, a refusal), and
+    # choosing between them by guessing is not verification. These keys are excluded from the
+    # differential by name below - their content mentions paths and timings that differ per leg.
     foreach ($cmd in 'status', 'check') {
         $p = Start-Process -FilePath (Join-Path $PSHome 'powershell.exe') -Wait -NoNewWindow -PassThru `
              -RedirectStandardOutput "$Tmp.$cmd.out" -RedirectStandardError "$Tmp.$cmd.err" `
              -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "' + (Join-Path $root 'ka.ps1') + '" ' + $cmd)
         $out["KA_EXIT_$cmd"] = KaValue { $p.ExitCode }
         $out["KA_ERRLEN_$cmd"] = KaValue { if (Test-Path -LiteralPath "$Tmp.$cmd.err") { ([IO.File]::ReadAllText("$Tmp.$cmd.err")).Trim().Length } else { 0 } }
+        $out["KA_DIAG_$cmd"] = KaValue {
+            $t = ''
+            foreach ($f in @("$Tmp.$cmd.out", "$Tmp.$cmd.err")) {
+                if (Test-Path -LiteralPath $f) { $t += [IO.File]::ReadAllText($f) } }
+            $one = (($t -replace '\r?\n', ' | ') -replace '\s+', ' ')
+            if ($one.Length -gt 300) { $one = $one.Substring(0, 300) }
+            $one
+        }
         Remove-Item -LiteralPath "$Tmp.$cmd.out", "$Tmp.$cmd.err" -Force -ErrorAction SilentlyContinue
     }
     $rp = Start-Process -FilePath (Join-Path $PSHome 'powershell.exe') -Wait -NoNewWindow -PassThru `
@@ -148,9 +163,11 @@ if ($b.Map['KA_PTR'] -ne '4') { $bad += "the WOW64 leg reports IntPtr.Size=$($b.
 Write-Output ('  legs: 64-bit ptr=' + $a.Map['KA_PTR'] + ' ps=' + $a.Map['KA_PSVER'] + ' | 32-bit ptr=' + $b.Map['KA_PTR'] + ' ps=' + $b.Map['KA_PSVER'])
 
 # Keys whose value is allowed to differ because it *is* the bitness or the path it implies.
+# KA_DIAG_* is the second kind: prose from a child process, compared for nothing.
 $diffOk = @('KA_BIT', 'KA_PTR', 'KA_PSHOME')
 foreach ($k in $a.Map.Keys) {
     if ($diffOk -contains $k) { continue }
+    if ($k -like 'KA_DIAG_*') { continue }
     if (-not $b.Map.ContainsKey($k)) { $bad += "32-bit leg never reported $k" ; continue }
     if ($a.Map[$k] -ne $b.Map[$k]) { $bad += "$k differs: 64-bit=[$($a.Map[$k])] 32-bit=[$($b.Map[$k])]" }
 }
@@ -161,7 +178,10 @@ if ($a.Map['KA_NATIVE'] -ne 'loaded') { $bad += "Add-Type did not compile Ka.Nat
 if ($a.Map['KA_POWERCFG'] -ne 'resolves-to-existing-exe') { $bad += "powercfg did not resolve in the baseline leg" }
 if ($a.Map['KA_ES_APPLY'] -ne 'call-ok' -or $a.Map['KA_ES_CLEAR'] -ne 'call-ok') { $bad += 'SetThreadExecutionState round trip failed in the baseline leg' }
 foreach ($c in 'status', 'check', 'report') {
-    if ($a.Map["KA_EXIT_$c"] -ne $b.Map["KA_EXIT_$c"]) { $bad += "ka.ps1 $c exit code differs by bitness" }
+    if ($a.Map["KA_EXIT_$c"] -ne $b.Map["KA_EXIT_$c"]) {
+        # Name the cause in the same line, or the next person to see this red has nothing to read.
+        $bad += "ka.ps1 $c exit code differs by bitness (32-bit said: $($b.Map["KA_DIAG_$c"]))"
+    }
 }
 if ($a.Map['KA_ERRLEN_status'] -ne '0' -or $a.Map['KA_ERRLEN_check'] -ne '0') { $bad += 'a CLI leg wrote to stderr in the baseline (an error record leaked to the console)' }
 
@@ -175,4 +195,6 @@ if (-not (Test-Path -LiteralPath $nat)) { $bad += "System32 powershell.exe is mi
 
 foreach ($m in $bad) { Write-Output ('  FAIL ' + $m) }
 if ($bad) { Write-Output ('PROBE FAILED: ' + $bad.Count + ' problem(s)'); exit 1 }
-Write-Output ('PROBE OK: 32-bit and 64-bit PowerShell give ' + $a.Map.Count + ' identical answers; the guard action still names a real System32 binary')
+# The diagnostic prose is not an answer, so it does not belong in the count this line reports.
+$n = @($a.Map.Keys | Where-Object { $_ -notlike 'KA_DIAG_*' }).Count
+Write-Output ('PROBE OK: 32-bit and 64-bit PowerShell give ' + $n + ' identical answers; the guard action still names a real System32 binary')

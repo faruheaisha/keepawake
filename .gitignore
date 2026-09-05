@@ -18,6 +18,10 @@ config.json
 # 而不是把 40 个 probe-*.ps1 当产品发布。
 /_tmp/
 
+# 打包产物：zip、给 Inno 用的 staging、SHA256SUMS 全都能从 tests/ka-release-files.ps1 现生成。
+# 提交它等于把"某一次构建的结果"当成源码，下次构建忘了重跑就永远发的是旧那份。
+/dist/
+
 # 本机合盖动作的原值备份。换一台机器它就是错的，跟着 clone 走会让别人
 # 的 "lid restore" 还原一个他机器上从来没存在过的设置。
 ka-lid-backup.json

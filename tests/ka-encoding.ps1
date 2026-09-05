@@ -21,7 +21,12 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 
 $targets = @(Get-ChildItem -LiteralPath $root -Filter '*.ps1' -File | ForEach-Object { $_.FullName })
-$targets += @(Get-ChildItem -LiteralPath (Join-Path $root 'tests') -Filter '*.ps1' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+# packaging/build.ps1 runs on the same Windows PowerShell 5.1 as the product, so the same byte
+# shape is required of it. _legacy/ keeps the shape its own files had, and _tmp/ is scratch that
+# does not even exist in a fresh clone - neither is a shipped surface and neither is scanned.
+foreach ($d in @('tests', 'packaging')) {
+    $targets += @(Get-ChildItem -LiteralPath (Join-Path $root $d) -Filter '*.ps1' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+}
 
 $missing = @()
 foreach ($f in ($targets | Sort-Object -Unique)) {
