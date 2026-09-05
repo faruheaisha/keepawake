@@ -98,3 +98,11 @@ Remove-Item -LiteralPath "$env:ProgramData\KeepAwake" -Recurse -Force   # 仅当
 
 删完这两个目录，这个工具在这台机器上就没有留下任何它自己写下的东西了。不需要"撤销同意"、没有云端残留、
 没有注册表策略、没有服务、没有驱动。
+
+上面是**便携包**的口径。用 `setup.exe` 装过的机器上另有两处痕迹，都由 Inno 而不是本工具的代码写下：
+`%APPDATA%\Microsoft\Windows\Start Menu\Programs\KeepAwake`（开始菜单那五项，桌面快捷方式是你勾了才有）
+和 `HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall` 下以 AppId `{8B7C1F4E-2D9A-4C3B-9E57-6A18D3F0C4B2}`
+开头、后缀 `_is1` 的那一条（"已安装的应用"里看到的正是它）。**走一次正常卸载会把这两处一起带走**，跳过卸载
+直接删程序目录就会留下它们——而卸载本身**不碰**上面那两个数据目录。这一段的分量要看清：它是照
+`packaging/KeepAwake.iss` 加 Inno 自己的命名规则读出来的，那个 `setup.exe` 到目前为止**没有在任何机器上运行过**，
+所以键名与快捷方式路径属于"按文档推"，不属于"本机实测"。

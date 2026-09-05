@@ -2,8 +2,9 @@
 
 让 Windows 在 AI 编程（vibe coding）、长任务、远程无人值守时**不休眠、不熄屏、不锁屏**。
 
-- **零依赖**：只需要 Windows 自带的 PowerShell 5.1，没有安装步骤、没有运行库。普通账户即可运行（唯一例外是可选的改合盖动作，那需要管理员）。
+- **零依赖**：只需要 Windows 自带的 PowerShell 5.1，没有运行库、没有后台服务，便携包解压就能跑。普通账户即可（唯一例外是可选的改合盖动作，那需要管理员）。
 - **免登录**：clone/复制即用，双击 `.bat` 就跑，不联网、不注册、不上传任何数据。
+- **两条分发路径**：便携 zip（23 个文件，解压即用）或每用户 `setup.exe` + `SHA256SUMS`。安装器**编译通过但从未在真机上装过**，这条声明就写在那一节里；怎么核对哈希、第一次运行 Windows 会说什么，见《拿到 release 之后》。
 - **本地面板**：浏览器打开 `http://127.0.0.1:8791/`，只监听回环地址。
 - **说真话**：面板上"有没有效"不是猜的，是读内核电源日志数出来的（见下文《有效性是实测的》）。
 - **数据和边界摊开写**：磁盘上每一个文件、每一个字段见 [PRIVACY.md](PRIVACY.md)；面板端口、提权、合成输入、没有代码签名这四件事的威胁模型见 [SECURITY.md](SECURITY.md)；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
@@ -41,6 +42,85 @@ ka.bat status        # 状态 / 已运行多久 / 心跳发了几次 / 电源请
 ka.bat evidence      # 内核电源日志：最近 N 小时到底待机过几次（默认 24）
 ka.bat requests      # powercfg /requests（这条需要管理员，能直接看到我们的请求登记上了）
 ```
+
+## 拿到 release 之后（下载、校验、装、第一次跑）
+
+一次 release 是三个文件，都由同一份清单（`tests/ka-release-files.ps1`）产出：
+
+| 文件 | 是什么 | 什么时候选它 |
+| --- | --- | --- |
+| `KeepAwake-<ver>-portable.zip` | 23 个文件，解压到任意目录就能用 | 拷 U 盘、只给一台机器、不想让任何东西"安装"进系统 |
+| `KeepAwake-<ver>-setup.exe` | 同一份清单编出来的**每用户**安装器（Inno Setup 6） | 想要开始菜单项、想在"已安装的应用"里能看到并卸载 |
+| `SHA256SUMS` | 上面两个的 SHA-256，`sha256sum` 的文本格式 | 两个都下完之后**先跑它** |
+
+清单只有一份，所以安装器和便携包不可能对"产品到底是哪些文件"各执一词——这正是探针当年各抄一份列表时踩过的坑。
+
+### 先核对哈希
+
+`SHA256SUMS` 每行是 `<64位十六进制><两个空格><文件名>`。把三个文件放在同一个目录里，在那个目录跑：
+
+```powershell
+$sums = @{}
+foreach ($l in Get-Content .\SHA256SUMS) { if ($l -match '^([0-9a-f]{64})  (.+)$') { $sums[$matches[2].Trim()] = $matches[1] } }
+foreach ($f in @(Get-ChildItem -File | Where-Object { $_.Name -ne 'SHA256SUMS' })) {
+    $h = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($sums[$f.Name] -eq $h) { 'OK       ' + $f.Name }
+    else { 'MISMATCH ' + $f.Name + ' - SHA256SUMS says [' + $sums[$f.Name] + '] the file is [' + $h + ']' }
+}
+foreach ($n in $sums.Keys) { if (-not (Test-Path -LiteralPath $n)) { 'MISSING  ' + $n + ' - named by SHA256SUMS but not here' } }
+```
+
+**2026-09-05 在本机对真产物跑过**：对这次构建出的 zip 和 setup.exe 都印 `OK`；把 zip 副本中间一个字节翻掉，它印 `MISMATCH KeepAwake-1.0.0-portable.zip - SHA256SUMS says [...] the file is [...]`；把 `SHA256SUMS` 留着而把那个文件从目录里拿走，它印 `MISSING KeepAwake-1.0.0-setup.exe - named by SHA256SUMS but not here`。两个红分支都亲自踩过，这段粘贴才值钱。
+
+哈希回答的是"这份文件和我发布的那份是否一致"，它**不**回答"这份文件是谁编译的"——后者要代码签名，v1.0 明确没有，理由和后果都写在 [SECURITY.md](SECURITY.md)《没有代码签名》。
+
+### 第一次运行，Windows 大概会先说两句
+
+- **SmartScreen**：未签名的 `setup.exe` 首次运行会弹"Windows 已保护你的电脑 → 仍要运行"，浏览器也可能提示"典型的下载文件 / 不常见"。这一段是**照微软的公开行为写的，不是本机截图**——我们没有把产物传上网再下载回来点它，而弹窗文字取决于微软那边的信誉库，本机复现不出来。
+- **下载标记（MOTW）**：从浏览器/IM 存下来的文件带 `Zone.Identifier`。这一半是实测的：带标记的下载和不带标记的那份**输出逐行同形**，内嵌 C# 照样编译（`tests/probe-motw.ps1`，见《独立门禁与实测探针》）。`Expand-Archive` 实测不传播标记。
+- **真被策略锁住**：企业机器上的 WDAC / AppLocker / 智能应用控制会让 PowerShell 进入 ConstrainedLanguage。这时六个入口都会在加载库之前按**代码 2** 干净退出，打印三行说明（zh/en，跟你 Windows 的显示语言走），并且**对本机什么都没做**。这条既不是安装失败也不是崩溃，是刻意设计成看得懂的拒绝（`tests/probe-clm-gate.ps1` 三条腿实测）。
+
+### 便携包：解压，双击
+
+解压到任意目录（`C:\Tools\KeepAwake`、`D:\某处`、桌面都行，含空格和中文的路径实测可用），双击 `on.bat` 或 `panel.bat`，就是《30 秒上手》那一套。没有"安装"这一步，也没有卸载：程序目录里的东西全是文本，删掉目录就没了；你的配置和日志在 `%LOCALAPPDATA%\KeepAwake`，**不会**跟着程序目录一起消失（这是设计，见《东西写在哪儿》）。升级 = 用新的 zip 覆盖同一个目录（数据目录不参与其中，覆盖是安全的）。
+
+### 安装版：`setup.exe`
+
+**先说清楚这一段的分量**：`KeepAwake.iss` 在 2026-09-05 第一次被真编译器编译通过（本机 Inno Setup 6.7.3，`Successful compile (3.454 sec)`），产物 `setup.exe` 就躺在 `dist/` 里；但它**从未在任何机器上被执行安装过**。下面每一条都是照着脚本读的，不是照着安装器跑出来的——所以它比上面那节可信度低一级，装出问题请回来对这段话。
+
+读得出来的事实：
+
+- 每用户安装，`PrivilegesRequired=lowest`，目标目录写死 `{localappdata}\Programs\KeepAwake`——**不弹 UAC、不碰 Program Files**，也不提供"以管理员身份为所有用户安装"的选项（提权装到某个人的 profile 里是错的，所以这个选项根本没开）。
+- 开始菜单五项：`KeepAwake - Dashboard`、`- Tray`、`- Protect`、`- Release`、`Uninstall KeepAwake`；桌面快捷方式是一个可勾可去的向导选项（`desktopicon`），指向 Dashboard——它的默认勾选状态属于"跑一次安装器才知道"的那类事，这里不猜。
+- 卸载钩子在删文件**之前**跑 `ka.ps1 stop-server`、`stop`、`unguard`：面板进程、worker 电源请求、看门狗计划任务都不该留成孤儿，而 `unguard` 必须最后跑（那个计划任务指向已经删掉的脚本，会在每次登录时失败一次）。就算这三条都不成功，卸载照样完成——被"无法卸载"困住比留一个孤儿任务更糟，安装日志里留了那一行。
+- **卸载不删数据目录**：`%LOCALAPPDATA%\KeepAwake`（配置、日志、历史）原地留着。那是你机器上"保护到底做了什么"的唯一记录，我们不替你删。要彻底干净，手动删，命令在《卸载 / 恢复原状》。
+- 安装器复制进去的脚本不带 MOTW，所以装了的人不会遇到便携包用户可能遇到的那一步。
+
+### 第一次跑什么
+
+```powershell
+ka.bat check      # 本机环境适配报告：这台机器能压住什么、压不住什么
+ka.bat status     # 保护有没有真的在跑
+ka.bat evidence   # 内核电源日志：最近 24 小时真待机过几次
+```
+
+`check` 是真机读数，不是"应该没问题"。本机 2026-09-05 的输出（`KA_DATA` 指到一个空的临时数据根跑的，所以没动这台机器真正的数据；整份报告 27 行，下面是**节选**，抄下来的每一行都原样未改）：
+
+```
+== 本机环境适配报告
+  系统              Microsoft Windows 11 家庭版 中文版 10.0.26200 build 26200
+  PowerShell        5.1.26100.9168
+  电源              交流电（电池 100%）
+  机器类型          笔记本（有电池）
+  睡眠状态          S0现代待机=True  S3传统待机=False  休眠=False
+  计划熄屏          交流 10 分钟 / 电池 3 分钟
+  合盖动作          交流 0 / 电池 0（0=不采取任何操作）
+  风险提示:
+    - 本机为 S0 现代待机（Modern Standby）：SetThreadExecutionState 可抑制空闲待机，但合盖、电池耗尽或平台策略仍可能强制进入待机。
+    - 启用了快速启动/混合睡眠：关机并非完全断电，唤醒行为可能异常。
+```
+
+**换新机器第一件事就是重跑 `ka.bat check`**：`machine.json` 记的是**这台机器**的事实，跟着 clone 走会让下一台机器拿着别人的电源计划做判断。
 
 ## 它是怎么做到的（双引擎）
 
@@ -400,6 +480,8 @@ CI 侧两个 workflow：
 
 要说清楚的：**这个仓库现在还没有配 git remote**（`git remote -v` 是空的），所以上面两个 workflow 从来没有执行过；`tests/ka-workflow.ps1` 能保证的只是每个 `run:` 块能被 5.1 解析、YAML 没有 tab 缩进，Actions 自己的求值器那一层只有真跑一次才知道。建仓、加 remote、推 `v1.0.0` tag 这三步是人的动作。`NOTICE` 里的 `https://github.com/<your-name>/keepawake` 也还留着占位符，等真实地址定了再填。
 
+这一节只管**怎么出**一次 release。**拿到** release 的人看到什么、怎么核对、两条路径各自怎么装和卸，在《拿到 release 之后》。
+
 ## 本机实测（2026-08-28，`ka.bat report` / `evidence` 原样输出）
 
 ```
@@ -421,6 +503,8 @@ PowerShell: 5.1.26100.9168
 这是现代待机平台 + OEM 电源管理的已知行为，不是设置错误，改电源计划治不好。`ES_SYSTEM_REQUIRED` 能压住空闲待机，压不住合盖和平台强制策略 —— 所以无人值守时请保持开盖（或用 `ka.bat lid -LidAction apply` 明确改掉合盖动作）。
 
 ## 卸载 / 恢复原状
+
+用 `setup.exe` 装过的人：先在"已安装的应用"（或开始菜单那项 `Uninstall KeepAwake`）里卸载——它会先跑 `stop-server` / `stop` / `unguard`，再把程序目录带走。数据目录它**不删**，所以下面那几条删数据目录的命令对这条路径同样适用。便携包用户从下面这四条开始：
 
 ```powershell
 off.bat             # 或 ka.bat stop：停止保护，电源请求随进程消失
