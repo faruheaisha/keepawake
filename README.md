@@ -4,7 +4,7 @@
 
 - **零依赖**：只需要 Windows 自带的 PowerShell 5.1，没有运行库、没有后台服务，便携包解压就能跑。普通账户即可（唯一例外是可选的改合盖动作，那需要管理员）。
 - **免登录**：clone/复制即用，双击 `.bat` 就跑，不联网、不注册、不上传任何数据。
-- **两条分发路径**：便携 zip（23 个文件，解压即用）或每用户 `setup.exe` + `SHA256SUMS`。安装器**编译通过但从未在真机上装过**，这条声明就写在那一节里；怎么核对哈希、第一次运行 Windows 会说什么，见《拿到 release 之后》。
+- **两条分发路径**：便携 zip（23 个文件，解压即用）或每用户 `setup.exe` + `SHA256SUMS`。安装器**在本机真装真卸过**（2026-09-05，`packaging/ka-test-install.ps1` 一轮 20 条断言全绿，同一份脚本现在是 CI 的一步），数字在那一节里；怎么核对哈希、第一次运行 Windows 会说什么，见《拿到 release 之后》。
 - **本地面板**：浏览器打开 `http://127.0.0.1:8791/`，只监听回环地址。
 - **说真话**：面板上"有没有效"不是猜的，是读内核电源日志数出来的（见下文《有效性是实测的》）。
 - **数据和边界摊开写**：磁盘上每一个文件、每一个字段见 [PRIVACY.md](PRIVACY.md)；面板端口、提权、合成输入、没有代码签名这四件事的威胁模型见 [SECURITY.md](SECURITY.md)；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
@@ -86,15 +86,29 @@ foreach ($n in $sums.Keys) { if (-not (Test-Path -LiteralPath $n)) { 'MISSING  '
 
 ### 安装版：`setup.exe`
 
-**先说清楚这一段的分量**：`KeepAwake.iss` 在 2026-09-05 第一次被真编译器编译通过（本机 Inno Setup 6.7.3，`Successful compile (3.454 sec)`），产物 `setup.exe` 就躺在 `dist/` 里；但它**从未在任何机器上被执行安装过**。下面每一条都是照着脚本读的，不是照着安装器跑出来的——所以它比上面那节可信度低一级，装出问题请回来对这段话。
+**先说清楚这一段的分量**：`KeepAwake.iss` 在 2026-09-05 第一次被真编译器编译通过（本机 Inno Setup 6.7.3，`Successful compile (3.454 sec)`），**同一天的晚些时候第一次真的装上了又卸掉**：`packaging/ka-test-install.ps1 -WithWorker` 静默装进 `%TEMP%` 下一个新目录、用装好的那份起一次保护、再跑真卸载器，**一轮 20 条断言全绿**；这个循环本机后来反复跑过，每一遍该绿的都绿到同一句 `PROBE OK`，两个突变（就在本节下面）各红在自己那一条断言上。所以下面这些是跑出来的，不是读出来的。三处仍然只是读出来的，写在最后。
 
-读得出来的事实：
+跑出来的事实（每一条都是那 20 条断言之一，命令在上面）：
 
-- 每用户安装，`PrivilegesRequired=lowest`，目标目录写死 `{localappdata}\Programs\KeepAwake`——**不弹 UAC、不碰 Program Files**，也不提供"以管理员身份为所有用户安装"的选项（提权装到某个人的 profile 里是错的，所以这个选项根本没开）。
-- 开始菜单五项：`KeepAwake - Dashboard`、`- Tray`、`- Protect`、`- Release`、`Uninstall KeepAwake`；桌面快捷方式是一个可勾可去的向导选项（`desktopicon`），指向 Dashboard——它的默认勾选状态属于"跑一次安装器才知道"的那类事，这里不猜。
-- 卸载钩子在删文件**之前**跑 `ka.ps1 stop-server`、`stop`、`unguard`：面板进程、worker 电源请求、看门狗计划任务都不该留成孤儿，而 `unguard` 必须最后跑（那个计划任务指向已经删掉的脚本，会在每次登录时失败一次）。就算这三条都不成功，卸载照样完成——被"无法卸载"困住比留一个孤儿任务更糟，安装日志里留了那一行。
-- **卸载不删数据目录**：`%LOCALAPPDATA%\KeepAwake`（配置、日志、历史）原地留着。那是你机器上"保护到底做了什么"的唯一记录，我们不替你删。要彻底干净，手动删，命令在《卸载 / 恢复原状》。
-- 安装器复制进去的脚本不带 MOTW，所以装了的人不会遇到便携包用户可能遇到的那一步。
+- 每用户、静默、**全程没有 UAC 弹窗**；装完目录里恰好 25 个文件 = 清单那 23 个 + Inno 自己的 `unins000.dat` / `unins000.exe`，多一个少一个都算红。
+- 装进去的 `.ps1` **不带下载标记（MOTW）**——需要 `Unblock-File` 的是 zip 那条路，不是这条。
+- 开始菜单正好那五项：`KeepAwake - Dashboard`、`- Tray`、`- Protect`、`- Release`、`Uninstall KeepAwake`。
+- **桌面快捷方式默认是勾上的**（`desktopicon` 任务不用动它就有），指向 Dashboard；它落在 `C:\Users\DELL\OneDrive\Desktop\KeepAwake.lnk`——这台机器的桌面被 OneDrive 重定向了，`{autodesktop}` 认的是重定向后的那个，写死 `{commondesktop}` 反而错。
+- `HKCU:\...\Uninstall\{8B7C1F4E-...}_is1`：`DisplayName=KeepAwake`、`DisplayVersion=1.0.0`（跟 `KaVersion` 同源）、`UninstallString` 是**带引号的完整路径**——这一条是"装在含空格的路径里也卸得掉"的证据。
+- **安装不注册任何计划任务**（前后对比根任务目录：27 → 27），**也不开任何监听端口**（`[RUN]` 那条 Dashboard 带着 `skipifsilent`，静默装完没人替你开面板）。装好的那份 `ka.ps1 status` 退出码 0，第一行 `== 防休眠 Keep-Awake`。
+- 卸载钩子在**第一条 `Deleting file:` 之前**跑完 `stop-server`、`stop`、`unguard`，顺序就是这三个。耗时实测四遍各为 **9.8 / 9.8 / 10.6 / 18.1 秒**（卸载日志里第一条钩子行到最后一条钩子行，脚本每次跑都把这个秒数打在 `info` 行里）——同一台机器上能差到将近一倍，没测过它具体慢在哪一步，也不假装知道。对照：整个卸载器进程从开日志到关日志 27.4 秒，安装侧 Inno 自己那 1.2 秒（两份日志的首末时间戳）。先起了保护再卸载：worker 随钩子一起没了，它攥着的电源请求也一起没了——不留"脚本已删、请求还在"的孤儿。
+- 卸载之后四处痕迹一起消失：安装目录、开始菜单那个文件夹、桌面快捷方式、HKCU 那条卸载项。**`%LOCALAPPDATA%\KeepAwake` 原封不动**（逐文件 SHA256 前后一致）：那是"保护在你机器上到底做了什么"的唯一记录，我们不替你删。要彻底干净，手动删，命令在《卸载 / 恢复原状》。
+- 钩子那三件事如果全失败，卸载照样完成（被"无法卸载"困住比留一个孤儿任务更糟，日志里留那一行）；这条的边界也实测了一次——把安装目录里的 `ka.ps1` 改名，钩子整段跳过，卸载仍然把该删的删干净了。
+
+代价与防线（**在你机器上跑这件事之前要看**）：`unguard` 删的计划任务名是固定字符串（`ka-core.ps1:2641` 的 `KeepAwake-Guard` / `KeepAwake-Logon`，跟数据根无关），所以卸载测试会把你自己的那两份一起删掉。脚本的做法是**先把每个 KeepAwake 任务导出成 XML**（`Get-ScheduledTask`.Xml 在这台机器上是空的，得走 `Schedule.Service` COM），跑完再按名字补注册缺失的，并且**逐字节比对定义**——这次实测：两份都补回来了、定义与导出完全一致、`State` 仍是 `Disabled`。GitHub 的一次性 runner 上没有可损失的东西，本机上有，所以这份备份不是可选项。
+
+两个突变同样跑过，各自红在自己那条断言上（同一份脚本加 `-SelfTest`，三棵树 2 分 41 秒）：**先把安装目录建出来** → 红在"install directory survived the uninstall"（Inno 只删它自己创建的目录，所以你要是手工建过 `…\Programs\KeepAwake`，卸载后会留一个空壳）；**清单里多算一个文件** → 红在文件数那一条。反过来，未注入的那一棵必须保持绿。
+
+只有三件事仍然是读出来的：
+
+- **带界面的向导一次都没点过**。上面全部走的是 `/VERYSILENT /DIR=...`。`DisableDirPage=auto` 意味着 `DefaultDirName={localappdata}\Programs\KeepAwake` 只是**默认值**（`/DIR` 实测能把它挪到 `%TEMP%` 下含空格的路径），向导会不会、以及长什么样地把这一页摆给用户，没人看过。
+- `PrivilegesRequired=lowest` 且不提供"以管理员为所有用户安装"这个选项——这条是 `.iss` 里写死的，也是上面那次不提权安装能过的原因。
+- 上面这些是**一台机器**（Win11 26200、中文 UI、OneDrive 重定向桌面）的一次结果。别的机器上唯一可能有实质差别的是桌面重定向和 `PowerShell 5.1` 的版本，而后者面板与状态都会照实报出来。
 
 ### 第一次跑什么
 
@@ -209,12 +223,17 @@ packaging/build.ps1
 packaging/ka-iscc.ps1
                     找 ISCC.exe 的唯一一份搜索顺序——build.ps1 和 probe-iss 都用它，
                     不然会出现"打包找得到编译器、门禁说没装"
+packaging/ka-test-install.ps1
+                    真装真卸：静默装 dist 里那个 setup.exe、量它落下的每一个文件、起一次保护、
+                    跑真卸载器、再核对机器回到起点（计划任务先导出 XML 后逐字节补回）。
+                    -SelfTest 要求两个注入的缺陷各自红在自己那条断言上。build-time only，不进清单
 packaging/KeepAwake.iss
                     每用户安装的 Inno 脚本。本机 Inno Setup 6.7.3 **编译通过**（tests/probe-iss.ps1
-                    六条断言：两个注入的缺陷必须红、一个编译器抓不到的盲点必须还是绿）；**从未被执行过**——
-                    做出来的 setup.exe 没有在这台机器上装过。见《怎么出一次 release》
-.github/workflows/  ci.yml（push/PR）→ build-test.yml（装 Inno + 门禁 + 探针 + 套件 + 打包冒烟，可复用）
-                    release.yml（打 tag 即出三件套并发布）
+                    六条断言：两个注入的缺陷必须红、一个编译器抓不到的盲点必须还是绿），
+                    它做出来的 setup.exe **也在本机装过又卸掉了**（2026-09-05，
+                    packaging/ka-test-install.ps1 一轮 20 条断言）。见《安装版：setup.exe》
+.github/workflows/  ci.yml（push/PR）→ build-test.yml（装 Inno + 门禁 + 探针 + 套件 + 打包冒烟 + 真装真卸，可复用）
+                    release.yml（打 tag 即出三件套并发布；它 needs: build-test，所以安装那一步也是发布的前置）
 README.md / SECURITY.md / PRIVACY.md / CHANGELOG.md / LICENSE (Apache-2.0) / NOTICE
 ```
 
@@ -471,11 +490,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File packaging\build.ps1 -Stage -
 
 编译器不在的时候 `-Installer` 也不会假装成功：本机实测退出码 1 + `Inno Setup 6 (or 7) is not installed here. …  the setup.exe is not optional in a release.`。少一个产物的 release 和一次失败的 release 是同一回事，所以这里没有"静默跳过"这个选项。
 
-还剩一块没验证的：**这个 setup.exe 从来没有被运行过**。装一遍会真改这台机器的开始菜单和 HKCU 卸载项，而卸载钩子会跑 `ka.ps1 unguard` —— `unguard` 删的计划任务名是固定字符串（`ka-core.ps1:2641` 的 `KeepAwake-Guard` / `KeepAwake-Logon`），跟数据根无关，所以在这台还留着（已停用）看门狗任务的机器上跑一次卸载测试，就会把用户那两份任务一起删掉。这个试验留给一次性虚拟机做，也就是 CI。找编译器这一步 `packaging/ka-iscc.ps1` 只有一份实现，`build.ps1` 和探针共用它，CI 装完之后还要用同一个函数再找一遍（机器级安装落在 `Program Files (x86)`，和本机这次的用户级路径不是同一个目录）。
+`setup.exe` 这一块已经不再悬着了：它在**本机**被真装真卸过，20 条断言、开始菜单/注册表/端口/计划任务的前后对比、卸载钩子的耗时、任务导出再逐字节补回，全写在《安装版：setup.exe》那一节，命令是 `packaging/ka-test-install.ps1 -WithWorker -SelfTest`（`-SelfTest` 会连两个突变一起跑，证明这套断言抓得住红）。在这台机器上跑它的代价同样写在那一节里——它会把你的 `KeepAwake-Guard` / `KeepAwake-Logon` 删掉再补回来，所以别在没备份的情况下跑。
+
+现在只剩一件事没验证：**上面这些在 GitHub 的一次性 runner 上跑会怎样**——原因是这两个 workflow 至今没有执行过，原因见本节末尾。找编译器这一步 `packaging/ka-iscc.ps1` 只有一份实现，`build.ps1` 和探针共用它，CI 装完之后还要用同一个函数再找一遍（机器级安装落在 `Program Files (x86)`，和本机这次的用户级路径不是同一个目录）。
 
 CI 侧两个 workflow：
 
-- `ci.yml`（push `main` / 每个 PR）复用 `build-test.yml`：先装 Inno Setup 并用 `Get-KaIscc` 复核找得到编译器（这样 `probe-iss` 在 CI 上永远不会走到"跳过"那个分支），再 `-Gates -Probes`，然后跑 `ka-tests.ps1` 全量行为套件（这一步在 GitHub 的临时 Windows runner 上跑，不动任何人的机器——这正是本地不允许随手跑它的那个理由），最后 `build.ps1 -Stage -Installer -Smoke`，把包含 `setup.exe` 的 `dist` 作为 artifact 上传。
+- `ci.yml`（push `main` / 每个 PR）复用 `build-test.yml`：先装 Inno Setup 并用 `Get-KaIscc` 复核找得到编译器（这样 `probe-iss` 在 CI 上永远不会走到"跳过"那个分支），再 `-Gates -Probes`，然后跑 `ka-tests.ps1` 全量行为套件（这一步在 GitHub 的临时 Windows runner 上跑，不动任何人的机器——这正是本地不允许随手跑它的那个理由），接着 `build.ps1 -Stage -Installer -Smoke` 出三件套，然后**把刚做好的那个 `setup.exe` 装上再卸掉**（`packaging/ka-test-install.ps1 -WithWorker -SelfTest`，也就是上面那 20 条断言加两个突变，整轮 2 分 41 秒），最后把包含 `setup.exe` 的 `dist` 作为 artifact 上传。
 - `release.yml`（打 `v*` tag 或手动 dispatch）先 `needs: build-test`，再核对 tag 与 `-ShowVersion` 一致、`choco install innosetup`、`build.ps1 -Installer -Smoke`、**当场把 `dist` 里的文件数死锁为三件套并逐个拿 `SHA256SUMS` 重算比对**，然后建 GitHub Release 上传。
 
 要说清楚的：**这个仓库现在还没有配 git remote**（`git remote -v` 是空的），所以上面两个 workflow 从来没有执行过；`tests/ka-workflow.ps1` 能保证的只是每个 `run:` 块能被 5.1 解析、YAML 没有 tab 缩进，Actions 自己的求值器那一层只有真跑一次才知道。建仓、加 remote、推 `v1.0.0` tag 这三步是人的动作。`NOTICE` 里的 `https://github.com/<your-name>/keepawake` 也还留着占位符，等真实地址定了再填。

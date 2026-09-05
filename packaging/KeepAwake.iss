@@ -56,10 +56,11 @@ DefaultGroupName={#MyAppName}
 ; logon task the guard registers then runs in the same context that wrote the data.
 DefaultDirName={localappdata}\Programs\{#MyAppName}
 PrivilegesRequired=lowest
-; No PrivilegesRequiredOverridesAllowed: the install folder is hardcoded to {localappdata}, so
-; an offered "elevate and install for all users" would put an all-users install into whichever
-; profile was elevated, and the guard's logon task would then run in a different context than
-; the data it writes. This installer is per-user or it is wrong.
+; No PrivilegesRequiredOverridesAllowed. Not because the folder could not move - it can, and the
+; measured install of 2026-09-05 put DefaultDirName aside with /DIR and ran from %TEMP% - but because
+; an offered "elevate and install for all users" would leave the guard's logon task registered in
+; whichever profile happened to be elevated, running in a different context than the data it writes.
+; This installer is per-user or it is wrong.
 DisableProgramGroupPage=yes
 DisableDirPage=auto
 OutputDir={#OutDir}

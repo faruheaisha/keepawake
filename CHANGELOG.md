@@ -61,15 +61,33 @@
   找的一致、缺 `/DMyAppVersion` 必须被 `#error` 挡下、回调原型写错必须被拒，再加一条记录"Inno 6.7.3 看不出
   漏写 `Result`"这个盲点——所以那行 `Result := True` 只有探针守得住）。找编译器的搜索顺序抽成
   `packaging/ka-iscc.ps1` 一份，`build.ps1` 和探针共用，CI 装完 Inno 后还要用同一个函数再找一遍。
-  **还有两件事没验证**，各自的原因都写明：`setup.exe` 从未被执行安装过（卸载钩子会跑 `ka.ps1 unguard`，
-  它删的任务名是固定字符串 `KeepAwake-Guard` / `KeepAwake-Logon`，在本机会连带删掉用户留着的那两份停用任务），
-  `.github/workflows/`（`ci.yml` + 可复用 `build-test.yml` + `release.yml`）一次都没跑过——这个仓库还没有 git remote。
+  **还剩一件事没验证**：`.github/workflows/`（`ci.yml` + 可复用 `build-test.yml` + `release.yml`）一次都没跑过——
+  这个仓库还没有 git remote。`setup.exe` 那一件已经被下面那条实测顶掉了。
 - 面向下载者的文档（阶段 6）：README 新增《拿到 release 之后》——三件套各自是什么、怎么核对 `SHA256SUMS`、
   第一次运行 Windows 会说什么（SmartScreen 那段明确标成"照微软公开行为写的、不是本机截图"，MOTW 那段才是实测）、
   便携包与安装版各自的行为，以及装过之后怎么卸。核对哈希的那段脚本**先跑过再贴**：2026-09-05 对 `dist/` 里
   这次的 zip 和 setup.exe 都是 `OK`，两个红分支也在副本上各踩过一次（翻掉 zip 中间一个字节 → `MISMATCH`，
   把 `SHA256SUMS` 里列着的文件拿走 → `MISSING`）。安装版那一节整段戴着"从未执行过"的帽子：里面的每一条都写明是
-  照着 `.iss` 读的，不是照着一次真安装说的。
+  照着 `.iss` 读的，不是照着一次真安装说的（这顶帽子由下一条摘掉）。
+- **真装真卸（阶段 7）**：`packaging/ka-test-install.ps1` 把"下载者双击的那个 `setup.exe`"变成一条可重复、
+  会红的断言，而不是一个人的口头保证。静默装进 `%TEMP%` 下一个新建目录（`/DIR` 实测能覆盖 `DefaultDirName`，
+  含空格的路径必须整体加引号，否则 ISCC 出的安装器在写日志之前就回 4）、用装好的那份起一次真保护（worker
+  攥着电源请求）、再跑真卸载器，20 条断言覆盖：25 个文件不多不少、装进去的脚本无 MOTW、开始菜单恰好那五项、
+  桌面快捷方式**默认勾上**且落在 OneDrive 重定向后的桌面、HKCU 卸载项的 `UninstallString` 是带引号的完整路径、
+  安装不注册任务也不开端口、钩子按 `stop-server,stop,unguard` 顺序在第一条删除之前跑完、四处痕迹一起消失、
+  真实数据目录逐文件 SHA256 前后一致。两个突变各自红在正确的那一条上（先建出安装目录 → "install directory
+  survived the uninstall"，这一条顺便量出 Inno 只删它自己创建的目录；清单多算一个 → 文件数那条）。
+  这一轮把三条 Windows 语义量成了事实而不是猜测：`Start-Process -Wait` **会等一个已经 detach 的孙进程**
+  （父 → 立刻退出的子 → 藏起来的 40 秒孙 = 42.3 秒，改成轮询 `HasExited` 后 2.6 秒拿到 ExitCode 0——这正是
+  `ka.ps1 start` 的形状）；`$null -eq 0` 为真，所以一个从没被赋值的退出码会读成成功，四处调用点现在先查 `$null`、
+  超时改写成一条点名的红；`& script *> log` 会丢退出码（里面 `exit 7` 外面读到 1），要 `; exit $LASTEXITCODE`。
+  顺带挖出两个自己写的 bug：构造子进程命令行时一个未闭合的单引号让三棵树全部红在解析错误上、而**日志文件根本没生出来**
+  （于是两个突变"看起来"红得正确），补了缺日志即硬失败；`$bad.Add("..." -f $a, $b)` 里逗号比 `-f` 松，
+  把两个参数喂给了 `Add()` → FormatError。在本机跑它的代价写进 README：`unguard` 删的是固定任务名，
+  所以脚本先用 `Schedule.Service` COM 把每个 KeepAwake 任务导出成 XML（`Get-ScheduledTask`.Xml 在本机是空的），
+  跑完补注册缺失的并逐字节比对定义——实测两份都补回、`State` 仍是 `Disabled`、根任务数 27 → 27。
+  这一步现在也是 CI 的一步（`build-test.yml` 里 Package 之后，带 `-WithWorker -SelfTest`），`release.yml` 经
+  `needs: build-test` 间接依赖它。
 
 ### 发布前实测修掉的缺陷
 
@@ -102,10 +120,10 @@
 
 ## 未发布 / 下一步
 
-- **把 release 真跑一次**：建仓 + 加 remote + 推 `v1.0.0` tag，看第一次 Actions 到底过不过。`setup.exe`
-  这边还差一步、也只剩这一步：**执行它**。编译已经在本机做过了（2026-09-05，Inno Setup 6.7.3），
-  装和卸没有——卸载钩子会跑 `unguard`，它删的任务名是固定字符串，在本机会连带带走用户留着的那两份停用任务。
-  跑通之后再补 winget 清单。
+- **把 release 真跑一次**：建仓 + 加 remote + 推 `v1.0.0` tag，看第一次 Actions 到底过不过。产物这一侧已经没有
+  "只读过没跑过"的了：`.iss` 在本机编译过（Inno Setup 6.7.3），`setup.exe` 也在本机装过又卸过（阶段 7），
+  而且这一条现在是 `build-test.yml` 的一步。**剩的只有 Actions 自己**——`ci.yml` / `release.yml` 至今一次没执行，
+  因为仓库还没有 remote；`tests/ka-workflow.ps1` 只保证每个 `run:` 块能被 5.1 解析。跑通之后再补 winget 清单。
 - 面向下载者的那一节已经写进 README（《拿到 release 之后》：三件套、怎么核对哈希、第一次运行 Windows
   会说什么、两条分发路径各自的行为）。**机器支持矩阵刻意不再独立成页**：同一台机器的适配结论写两处
   迟早互相打脸，这和"发布清单只留一份"是同一个理由。

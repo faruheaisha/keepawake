@@ -100,9 +100,12 @@ Remove-Item -LiteralPath "$env:ProgramData\KeepAwake" -Recurse -Force   # 仅当
 没有注册表策略、没有服务、没有驱动。
 
 上面是**便携包**的口径。用 `setup.exe` 装过的机器上另有两处痕迹，都由 Inno 而不是本工具的代码写下：
-`%APPDATA%\Microsoft\Windows\Start Menu\Programs\KeepAwake`（开始菜单那五项，桌面快捷方式是你勾了才有）
+`%APPDATA%\Microsoft\Windows\Start Menu\Programs\KeepAwake`（开始菜单那五项，桌面快捷方式默认是勾上的，不取消它就有）
 和 `HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall` 下以 AppId `{8B7C1F4E-2D9A-4C3B-9E57-6A18D3F0C4B2}`
 开头、后缀 `_is1` 的那一条（"已安装的应用"里看到的正是它）。**走一次正常卸载会把这两处一起带走**，跳过卸载
-直接删程序目录就会留下它们——而卸载本身**不碰**上面那两个数据目录。这一段的分量要看清：它是照
-`packaging/KeepAwake.iss` 加 Inno 自己的命名规则读出来的，那个 `setup.exe` 到目前为止**没有在任何机器上运行过**，
-所以键名与快捷方式路径属于"按文档推"，不属于"本机实测"。
+直接删程序目录就会留下它们——而卸载本身**不碰**上面那两个数据目录。
+
+这两处不再是"按文档推"：`setup.exe` 已在本机被真装真卸过（`packaging/ka-test-install.ps1`，2026-09-05），
+上面那两个路径就是那轮断言里"装完应当在、卸完应当不在"的两个检查项。同一轮还实测了
+安装**不**注册计划任务（根任务目录 27 → 27）、**不**开监听端口，而卸载会连 worker 的电源请求一起带走。
+细节和它在 CI 里的位置见 README《安装版：setup.exe》。

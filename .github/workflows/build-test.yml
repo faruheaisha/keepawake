@@ -56,6 +56,21 @@ jobs:
         # job: this zip was tested here, not there.
         run: powershell -NoProfile -ExecutionPolicy Bypass -File packaging\build.ps1 -Stage -Installer -Smoke
 
+      - name: Install and uninstall the setup.exe
+        # The only place in the pipeline where the artifact a downloader double-clicks is actually
+        # executed. Everything upstream can say the .iss compiles; only this can say the install
+        # lands 23 files + Inno's own two, opens no panel, writes no scheduled task, and that the
+        # uninstall hook runs stop-server / stop / unguard before it deletes anything.
+        #   -WithWorker  starts protection from the installed copy first, so the hook has a live
+        #                power request to release instead of an empty promise.
+        #   -SelfTest    re-runs the same install twice with one deliberate defect each, and requires
+        #                each mutant to go red on its own assertion. Without it a green step would
+        #                only prove the script ran.
+        # The script backs every KeepAwake scheduled task up to XML and re-registers whatever
+        # unguard removed, byte-checked against the export - which is why the same command is safe on
+        # a developer machine and not just here.
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File packaging\ka-test-install.ps1 -WithWorker -SelfTest
+
       - name: What dist holds
         run: Get-ChildItem dist -Recurse | Select-Object FullName, Length | Format-Table -AutoSize
 
