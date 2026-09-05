@@ -15,7 +15,9 @@
         powershell -NoProfile -ExecutionPolicy Bypass -File packaging\build.ps1
         ... -OutDir <dir>       where dist lands (default: <repo>\dist)
         ... -Stage              also write the staging directory Inno compiles from
-        ... -Sum                (re)write SHA256SUMS for every artifact in -OutDir and stop
+        ... -Sum                (re)write SHA256SUMS for what is already in -OutDir and stop.
+                                Combined with any of the switches below it is a no-op - the full
+                                build hashes at the end anyway.
         ... -Smoke              extract the finished zip and run it from a scratch data root
         ... -Installer          compile the per-user setup.exe with Inno Setup (implies -Stage)
         ... -ShowVersion        print the version the build would use and stop
@@ -243,7 +245,10 @@ if ($ShowVersion) { Write-Output $version; exit 0 }   # stdout holds nothing but
 $names = Get-KaManifest
 Write-Host ("packaging KeepAwake v{0}  ({1} files from tests/ka-release-files.ps1)" -f $version, $names.Count)
 
-if ($Sum) { Set-KaSums $OutDir; exit 0 }
+# -Sum alone means "hash what is already there and stop". It must not swallow the other switches:
+# the full build reaches the same Set-KaSums at the end of this file, and exiting here would print
+# a fresh SHA256SUMS over artifacts this run never rebuilt.
+if ($Sum -and -not ($Stage -or $Installer -or $Smoke)) { Set-KaSums $OutDir; exit 0 }
 
 if (-not (Test-Path -LiteralPath (Join-Path $root 'tests/ka-release-files.ps1'))) { throw 'tests/ka-release-files.ps1 is missing - there is no manifest to build from' }
 if (-not $names.Count) { throw 'the manifest came back empty' }

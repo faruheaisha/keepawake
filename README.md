@@ -96,7 +96,7 @@ foreach ($n in $sums.Keys) { if (-not (Test-Path -LiteralPath $n)) { 'MISSING  '
 - **桌面快捷方式默认是勾上的**（`desktopicon` 任务不用动它就有），指向 Dashboard；它落在 `C:\Users\DELL\OneDrive\Desktop\KeepAwake.lnk`——这台机器的桌面被 OneDrive 重定向了，`{autodesktop}` 认的是重定向后的那个，写死 `{commondesktop}` 反而错。
 - `HKCU:\...\Uninstall\{8B7C1F4E-...}_is1`：`DisplayName=KeepAwake`、`DisplayVersion=1.0.0`（跟 `KaVersion` 同源）、`UninstallString` 是**带引号的完整路径**——这一条是"装在含空格的路径里也卸得掉"的证据。
 - **安装不注册任何计划任务**（前后对比根任务目录：27 → 27），**也不开任何监听端口**（`[RUN]` 那条 Dashboard 带着 `skipifsilent`，静默装完没人替你开面板）。装好的那份 `ka.ps1 status` 退出码 0，第一行 `== 防休眠 Keep-Awake`。
-- 卸载钩子在**第一条 `Deleting file:` 之前**跑完 `stop-server`、`stop`、`unguard`，顺序就是这三个。耗时实测四遍各为 **9.8 / 9.8 / 10.6 / 18.1 秒**（卸载日志里第一条钩子行到最后一条钩子行，脚本每次跑都把这个秒数打在 `info` 行里）——同一台机器上能差到将近一倍，没测过它具体慢在哪一步，也不假装知道。对照：整个卸载器进程从开日志到关日志 27.4 秒，安装侧 Inno 自己那 1.2 秒（两份日志的首末时间戳）。先起了保护再卸载：worker 随钩子一起没了，它攥着的电源请求也一起没了——不留"脚本已删、请求还在"的孤儿。
+- 卸载钩子在**第一条 `Deleting file:` 之前**跑完 `stop-server`、`stop`、`unguard`，顺序就是这三个。耗时实测五遍各为 **9.8 / 9.8 / 10.6 / 12.2 / 18.1 秒**（卸载日志里第一条钩子行到最后一条钩子行，脚本每次跑都把这个秒数打在 `info` 行里）——同一台机器上能差到将近一倍，没测过它具体慢在哪一步，也不假装知道。对照：整个卸载器进程从开日志到关日志 27.4 秒，安装侧 Inno 自己那 1.2 秒（两份日志的首末时间戳）。先起了保护再卸载：worker 随钩子一起没了，它攥着的电源请求也一起没了——不留"脚本已删、请求还在"的孤儿。
 - 卸载之后四处痕迹一起消失：安装目录、开始菜单那个文件夹、桌面快捷方式、HKCU 那条卸载项。**`%LOCALAPPDATA%\KeepAwake` 原封不动**（逐文件 SHA256 前后一致）：那是"保护在你机器上到底做了什么"的唯一记录，我们不替你删。要彻底干净，手动删，命令在《卸载 / 恢复原状》。
 - 钩子那三件事如果全失败，卸载照样完成（被"无法卸载"困住比留一个孤儿任务更糟，日志里留那一行）；这条的边界也实测了一次——把安装目录里的 `ka.ps1` 改名，钩子整段跳过，卸载仍然把该删的删干净了。
 
@@ -477,10 +477,10 @@ C# 的 `.cs`、临时 clone、被改坏的副本都不会落在 `tests/` 旁边�
 三件套（`portable.zip` / `setup.exe` / `SHA256SUMS`）都由同一份清单产出，本地一条命令：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File packaging\build.ps1 -Stage -Smoke
+powershell -NoProfile -ExecutionPolicy Bypass -File packaging\build.ps1 -Stage -Installer -Smoke
 ```
 
-产物落在 `dist/`，`SHA256SUMS` 是最后一步顺手算的（`-Sum` 可以只重算哈希，不重新打包）。`-ShowVersion` 只打印版本号就退出，CI 用它把 tag 和代码里的 `$script:KaVersion` 对起来。
+产物落在 `dist/`，`SHA256SUMS` 是最后一步顺手算的（`-Sum` **单独**用是"只重算哈希、不重新打包"；和 `-Stage` / `-Installer` / `-Smoke` 一起用则什么都不加——完整构建走到末尾本来就会算一遍。这两件事今天才对齐，见《发布前实测修掉的缺陷》最后一条）。`-ShowVersion` 只打印版本号就退出，CI 用它把 tag 和代码里的 `$script:KaVersion` 对起来。
 
 `-Smoke` 是这一步真正值钱的地方：它把刚做好的 zip 解压到 `_tmp` 下的独立目录，把 `KA_DATA` 指到一个**空的**临时数据根，用系统自带的 PowerShell 5.1 跑 `ka.ps1 status -Json`，然后要求——退出码 0、JSON 能解析、报回来的 `version` 就是这次打包的版本、`programRoot`/`dataRoot` 确实是我们递给它的那两个临时路径（不是 `%LOCALAPPDATA%`，也不是解压目录）、`dataError` 为空、**跑完之后程序目录里一个文件都没多**。这一条是"产品绝不往自己的安装目录写东西"这个承诺在发布链路上的复检。它自己被 `probe-build-selftest.ps1` 钉住了会红（见上表），所以下面这句话不是"我们写了个冒烟测试"，而是"这个冒烟测试被证明抓得住三种事故形状"。
 
