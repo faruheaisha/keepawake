@@ -713,7 +713,7 @@ try {
     }
 
     It 'worker 归属判定 只认路径本身，不认前缀' {
-        $r = 'E:\claude code\防休眠'
+        $r = 'C:\ka 防休眠'
         Assert-Eq (Get-KaWorkerRoot "powershell.exe -File `"$r\ka-worker.ps1`" -Minutes 0") ($r) '带引号的 -File'
         Assert-Eq (Get-KaWorkerRoot "powershell.exe -File $r\ka-worker.ps1") ($r) '不带引号的 -File'
         Assert (Test-KaOwnWorker -CommandLine "powershell -File $r\ka-worker.ps1" -Root $r) '自己的 worker 被判成外部'

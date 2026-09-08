@@ -499,7 +499,7 @@ CI 侧两个 workflow：
 - `ci.yml`（push `main` / 每个 PR）复用 `build-test.yml`：先装 Inno Setup 并用 `Get-KaIscc` 复核找得到编译器（这样 `probe-iss` 在 CI 上永远不会走到"跳过"那个分支），再 `-Gates -Probes`，然后跑 `ka-tests.ps1` 全量行为套件（这一步在 GitHub 的临时 Windows runner 上跑，不动任何人的机器——这正是本地不允许随手跑它的那个理由），接着 `build.ps1 -Stage -Installer -Smoke` 出三件套，然后**把刚做好的那个 `setup.exe` 装上再卸掉**（`packaging/ka-test-install.ps1 -WithWorker -SelfTest`，也就是上面那 20 条断言加两个突变，整轮 2 分 41 秒），最后把包含 `setup.exe` 的 `dist` 作为 artifact 上传。
 - `release.yml`（打 `v*` tag 或手动 dispatch）先 `needs: build-test`，再核对 tag 与 `-ShowVersion` 一致、`choco install innosetup`、`build.ps1 -Installer -Smoke`、**当场把 `dist` 里的文件数死锁为三件套并逐个拿 `SHA256SUMS` 重算比对**，然后建 GitHub Release 上传。
 
-要说清楚的：**这个仓库现在还没有配 git remote**（`git remote -v` 是空的），所以上面两个 workflow 从来没有执行过；`tests/ka-workflow.ps1` 能保证的只是每个 `run:` 块能被 5.1 解析、YAML 没有 tab 缩进，Actions 自己的求值器那一层只有真跑一次才知道。建仓、加 remote、推 `v1.0.0` tag 这三步是人的动作。`NOTICE` 里的 `https://github.com/<your-name>/keepawake` 也还留着占位符，等真实地址定了再填。
+要说清楚的：**这个仓库现在还没有配 git remote**（`git remote -v` 是空的），所以上面两个 workflow 从来没有执行过；`tests/ka-workflow.ps1` 能保证的只是每个 `run:` 块能被 5.1 解析、YAML 没有 tab 缩进，Actions 自己的求值器那一层只有真跑一次才知道。建仓、加 remote、推 `v1.0.0` tag 这三步是人的动作。
 
 这一节只管**怎么出**一次 release。**拿到** release 的人看到什么、怎么核对、两条路径各自怎么装和卸，在《拿到 release 之后》。
 
