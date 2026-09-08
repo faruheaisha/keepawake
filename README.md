@@ -1,18 +1,49 @@
 # 防休眠 Keep-Awake
 
-让 Windows 在 AI 编程（vibe coding）、长任务、远程无人值守时**不休眠、不熄屏、不锁屏**。
+一个 Windows 防休眠工具：**不休眠、不熄屏、不锁屏**。给"人不在键盘前，但活还在干"的场面用。
 
-- **零依赖**：只需要 Windows 自带的 PowerShell 5.1，没有运行库、没有后台服务，便携包解压就能跑。普通账户即可（唯一例外是可选的改合盖动作，那需要管理员）。
-- **免登录**：clone/复制即用，双击 `.bat` 就跑，不联网、不注册、不上传任何数据。
-- **两条分发路径**：便携 zip（23 个文件，解压即用）或每用户 `setup.exe` + `SHA256SUMS`。安装器**在本机真装真卸过**（2026-09-05，`packaging/ka-test-install.ps1` 一轮 20 条断言全绿，同一份脚本现在是 CI 的一步），数字在那一节里；怎么核对哈希、第一次运行 Windows 会说什么，见《拿到 release 之后》。
-- **本地面板**：浏览器打开 `http://127.0.0.1:8791/`，只监听回环地址。
-- **说真话**：面板上"有没有效"不是猜的，是读内核电源日志数出来的（见下文《有效性是实测的》）。
-- **数据和边界摊开写**：磁盘上每一个文件、每一个字段见 [PRIVACY.md](PRIVACY.md)；面板端口、提权、合成输入、没有代码签名这四件事的威胁模型见 [SECURITY.md](SECURITY.md)；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
-- **许可**：Apache-2.0。可商用、可修改、可闭源集成，自带专利授权；不授予任何商标或本项目名称的使用权（见下文《许可》）。
+## 它解决的是哪一种具体的烦
+
+你在挂着 AI 编程、一次编译、一个大文件下载、一个本地模型，或者从外面连着家里的机器。人去做别的事了，半小时后回来：屏幕黑了、机器睡了、远程断了，任务停在半路。
+
+Windows 判断"没人用"的依据只有你多久没动键盘鼠标，它对"后台还有活在跑"一无所知。这个工具做的就是把"现在有活，先别睡"这句话持续地告诉系统，并且在你说了停之后原样收回 —— 不改电源计划、不写注册表、进程退了系统就回到默认行为。
+
+## 适合谁
+
+- 挂长任务的人：agent、编译、下载、跑批、本地推理，人不守在旁边
+- **远程无人值守**：机器一睡，任何远程工具都跟着没了 —— 这是本工具最主要的设计目标，重启自恢复和看门狗都是一等为它做的（见《远程无人值守》）
+- 笔记本合上盖子还要继续干活（`lid` 子命令，这一步需要管理员）
+- 投屏、演示、录屏、视频会议期间不能熄屏
+- 想要"不休眠"，但不想要后台服务、不想装运行库、不想注册账号、不想让它联网
+
+**不适合**：指望它让程序熬过一次真睡眠（睡眠会杀掉所有进程，只有"别睡"有用）；macOS / Linux；Windows 7；被 WDAC / AppLocker / 智能应用控制锁进 ConstrainedLanguage 的机器 —— 那是唯一一类根本跑不起来的机器，六个入口都会在加载任何东西之前按**代码 2** 干净退出并打印说明，不会静默失败（`tests/probe-clm-gate.ps1` 三条腿实测）。
+
+## 硬事实
+
+| | |
+| --- | --- |
+| 系统要求 | Windows 10 / 11 + 系统自带的 PowerShell 5.1。没有运行库、没有 .NET 安装、没有后台服务。**实测参照机只有一台**（Windows 11 build 26200，S0 现代待机），Windows 10 与 S3 传统待机机型没测过 —— 差在哪一行一行写在《换一台 Windows 会怎样（适配矩阵）》 |
+| 权限 | 普通账户就够。需要管理员的只有两处：可选的改合盖动作 `lid apply`，和 `requests`（`powercfg /requests` 这条命令本身要求） |
+| 联网 | 不联网、不上传、不检查更新。下载它不需要账号，用它也不需要登录 |
+| 手上有什么 | 两条分发路径：便携 zip（23 个文件，解压双击就跑）或每用户 `setup.exe` + `SHA256SUMS`。两条都在 CI 里每轮重跑：真构建、真安装、真起一次保护、真卸载（见《拿到 release 之后》《独立门禁与实测探针》） |
+| 怎么控制 | 六个 `.bat` 双击入口 + `ka.bat` 命令行 + 本地面板 `http://127.0.0.1:8791/`（只监听回环地址）+ 系统托盘图标 |
+| 有没有效 | 不猜。读内核电源日志数出最近 N 小时真待机过几次：`ka.bat evidence`（见《有效性是实测的》） |
+| 卸载 | 便携包删掉目录就没了；安装版走"已安装的应用"或 `unins000.exe`。配置和日志在 `%LOCALAPPDATA%\KeepAwake`，不跟着程序目录一起消失 |
+| 摊开写的地方 | 磁盘上每一个文件、每一个字段：[PRIVACY.md](PRIVACY.md)。面板端口、提权、合成输入、没有代码签名这四件事的威胁模型：[SECURITY.md](SECURITY.md)。每个版本改了什么：[CHANGELOG.md](CHANGELOG.md) |
+| 许可 | Apache-2.0。可商用、可修改、可闭源集成，自带专利授权；不授予任何商标或本项目名称的使用权（见下文《许可》） |
 
 版本号只有一个真源：`ka-core.ps1` 里的 `$script:KaVersion`（面板页脚、托盘提示、`/api/state` 读的都是它）。本文标题**不带**版本号，因为两份版本号写在一起迟早会互相打脸。
 
 ## 30 秒上手
+
+从下载到保护生效，四步：
+
+1. 到 [Releases](https://github.com/faruheaisha/keepawake/releases/latest) 下载 `KeepAwake-<ver>-portable.zip`（想要开始菜单项就下 `setup.exe`）。
+2. 可选但建议：核一下 `SHA256SUMS`。一段可以整块粘进 PowerShell 的脚本在《先核对哈希》，三个分支（对、被改过、缺文件）都在本机踩过。
+3. 解压到任意目录。含空格和中文的路径实测可用，不需要管理员。
+4. 双击 `on.bat`。屏幕不熄、机器不睡、会话不锁，直到你双击 `off.bat`。
+
+双击哪个入口管什么：
 
 | 双击这个 | 作用 |
 | --- | --- |
@@ -499,11 +530,16 @@ CI 侧两个 workflow：
 - `ci.yml`（push `main` / 每个 PR）复用 `build-test.yml`：先装 Inno Setup 并用 `Get-KaIscc` 复核找得到编译器（这样 `probe-iss` 在 CI 上永远不会走到"跳过"那个分支），再 `-Gates -Probes`，然后跑 `ka-tests.ps1` 全量行为套件（这一步在 GitHub 的临时 Windows runner 上跑，不动任何人的机器——这正是本地不允许随手跑它的那个理由），接着 `build.ps1 -Stage -Installer -Smoke` 出三件套，然后**把刚做好的那个 `setup.exe` 装上再卸掉**（`packaging/ka-test-install.ps1 -WithWorker -SelfTest`，也就是上面那 20 条断言加两个突变，整轮 2 分 41 秒），最后把包含 `setup.exe` 的 `dist` 作为 artifact 上传。
 - `release.yml`（打 `v*` tag 或手动 dispatch）先 `needs: build-test`，再核对 tag 与 `-ShowVersion` 一致、`choco install innosetup`、`build.ps1 -Installer -Smoke`、**当场把 `dist` 里的文件数死锁为三件套并逐个拿 `SHA256SUMS` 重算比对**，然后建 GitHub Release 上传。
 
-上面两个 workflow 从 2026-09-08 起在公开仓库 <https://github.com/faruheaisha/keepawake> 的每个 push 上真跑。头两轮各揪出一批只有真跑才看得见的缺陷，全部修掉：
+上面两个 workflow 从 2026-09-08 起在公开仓库 <https://github.com/faruheaisha/keepawake> 的每个 push 上真跑。`ci.yml` 头三轮各揪出一批只有真跑才看得见的缺陷，全部修掉：
 
 - **首轮（push 136730d）套件 10 条红，修复 d10f1bb**：两条真坏引用（`Get-KaRoot` 在阶段 1 的程序/数据目录分离里改名为 `Get-KaPath`，套件有一处没跟上；`probe-wow64.ps1` 2026-09-04 毕业进 tests/ 之后，撞上了后来才立的 per-thread 电源请求扫描名单）；一条断言消息把自己打崩（`Assert` 的消息串是急切求值的，空数组路径上 `Split-Path -Leaf $null` 抛异常，把一条本来会过的测试打死）；七条机器假设（runner 没有电池、14 天没有 506 待机事件、虚机固件能力位与 `powercfg /a` 文本失配等）——按同一条规矩处理：**这台机器验不了就诚实 `Skip` 并写明为什么**，不放松成永远绿；物理机上牙齿原样保留。
 - **第二轮（d10f1bb）套件全绿（84 通过 / 0 失败 / 5 跳过），安装器步骤又揪出一条，修复 d482076**：GitHub runner 的 `%TEMP%` 是 8.3 短路径（`C:\Users\RUNNER~1\...`），`Get-ChildItem` 返回的 `FullName` 却是长拼写（多 3 个字符），按短路径长度 `Substring` 切相对名少切 3 位，每个条目前残留目录名末两位——`ka-test-install-a2b0c748` 装出了 `48/CHANGELOG.md`，23 个清单文件全部被记成"多余"。不是 Inno 装错了地方，是断言切错了字符串。本机造了一个 11 字符父目录（差值同为 3）复现出逐字节相同的红，修复（按枚举器拼写的根切）后同输入转绿。
 - **第三轮（d482076）全绿，11 分 49 秒**：门禁+探针约 6 分、套件约 3 分、三件套构建数秒、把做好的 `setup.exe` 在 runner 上装上再卸掉（`-SelfTest` 两个突变照常各红在自家断言上、净装绿）。
+
+`v1.0.0` tag 推上去之后 `release.yml` 又跑了两轮，揪出两条**只有发布这条路才会遇到**的：
+
+- **第四条，探针在说谎（release 首轮，修复 f2193a0）**：红在 `probe-culture` 的 `KA_OFFSET_STABLE=MISMATCH`（de-DE），而**同一个 commit 的 `ci.yml` 全绿**——这个反差就是证据。那条断言原本是取**两次** `Get-Date -Format 'o'` 再比各自的 `ToUnixTimeSeconds()`，负载高的 runner 上两次采样跨过一秒边界，就报一个根本不存在的时区偏移错。现在只采**一次**时刻、用两种解析策略比**同一串**：断言的性质没变（`'o'` 带 UTC 偏移、`'s'` 不带），但不再顺带要求时钟在两次采样之间站住。因为这时还没有任何人拿到过产物，tag 是移过去的（删掉重建到新 commit）而不是升版本。
+- **第五条，最后一步没 token（release 次轮）**：前面 11 分钟全绿，`Publish` 回 `gh release create exited 4`——Actions 里的 `gh` 不读运行时自带的那个 job token，只认 `GH_TOKEN` / `GITHUB_TOKEN`。`permissions: contents: write` 一直是对的，缺的只是把 token 递到 `gh` 手上。修完还在版本核对那一步开头加了 `GH_TOKEN` 非空检查：同一类错误下次值 5 秒，不值 11 分钟。
 
 `tests/ka-workflow.ps1` 能保证的只是每个 `run:` 块能被 5.1 解析、YAML 没有 tab 缩进——上面这些是 Actions 求值器那一层的，只有真跑一次才知道。现在知道了。
 
