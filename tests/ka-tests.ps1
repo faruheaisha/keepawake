@@ -89,14 +89,24 @@ function It {
         Write-Host ("  PASS  {0}" -f $Name) -ForegroundColor Green
         if ($out) { foreach ($l in @($out)) { if ($l) { Write-Host ("        {0}" -f $l) -ForegroundColor DarkGray } } }
     } catch {
-        $script:Failures += ("{0}  ->  {1}" -f $Name, $_.Exception.Message)
-        Write-Host ("  FAIL  {0}`n        {1}" -f $Name, $_.Exception.Message) -ForegroundColor Red
+        $msg = "$($_.Exception.Message)"
+        if ($msg -like 'KA-SKIP:*') {
+            $why = $msg.Substring(9)   # past "KA-SKIP: "
+            $script:Skipped += ("{0}  ({1})" -f $Name, $why)
+            Write-Host ("  SKIP  {0} - {1}" -f $Name, $why) -ForegroundColor DarkYellow
+        } else {
+            $script:Failures += ("{0}  ->  {1}" -f $Name, $msg)
+            Write-Host ("  FAIL  {0}`n        {1}" -f $Name, $msg) -ForegroundColor Red
+        }
     }
 }
 function Skip {
-    param([string]$Name, [string]$Why)
-    $script:Skipped += ("{0}  ({1})" -f $Name, $Why)
-    Write-Host ("  SKIP  {0} - {1}" -f $Name, $Why) -ForegroundColor DarkYellow
+    # Call inside an It body when this machine has nothing the case could verify
+    # (no battery, no standby history, a VM firmware lie). It throws so the case is
+    # counted neither as a pass nor as a failure; the marker lets It's catch tell
+    # the two apart.
+    param([string]$Why)
+    throw "KA-SKIP: $Why"
 }
 function Assert {
     # Untyped on purpose: callers pass strings, hashtables and bare expressions. A [bool]
@@ -676,6 +686,12 @@ try {
         # and its `detail` is now catalog prose. A cache that ignores the language would
         # keep answering an English panel in Chinese after the visitor switched. Driven
         # through the same per-request override the server sets, not a made-up argument.
+        if (-not (Get-ScheduledTask -TaskName $script:KaTaskNames[0] -ErrorAction SilentlyContinue)) {
+            # detail is only prose when the first guard task exists. On a machine that
+            # never registered the watchdog both languages legitimately come back empty,
+            # and there is nothing here to compare.
+            Skip -Why '这台机器没有登记看门狗任务，detail 在两种语言下都只能是空，无从比较'
+        }
         $prevReq = $script:KaReqLang
         try {
             $script:KaReqLang = 'zh'
@@ -839,6 +855,16 @@ some-driver.sys   SYSTEM
         $caps = Get-KaPowerCaps
         if ($caps.source -ne 'api') { throw "本机应走 API 主源，实际 source=$($caps.source)" }
         $s = Get-KaSleepStates
+        if ($caps.s3 -ne $s.s3) {
+            # VM firmware reports capabilities the hypervisor then refuses, so on guests
+            # the two sources can legitimately disagree. First seen on the CI runner
+            # 2026-09-08: kernel s3=False, powercfg text s3=True. Physical machines must
+            # still agree - that is the parser bug this case exists to catch.
+            $model = try { "$((Get-CimInstance Win32_ComputerSystem -OperationTimeoutSec 10).Model)" } catch { '' }
+            if ($model -match 'Virtual Machine|VMware|VirtualBox|KVM|QEMU|Xen|HVM domU|Bochs') {
+                Skip -Why "虚机（model=$model）固件能力位与 powercfg 文本各说各话：内核 s3=$($caps.s3) 文本 s3=$($s.s3)"
+            }
+        }
         Assert-Eq $caps.s3 $s.s3 'S3：内核位与文本解析必须一致'
         if ($caps.aoAc) {
             Assert $s.s0 'AoAc=1：文本应把 S0 低电量待机列为可用'
@@ -1211,6 +1237,11 @@ some-driver.sys   SYSTEM
         # LidOpenState（普通用户权限可读，不需要 admin）。
         $ev = Get-KaSleepEvidence -Since ((Get-Date).AddDays(-14))
         Assert $ev.queriesOk "事件日志查询失败：$($ev.reason)"
+        if ([int]$ev.enters -lt 1) {
+            # A fresh machine (or one that never enters standby) has no history to read.
+            # The taxonomy itself is pinned by the pure-function truth tables further down.
+            Skip -Why '这台机器近 14 天没有 506 低功耗会话事件，真实日志无从验证（分类由纯函数真值表钉住）'
+        }
         Assert ($ev.enters -ge 1) "14 天窗口内应至少有 1 条 506，got $($ev.enters)"
         Assert $ev.sessionKnown '本机应有 566 会话事件；读不到时不得把「未知」当「没睡」'
         $ok = @('unknown','remote-connection','sc-monitorpower','sets','screen-off-request','video-idle',
@@ -1274,6 +1305,12 @@ some-driver.sys   SYSTEM
         # Get-WinEvent -MaxEvents 是整条查询的记录预算，不是每种 ID 的预算：只按
         # ProviderName 过滤时，无关的 Kernel-Power 记录会把 506 挤出窗口（实测 37→25）。
         # 结论只能建立在「没漏」上，所以漏了必须说出来。
+        $probe = Get-KaSleepEvidence -Since ((Get-Date).AddDays(-14))
+        if ([int]$probe.enters -le 5) {
+            # Max=5 only bites when more than five relevant records exist; on a machine
+            # with a thin event history the truncation argument cannot be staged at all.
+            Skip -Why "这台机器 14 天内只有 $($probe.enters) 条 506，Max=5 撞不到预算"
+        }
         $ev = Get-KaSleepEvidence -Since ((Get-Date).AddDays(-14)) -Max 5
         Assert $ev.queriesOk "小预算查询失败：$($ev.reason)"
         Assert $ev.truncated 'Max=5 必然撞预算，truncated 却为假说明它没在真的判定'
@@ -1333,7 +1370,19 @@ some-driver.sys   SYSTEM
                 if ($started.ContainsKey($who) -and -not $released.ContainsKey($who)) { $released[$who] = [long]$ep }
             }
         }
-        Assert ($started.Count -ge 2) "ka.log 里只解析到 $($started.Count) 个 STARTED pid，正则失配，本测试已失去意义"
+        if ($started.Count -lt 2) {
+            # Distinguish "this machine has no history" (skip honestly) from "the log
+            # has STARTED lines and the regex lost them" (the parser bug this case
+            # exists to catch - that must stay a failure).
+            $anyStart = $false
+            foreach ($f in @("$($p.log).1", $p.log)) {
+                if ((Test-Path -LiteralPath $f) -and (@(Get-Content -LiteralPath $f -Encoding UTF8 -ErrorAction SilentlyContinue) -match 'STARTED')) { $anyStart = $true; break }
+            }
+            if (-not $anyStart) {
+                Skip -Why 'ka.log 里没有任何 STARTED 行（全新数据根），保护区间无从独立重算'
+            }
+        }
+        Assert ($started.Count -ge 2) "ka.log 有 STARTED 行却只解析出 $($started.Count) 个 pid —— 正则失配，本测试已失去意义"
         $sp = Get-KaProtectedSpan
         Assert $sp.known 'ka.log 明明有 STARTED，重建结果却说无从判断'
         $spans = @($sp.spans)
@@ -1703,9 +1752,12 @@ some-driver.sys   SYSTEM
         # the user as flaky protection. The invariant is structural, so scan the tree:
         # only the worker (plus ka-core, which owns the natives, and this suite, which
         # clears up after itself) may name them.
-        $allowed = @('ka-worker.ps1', 'ka-core.ps1', 'ka-tests.ps1')
-        # The v1 engine keep-awake.ps1 made power requests too; it was archived into
-        # _legacy/ on 2026-09-03, and this scan does not descend into subdirectories.
+        $allowed = @('ka-worker.ps1', 'ka-core.ps1', 'ka-tests.ps1', 'probe-wow64.ps1')
+        # probe-wow64 makes one real ApplyPowerRequest/ClearPowerRequest round trip per
+        # leg - that round trip is how it proves 32-bit and 64-bit behave the same; it
+        # clears at once and holds nothing. The v1 engine keep-awake.ps1 made power
+        # requests too; it was archived into _legacy/ on 2026-09-03, and this scan does
+        # not descend into subdirectories.
         $root = (Get-KaPath).root
         $files = @(Get-ChildItem -LiteralPath $root -Filter '*.ps1' | ForEach-Object { $_ }) +
                  @(Get-ChildItem -LiteralPath (Join-Path $root 'tests') -Filter '*.ps1' | ForEach-Object { $_ })
@@ -1734,7 +1786,13 @@ some-driver.sys   SYSTEM
         $b = [Ka.Native]::PowerStatus()
         Assert ($b.ContainsKey('known')) '缺少 known 字段'
         if ($b.known) {
-            Assert ($b.percent -ge 0 -and $b.percent -le 100) "电量越界：$($b.percent)"
+            if ($b.hasBattery) {
+                Assert ($b.percent -ge 0 -and $b.percent -le 100) "电量越界：$($b.percent)"
+            } else {
+                # No battery (CI runner, desktop): BatteryLifePercent reads 255 and the
+                # mapping must surface that as -1, not invent a number.
+                Assert-Eq ([int]$b.percent) -1 '没有电池时电量应如实报 -1，而不是编一个数'
+            }
             $b.ContainsKey('acOnline') | Out-Null
         }
         "known=$($b.known) ac=$($b.acOnline) pct=$($b.percent) hasBattery=$($b.hasBattery)"
@@ -1884,7 +1942,8 @@ some-driver.sys   SYSTEM
         # deterministic: its command line matches the worker marker, but it never reports.
         [void](Stop-KaWorker -Reason 'test')
         Assert (Wait-WorkerGone) '前置清理失败'
-        $cmd = "`$null = 'ka-worker.ps1 $(Get-KaRoot)'; Start-Sleep -Seconds 180"
+        $root = (Get-KaPath).root
+        $cmd = "`$null = 'ka-worker.ps1 $root'; Start-Sleep -Seconds 180"
         $decoy = Start-Process powershell.exe -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile', '-Command', $cmd)
         Start-Sleep -Seconds 2
         $seen = @(Get-KaWorker | ForEach-Object { $_.Pid })
@@ -2238,9 +2297,11 @@ some-driver.sys   SYSTEM
             Assert (-not (Test-KaUrl "http://127.0.0.1:$free/api/ping")) '停掉后端口仍在响应'
             # Not "the legacy .server.json is gone" - panels now write .server-<port>.json, so
             # that path would be absent no matter what. The fact worth pinning is that no
-            # handle survives the process it describes.
+            # handle survives the process it describes. The message is built from raw paths:
+            # when $left is empty, $left.Path is null and Split-Path would reject it - the
+            # message argument is evaluated even when this assertion is about to pass.
             $left = @(Get-KaServerHints | Where-Object { $_.Port -eq $free })
-            Assert ($left.Count -eq 0) "面板已退出，句柄却留着：$(($left.Path | Split-Path -Leaf) -join ', ')"
+            Assert ($left.Count -eq 0) "面板已退出，句柄却留着：$(@($left.Path) -join ', ')"
             "pid=$($proc.Id) port=$free"
         } finally {
             try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch { }
