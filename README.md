@@ -538,10 +538,11 @@ CI 侧两个 workflow：
 - **第二轮（d10f1bb）套件全绿（84 通过 / 0 失败 / 5 跳过），安装器步骤又揪出一条，修复 d482076**：GitHub runner 的 `%TEMP%` 是 8.3 短路径（`C:\Users\RUNNER~1\...`），`Get-ChildItem` 返回的 `FullName` 却是长拼写（多 3 个字符），按短路径长度 `Substring` 切相对名少切 3 位，每个条目前残留目录名末两位——`ka-test-install-a2b0c748` 装出了 `48/CHANGELOG.md`，23 个清单文件全部被记成"多余"。不是 Inno 装错了地方，是断言切错了字符串。本机造了一个 11 字符父目录（差值同为 3）复现出逐字节相同的红，修复（按枚举器拼写的根切）后同输入转绿。
 - **第三轮（d482076）全绿，11 分 49 秒**：门禁+探针约 6 分、套件约 3 分、三件套构建数秒、把做好的 `setup.exe` 在 runner 上装上再卸掉（`-SelfTest` 两个突变照常各红在自家断言上、净装绿）。
 
-`v1.0.0` tag 推上去之后 `release.yml` 又跑了两轮，揪出两条**只有发布这条路才会遇到**的：
+`v1.0.0` tag 推上去之后 `release.yml` 又跑了三轮，揪出三条**只有发布这条路才会遇到**的：
 
 - **第四条，探针在说谎（release 首轮，修复 f2193a0）**：红在 `probe-culture` 的 `KA_OFFSET_STABLE=MISMATCH`（de-DE），而**同一个 commit 的 `ci.yml` 全绿**——这个反差就是证据。那条断言原本是取**两次** `Get-Date -Format 'o'` 再比各自的 `ToUnixTimeSeconds()`，负载高的 runner 上两次采样跨过一秒边界，就报一个根本不存在的时区偏移错。现在只采**一次**时刻、用两种解析策略比**同一串**：断言的性质没变（`'o'` 带 UTC 偏移、`'s'` 不带），但不再顺带要求时钟在两次采样之间站住。因为这时还没有任何人拿到过产物，tag 是移过去的（删掉重建到新 commit）而不是升版本。
 - **第五条，最后一步没 token（release 次轮）**：前面 11 分钟全绿，`Publish` 回 `gh release create exited 4`——Actions 里的 `gh` 不读运行时自带的那个 job token，只认 `GH_TOKEN` / `GITHUB_TOKEN`。`permissions: contents: write` 一直是对的，缺的只是把 token 递到 `gh` 手上。修完还在版本核对那一步开头加了 `GH_TOKEN` 非空检查：同一类错误下次值 5 秒，不值 11 分钟。
+- **第六条，全绿却发了一个空 release（release 第三轮）**：token 补上之后整条流水线绿了，Release 页也真建出来了，`gh api …/releases/latest` 却回答 `assets: 0`。`gh release create` **不带文件路径就是只建 release、不传文件，退出码 0** —— 三个产物从没离开过 runner，而 workflow 只检查了"命令成功"，没检查"页面上有东西"。走 `--clobber` 的那条分支带了 `@files`，可惜这次执行的不是它。现在 create 也带文件，`Publish` 末尾把 release 页**读回来**逐项比对，不是那三个就 throw；这条断言对着当时那个空 release 报 `missing=3`，喂三个正确文件名报 `pass`，混进一个旧版本号的文件报 `extra=1`。
 
 `tests/ka-workflow.ps1` 能保证的只是每个 `run:` 块能被 5.1 解析、YAML 没有 tab 缩进——上面这些是 Actions 求值器那一层的，只有真跑一次才知道。现在知道了。
 

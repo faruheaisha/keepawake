@@ -163,7 +163,23 @@ jobs:
               gh release edit $env:KA_TAG --title "KeepAwake $env:KA_TAG" --notes-file $notes
               if ($LASTEXITCODE -ne 0) { throw "gh release edit exited $LASTEXITCODE" }
           } else {
-              gh release create $env:KA_TAG --title "KeepAwake $env:KA_TAG" --notes-file $notes --target '${{ github.sha }}' @extra
+              # @files belongs on this line too. `gh release create` with no paths publishes an
+              # empty release and exits 0 - measured: the first v1.0.0 publish went green and
+              # shipped zero assets. A green checkmark next to a half-delivery is the one outcome
+              # this workflow must never be able to produce, so the block below reads the release
+              # page back instead of trusting an exit code.
+              gh release create $env:KA_TAG --title "KeepAwake $env:KA_TAG" --notes-file $notes --target '${{ github.sha }}' @extra @files
               if ($LASTEXITCODE -ne 0) { throw "gh release create exited $LASTEXITCODE" }
           }
-          gh release view $env:KA_TAG
+          $json = (gh release view $env:KA_TAG --json assets) -join ''
+          if ($LASTEXITCODE -ne 0) { throw "gh release view exited $LASTEXITCODE" }
+          # @() around a missing property yields one $null, not zero entries - filter it, or an
+          # empty release reads as "1 asset, and none of them ours".
+          $names = @((ConvertFrom-Json $json).assets | ForEach-Object { $_.name } | Where-Object { $_ })
+          $want = @("KeepAwake-$env:KA_VERSION-portable.zip", "KeepAwake-$env:KA_VERSION-setup.exe", 'SHA256SUMS')
+          $missing = @($want | Where-Object { $names -notcontains $_ })
+          $stray = @($names | Where-Object { $want -notcontains $_ })
+          if ($missing.Count -or $stray.Count) {
+              throw "the release page is not what we built: missing=[$($missing -join ' ')] extra=[$($stray -join ' ')]"
+          }
+          foreach ($n in $want) { Write-Host "  on the release page: $n" }

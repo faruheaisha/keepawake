@@ -75,7 +75,7 @@
   `%TEMP%` 是 8.3 短路径而 `Get-ChildItem` 的 `FullName` 是长拼写，差 3 字符让相对名 `Substring`
   切错位，装出 `48/CHANGELOG.md` 这样的幽灵前缀——本机造 11 字符父目录（差值同为 3）复现出逐字节
   相同的红再修，`-SelfTest` 两个突变照常各红在自家断言上；第三轮全绿（11 分 49 秒）。
-- **`release.yml` 自己跑出来的两条（2026-09-08，tag 推上去之后）**：只有走发布那条路才会遇到的东西，
+- **`release.yml` 自己跑出来的三条（2026-09-08，tag 推上去之后）**：只有走发布那条路才会遇到的东西，
   `ci.yml` 一轮都碰不到。**第四条**是探针在说谎：release 首轮红在 `probe-culture` 的
   `KA_OFFSET_STABLE=MISMATCH`（de-DE），而**同一个 commit 的 `ci.yml` 那一轮是全绿**——这个反差就是
   证据。`$newA`/`$newB` 各调一次 `Get-Date -Format 'o'` 再比 `ToUnixTimeSeconds()`，负载高的 runner 上
@@ -87,6 +87,18 @@
   一直在，缺的只是把 token 递到 `gh` 手上（`release.yml` 现在 job 级 `env: GH_TOKEN`）。顺手把这一类
   错误的代价从 11 分钟压到 5 秒：版本核对那一步开头就检查 `GH_TOKEN` 非空，空则拒绝起跑——
   失败点离原因越近，越不容易被误读成"发布系统坏了"。
+- **第六条，最难堪的一条（2026-09-08）：绿色的 CI 发布了一个空 release。**token 修好之后
+  `release.yml` 全绿、`v1.0.0` 的 Release 页确实建出来了——然后 `gh api …/releases/latest` 回答
+  `assets: 0`。原因在 `Publish` 的 else 分支：`gh release create` **不带文件路径就是只建 release、
+  不传文件，而且退出码 0**，三个产物从头到尾没离开过 runner。走 `--clobber` 的 if 分支倒是带了
+  `@files`，可那条分支这次根本没执行。"**release 发出去了**"和"**release 里有东西**"是两件事，
+  而 workflow 之前只检查了前一件。现在 create 分支补上 `@files`，末尾那句只是打印的
+  `gh release view` 换成硬断言：把 release 页读回来，文件不是我们要的那三个就 throw。
+  这条断言四向可反证（`_tmp/check-release-assets.ps1`，2026-09-08 实跑）：对着**当下这个空的线上
+  release** 报 `missing=3`；喂三个正确文件名报 `pass`；混进一个 `KeepAwake-0.9.0-portable.zip` 报
+  `extra=1`；`{"assets":[]}` 也报 `missing=3`——最后这条藏着 PowerShell 的坑：
+  `@((ConvertFrom-Json $j).assets.name)` 在空数组上得到的是**一个 `$null`、Count 1**，不拿
+  `Where-Object { $_ }` 滤掉，"空 release"会读成"有一个资产且不是我们的"。
 - 面向下载者的文档（阶段 6）：README 新增《拿到 release 之后》——三件套各自是什么、怎么核对 `SHA256SUMS`、
   第一次运行 Windows 会说什么（SmartScreen 那段明确标成"照微软公开行为写的、不是本机截图"，MOTW 那段才是实测）、
   便携包与安装版各自的行为，以及装过之后怎么卸。核对哈希的那段脚本**先跑过再贴**：2026-09-05 对 `dist/` 里
@@ -152,9 +164,10 @@
 
 ## 未发布 / 下一步
 
-- **发布这一侧**：`v1.0.0` tag 已经推上去了，`release.yml` 因此真跑了（两轮，缺陷见上）。剩下的只是
-  "看下一次 Publish 通不通"——通了以后 GitHub Release 上就是三件套 + `SHA256SUMS`，README 里那条
-  Releases 链接也就有了落点。跑通之后再补 winget 清单。
+- **发布这一侧**：`v1.0.0` tag 推上去了，`release.yml` 因此真跑了三轮，`Publish` 也真通了——只是第一次
+  通的时候发出去的是个**空 release**（第六条）。现在 create 分支带上文件、末尾多了那道读回 release 页的
+  断言，剩下的就是**在这一版断言下发一次**：Release 页上必须是三个文件 + `SHA256SUMS`，README 里那条
+  Releases 链接才算有了落点。跑通之后再补 winget 清单。
 - **README 开头重写为说人话**（2026-09-08）：原来那七条密不透风的 bullet 是写给自己看的——零依赖、
   免登录、分发路径、面板、说真话、许可，每一条都对，但没有一条回答"这到底是不是我要的东西"。现在是
   四块：它解决哪一种具体的烦、适合谁（以及**不适合**谁，包括 ConstrainedLanguage 那台根本跑不起来的机器）、
