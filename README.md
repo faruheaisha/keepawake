@@ -544,6 +544,8 @@ CI 侧两个 workflow：
 - **第五条，最后一步没 token（release 次轮）**：前面 11 分钟全绿，`Publish` 回 `gh release create exited 4`——Actions 里的 `gh` 不读运行时自带的那个 job token，只认 `GH_TOKEN` / `GITHUB_TOKEN`。`permissions: contents: write` 一直是对的，缺的只是把 token 递到 `gh` 手上。修完还在版本核对那一步开头加了 `GH_TOKEN` 非空检查：同一类错误下次值 5 秒，不值 11 分钟。
 - **第六条，全绿却发了一个空 release（release 第三轮）**：token 补上之后整条流水线绿了，Release 页也真建出来了，`gh api …/releases/latest` 却回答 `assets: 0`。`gh release create` **不带文件路径就是只建 release、不传文件，退出码 0** —— 三个产物从没离开过 runner，而 workflow 只检查了"命令成功"，没检查"页面上有东西"。走 `--clobber` 的那条分支带了 `@files`，可惜这次执行的不是它。现在 create 也带文件，`Publish` 末尾把 release 页**读回来**逐项比对，不是那三个就 throw；这条断言对着当时那个空 release 报 `missing=3`，喂三个正确文件名报 `pass`，混进一个旧版本号的文件报 `extra=1`。
 
+**结果（release 第四轮，2026-09-08 16:30:06Z）**：`v1.0.0` 的 Release 页上真有三个文件，而 GitHub 自己为两个产物算出的摘要与 release 里那份 `SHA256SUMS` **逐字节相同**——下载者照《先核对哈希》那段粘一遍，两个都会印 `OK`。**哈希能回答的到此为止**：CI 编出来的这两个哈希与本机同一次构建算出的**不一样**，因为 zip 和 setup.exe 里嵌了构建时刻，本项目没有可复现构建。也就是说哈希回答"这份文件和他发布的那份是不是同一份"，回答不了"这份是谁编的"——后者要代码签名，v1.0 没有（理由见 SECURITY.md）。
+
 `tests/ka-workflow.ps1` 能保证的只是每个 `run:` 块能被 5.1 解析、YAML 没有 tab 缩进——上面这些是 Actions 求值器那一层的，只有真跑一次才知道。现在知道了。
 
 这一节只管**怎么出**一次 release。**拿到** release 的人看到什么、怎么核对、两条路径各自怎么装和卸，在《拿到 release 之后》。
