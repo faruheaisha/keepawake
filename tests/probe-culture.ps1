@@ -144,10 +144,16 @@ $lidDelta = [Math]::Abs([DateTimeOffset]::Parse($written, [Globalization.Culture
                         [DateTimeOffset]::Now.ToUnixTimeSeconds())
 Write-Output ('KA_LIDSTAMP_DELTA=' + $lidDelta)
 $inv = [Globalization.CultureInfo]::InvariantCulture
-$newA = [DateTimeOffset]::Parse((Get-Date -Format 'o'), $inv).ToUnixTimeSeconds()
-$newB = [DateTimeOffset]::Parse((Get-Date -Format 'o'), $inv, [Globalization.DateTimeStyles]::AssumeUniversal).ToUnixTimeSeconds()
-$oldA = [DateTimeOffset]::Parse((Get-Date -Format 's'), $inv).ToUnixTimeSeconds()
-$oldB = [DateTimeOffset]::Parse((Get-Date -Format 's'), $inv, [Globalization.DateTimeStyles]::AssumeUniversal).ToUnixTimeSeconds()
+# One sample, two parse strategies. Two independent Get-Date calls can straddle a second
+# boundary on a loaded machine and read as an offset mismatch that does not exist - measured
+# once on a CI runner (release run of 2026-09-08). The property under test is that 'o' carries
+# its UTC offset, not that the clock stood still between two samples.
+$oStamp = Get-Date -Format 'o'
+$sStamp = Get-Date -Format 's'
+$newA = [DateTimeOffset]::Parse($oStamp, $inv).ToUnixTimeSeconds()
+$newB = [DateTimeOffset]::Parse($oStamp, $inv, [Globalization.DateTimeStyles]::AssumeUniversal).ToUnixTimeSeconds()
+$oldA = [DateTimeOffset]::Parse($sStamp, $inv).ToUnixTimeSeconds()
+$oldB = [DateTimeOffset]::Parse($sStamp, $inv, [Globalization.DateTimeStyles]::AssumeUniversal).ToUnixTimeSeconds()
 Write-Output ('KA_OFFSET_STABLE=' + $(if ($newA -eq $newB) { 'ok' } else { 'MISMATCH' }))
 Write-Output ('KA_NAKED_STAMP_DRIFT=' + [Math]::Abs($oldA - $oldB))
 $report = Get-KaReport -Refresh
