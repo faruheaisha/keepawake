@@ -261,8 +261,15 @@ try {
     elseif ($rc -eq 0) { Ok 'installer exit 0, no elevation prompt in a silent per-user run' }
     else { Red ("installer exit {0} - see {1}" -f $rc, $setupLog) }
 
-    $landed = @(Get-ChildItem -LiteralPath $app -Recurse -File -ErrorAction SilentlyContinue |
-        ForEach-Object { $_.FullName.Substring($app.Length + 1).Replace('\', '/') }) | Sort-Object
+    # %TEMP% can be an 8.3 short path (a GitHub runner's is C:\Users\RUNNER~1\...). Inno records
+    # {app} verbatim and Test-Path agrees either way, but Get-ChildItem spells every FullName in
+    # long form (C:\Users\runneradmin\...), so Substring against the short string cut 3 characters
+    # too few and prefixed each entry with the tail of the directory name: "48/CHANGELOG.md", where
+    # 48 was the last two hex digits of that run's generated suffix. Cut against the root as the
+    # enumerator spells it, not as we passed it to the installer.
+    $appSeen = if (Test-Path -LiteralPath $app) { (Get-Item -LiteralPath $app -Force).FullName } else { $app }
+    $landed = @(Get-ChildItem -LiteralPath $appSeen -Recurse -File -ErrorAction SilentlyContinue |
+        ForEach-Object { $_.FullName.Substring($appSeen.Length + 1).Replace('\', '/') }) | Sort-Object
     $missing = @($manifest | Where-Object { $landed -notcontains $_ })
     $extra = @($landed | Where-Object { $manifest -notcontains $_ })
     $want = $manifest.Count
