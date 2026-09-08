@@ -117,7 +117,7 @@ jobs:
           $t = @(
             'Two ways to run it:',
             '',
-            '- **`KeepAwake-@VERSION@-portable.zip`** - unzip it and double-click `panel.bat`. Nothing is installed and nothing is registered.',
+            '- **`KeepAwake-@VERSION@-portable.zip`** - unzip it and double-click `on.bat`. Protection lasts until `off.bat`; nothing is installed and nothing is registered. `panel.bat` opens the dashboard.',
             '- **`KeepAwake-@VERSION@-setup.exe`** - per-user installer, no admin prompt, Start Menu entries for the dashboard and the tray.',
             '',
             'Check what you downloaded:',
