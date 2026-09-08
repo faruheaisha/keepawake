@@ -28,6 +28,13 @@ jobs:
     needs: build-test
     runs-on: windows-latest
     timeout-minutes: 30
+    env:
+      # gh does not read the job token from the Actions runtime automatically - it looks for
+      # GH_TOKEN (or GITHUB_TOKEN) and exits 4 with a pointer to this exact line if neither is
+      # set. Measured on the first release run: everything up to and including Publish went
+      # green, then Publish died after 11 minutes. Set it for the whole job so the fail-fast
+      # below and Publish see the same environment.
+      GH_TOKEN: ${{ github.token }}
     defaults:
       run:
         shell: powershell     # in-box 5.1, same reason as build-test.yml
@@ -36,6 +43,12 @@ jobs:
 
       - name: The tag and ka-core.ps1 must name the same version
         run: |
+          # Publish is the last step of an ~11-minute job. Without this line a missing token
+          # costs the whole job (measured); with it the release dies at second five instead.
+          if (-not $env:GH_TOKEN) {
+              Write-Host 'refusing to start: GH_TOKEN is empty, so the Publish step cannot reach the GitHub API' -ForegroundColor Red
+              exit 1
+          }
           $raw = powershell -NoProfile -ExecutionPolicy Bypass -File packaging\build.ps1 -ShowVersion
           $ver = ($raw | Select-Object -Last 1).Trim()
           if (-not $ver) { throw 'packaging\build.ps1 -ShowVersion printed nothing' }
