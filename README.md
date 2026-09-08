@@ -2,6 +2,8 @@
 
 一个 Windows 防休眠工具：**不休眠、不熄屏、不锁屏**。给"人不在键盘前，但活还在干"的场面用。
 
+> Windows keep-awake tool: no sleep, no display-off, no auto-lock. Zero dependencies beyond the in-box PowerShell 5.1, no network, portable zip or per-user installer. The rest of this file is Chinese; the tool's own UI speaks 中文 and English.
+
 ## 它解决的是哪一种具体的烦
 
 你在挂着 AI 编程、一次编译、一个大文件下载、一个本地模型，或者从外面连着家里的机器。人去做别的事了，半小时后回来：屏幕黑了、机器睡了、远程断了，任务停在半路。
@@ -16,7 +18,7 @@ Windows 判断"没人用"的依据只有你多久没动键盘鼠标，它对"后
 - 投屏、演示、录屏、视频会议期间不能熄屏
 - 想要"不休眠"，但不想要后台服务、不想装运行库、不想注册账号、不想让它联网
 
-**不适合**：指望它让程序熬过一次真睡眠（睡眠会杀掉所有进程，只有"别睡"有用）；macOS / Linux；Windows 7；被 WDAC / AppLocker / 智能应用控制锁进 ConstrainedLanguage 的机器 —— 那是唯一一类根本跑不起来的机器，六个入口都会在加载任何东西之前按**代码 2** 干净退出并打印说明，不会静默失败（`tests/probe-clm-gate.ps1` 三条腿实测）。
+**不适合**：指望它让程序熬过一次真睡眠（睡眠会杀掉所有进程，只有"别睡"有用）；macOS / Linux；Windows 7 / 8.1 —— 没测过，别指望（自带 PowerShell 也不是 5.1）；被 WDAC / AppLocker / 智能应用控制锁进 ConstrainedLanguage 的机器 —— 那是唯一一类根本跑不起来的机器，六个入口都会在加载 `ka-core.ps1` 之前按**代码 2** 干净退出并打印说明，不会静默失败（`tests/probe-clm-gate.ps1` 三条腿实测：`6 entry points gated before ka-core`）。
 
 ## 硬事实
 
@@ -25,8 +27,8 @@ Windows 判断"没人用"的依据只有你多久没动键盘鼠标，它对"后
 | 系统要求 | Windows 10 / 11 + 系统自带的 PowerShell 5.1。没有运行库、没有 .NET 安装、没有后台服务。**实测参照机只有一台**（Windows 11 build 26200，S0 现代待机），Windows 10 与 S3 传统待机机型没测过 —— 差在哪一行一行写在《换一台 Windows 会怎样（适配矩阵）》 |
 | 权限 | 普通账户就够。需要管理员的只有两处：可选的改合盖动作 `lid apply`，和 `requests`（`powercfg /requests` 这条命令本身要求） |
 | 联网 | 不联网、不上传、不检查更新。下载它不需要账号，用它也不需要登录 |
-| 手上有什么 | 两条分发路径：便携 zip（23 个文件，解压双击就跑）或每用户 `setup.exe` + `SHA256SUMS`。两条都在 CI 里每轮重跑：真构建、真安装、真起一次保护、真卸载（见《拿到 release 之后》《独立门禁与实测探针》） |
-| 怎么控制 | 六个 `.bat` 双击入口 + `ka.bat` 命令行 + 本地面板 `http://127.0.0.1:8791/`（只监听回环地址）+ 系统托盘图标 |
+| 手上有什么 | 两条分发路径：便携 zip（23 个文件，解压双击就跑）或每用户 `setup.exe` + `SHA256SUMS`。CI 每轮把两个都真构建出来：zip 那条由 `-Smoke` 当场解开、从临时数据根真跑一遍；`setup.exe` 那条更严——装上、用装好的那份起一次真保护、再真卸载（见《拿到 release 之后》《独立门禁与实测探针》） |
+| 怎么控制 | 五个 `.bat` 入口：`on.bat`、`off.bat`、`panel.bat`、`tray.bat`、`ka.bat`（命令行全功能）；面板 `http://127.0.0.1:8791/` 只监听回环地址，不想开浏览器就用托盘图标 |
 | 有没有效 | 不猜。读内核电源日志数出最近 N 小时真待机过几次：`ka.bat evidence`（见《有效性是实测的》） |
 | 卸载 | 便携包删掉目录就没了；安装版走"已安装的应用"或 `unins000.exe`。配置和日志在 `%LOCALAPPDATA%\KeepAwake`，不跟着程序目录一起消失 |
 | 摊开写的地方 | 磁盘上每一个文件、每一个字段：[PRIVACY.md](PRIVACY.md)。面板端口、提权、合成输入、没有代码签名这四件事的威胁模型：[SECURITY.md](SECURITY.md)。每个版本改了什么：[CHANGELOG.md](CHANGELOG.md) |
@@ -101,7 +103,7 @@ foreach ($f in @(Get-ChildItem -File | Where-Object { $_.Name -ne 'SHA256SUMS' }
 foreach ($n in $sums.Keys) { if (-not (Test-Path -LiteralPath $n)) { 'MISSING  ' + $n + ' - named by SHA256SUMS but not here' } }
 ```
 
-**2026-09-05 在本机对真产物跑过**：对这次构建出的 zip 和 setup.exe 都印 `OK`；把 zip 副本中间一个字节翻掉，它印 `MISMATCH KeepAwake-1.0.0-portable.zip - SHA256SUMS says [...] the file is [...]`；把 `SHA256SUMS` 留着而把那个文件从目录里拿走，它印 `MISSING KeepAwake-1.0.0-setup.exe - named by SHA256SUMS but not here`。两个红分支都亲自踩过，这段粘贴才值钱。
+**2026-09-05 在本机对真产物跑过，2026-09-08 对着重建后的产物重跑过**：对这次构建出的 zip 和 setup.exe 都印 `OK`；把 zip 副本中间一个字节翻掉，它印 `MISMATCH KeepAwake-1.0.0-portable.zip - SHA256SUMS says [...] the file is [...]`；把 `SHA256SUMS` 留着而把那个文件从目录里拿走，它印 `MISSING KeepAwake-1.0.0-setup.exe - named by SHA256SUMS but not here`。两个红分支都亲自踩过，这段粘贴才值钱。
 
 哈希回答的是"这份文件和我发布的那份是否一致"，它**不**回答"这份文件是谁编译的"——后者要代码签名，v1.0 明确没有，理由和后果都写在 [SECURITY.md](SECURITY.md)《没有代码签名》。
 
