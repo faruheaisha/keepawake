@@ -7,7 +7,7 @@
 `.migrated.json` 都读它。仓库**不放** `VERSION` 文件——两份版本号一定会漂移。CI 在打 tag 时比对
 `KaVersion` 与 tag，不一致就构建失败。
 
-## [1.0.0] — 尚未发布
+## [1.0.0] — 2026-09-08
 
 第一个对外发布的版本。定位就两件事：**说实话** + **装得上、卸得掉**。
 
@@ -34,7 +34,10 @@
   自动备份原值，失败时打印一条让管理员代跑的命令而不是假装成功。
 - 文档：`README.md`（含适配矩阵：哪些是**一台机器上实测**、哪些**只是推理**）、
   `SECURITY.md`、`PRIVACY.md`、`CHANGELOG.md`。
-- 测试：82 个行为测试跑真电源 API、真事件日志、真计划任务。另有五道**独立门禁**——
+- 测试：89 次行为测试执行（82 个 `It` 用例，部分内含用例表），跑真电源 API、真事件日志、真计划任务；
+  2026-09-08 起 CI 每轮在 GitHub 的一次性 Windows runner 上全量实跑（首轮实测：通过 84，失败 0，跳过 5，
+  每条跳过都署名机器形态——没有看门狗任务、虚机固件能力位与本地化文本失配、14 天无 506 事件等，
+  物理机上这些牙齿原样保留）。另有五道**独立门禁**——
   `tests/ka-encoding.ps1`（BOM + 纯 LF）、`tests/ka-syntax.ps1`（能解析）、`tests/ka-privacy.ps1`（不外传）、
   `tests/ka-privacy-mutation.ps1`（证明隐私门禁真的会红）、`tests/ka-workflow.ps1`（`.github/workflows` 里
   每个 `run:` 块能被 PowerShell 5.1 解析、YAML 里没有 tab 缩进）；一份文件清单 `tests/ka-release-files.ps1`
@@ -60,9 +63,18 @@
   守这件事的换成了 `tests/probe-iss.ps1`（六条断言：原样字节和 CRLF 那份都要过、产物文件名要和 `release.yml`
   找的一致、缺 `/DMyAppVersion` 必须被 `#error` 挡下、回调原型写错必须被拒，再加一条记录"Inno 6.7.3 看不出
   漏写 `Result`"这个盲点——所以那行 `Result := True` 只有探针守得住）。找编译器的搜索顺序抽成
-  `packaging/ka-iscc.ps1` 一份，`build.ps1` 和探针共用，CI 装完 Inno 后还要用同一个函数再找一遍。
-  **还剩一件事没验证**：`.github/workflows/`（`ci.yml` + 可复用 `build-test.yml` + `release.yml`）一次都没跑过——
-  这个仓库还没有 git remote。`setup.exe` 那一件已经被下面那条实测顶掉了。
+  `packaging/ka-iscc.ps1` 一份，`build.ps1` 和探针共用，CI 装完 Inno 后还要用同一个函数再找一遍——
+  这一步已在 runner 上实测通过（机器级安装落在 `Program Files (x86)`，与本机的用户级路径不同目录）。
+  workflow 三个（`ci.yml` + 可复用 `build-test.yml` + `release.yml`）自 2026-09-08 起每个 push 真跑，
+  头两轮揪出的缺陷记在《README》CI 一节与下一条。
+- **CI 首跑揪出的缺陷（2026-09-08）**：第一次在 Actions 求值器那一层真跑，两轮各揪出一批只有真跑才
+  看得见的问题，各自修掉。首轮套件 10 红（修复 d10f1bb）：两条坏引用（`Get-KaRoot` 在阶段 1 改名
+  `Get-KaPath` 后的残留、`probe-wow64.ps1` 毕业进 tests/ 后撞上 per-thread 电源请求扫描名单）、
+  一条断言消息急切求值把自己打崩（空数组路径上 `Split-Path -Leaf $null`）、七条机器假设改为诚实
+  `Skip` 并署名机器形态；第二轮套件全绿（84/0/5）后安装器步骤又揪出一条（修复 d482076）：runner 的
+  `%TEMP%` 是 8.3 短路径而 `Get-ChildItem` 的 `FullName` 是长拼写，差 3 字符让相对名 `Substring`
+  切错位，装出 `48/CHANGELOG.md` 这样的幽灵前缀——本机造 11 字符父目录（差值同为 3）复现出逐字节
+  相同的红再修，`-SelfTest` 两个突变照常各红在自家断言上；第三轮全绿（11 分 49 秒）。
 - 面向下载者的文档（阶段 6）：README 新增《拿到 release 之后》——三件套各自是什么、怎么核对 `SHA256SUMS`、
   第一次运行 Windows 会说什么（SmartScreen 那段明确标成"照微软公开行为写的、不是本机截图"，MOTW 那段才是实测）、
   便携包与安装版各自的行为，以及装过之后怎么卸。核对哈希的那段脚本**先跑过再贴**：2026-09-05 对 `dist/` 里
@@ -128,10 +140,9 @@
 
 ## 未发布 / 下一步
 
-- **把 release 真跑一次**：建仓 + 加 remote + 推 `v1.0.0` tag，看第一次 Actions 到底过不过。产物这一侧已经没有
-  "只读过没跑过"的了：`.iss` 在本机编译过（Inno Setup 6.7.3），`setup.exe` 也在本机装过又卸过（阶段 7），
-  而且这一条现在是 `build-test.yml` 的一步。**剩的只有 Actions 自己**——`ci.yml` / `release.yml` 至今一次没执行，
-  因为仓库还没有 remote；`tests/ka-workflow.ps1` 只保证每个 `run:` 块能被 5.1 解析。跑通之后再补 winget 清单。
+- **推 `v1.0.0` tag 触发 `release.yml`**：`ci.yml` 一侧已经三轮实测全绿（见上）；`release.yml` 还没跑过——
+  它要过 tag↔`-ShowVersion` 核对、dist 死锁三件套、逐文件重算哈希，然后建 GitHub Release。
+  跑通之后再补 winget 清单。
 - 面向下载者的那一节已经写进 README（《拿到 release 之后》：三件套、怎么核对哈希、第一次运行 Windows
   会说什么、两条分发路径各自的行为）。**机器支持矩阵刻意不再独立成页**：同一台机器的适配结论写两处
   迟早互相打脸，这和"发布清单只留一份"是同一个理由。

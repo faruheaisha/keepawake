@@ -205,7 +205,7 @@ ka.bat / on.bat / off.bat / panel.bat / tray.bat     双击入口（ASCII 内容
         ├── ka-lid.ps1     合盖动作读改还原（唯一需要管理员的路径）
         └── ka-tray.ps1    WinForms 托盘图标
 dashboard/          index.html + styles.css + app.js + i18n.js（原生 JS，无框架、无 CDN、无构建；i18n.js 是中英两套词典）
-tests/ka-tests.ps1  82 个行为测试，实机跑
+tests/ka-tests.ps1  89 个行为测试（82 个 It，部分内含用例表），实机跑；CI 每轮在 GitHub 的一次性 runner 上全量跑一遍
 tests/ka-encoding.ps1 / ka-syntax.ps1 / ka-privacy.ps1 / ka-privacy-mutation.ps1 / ka-workflow.ps1
                     独立门禁：BOM + 纯 LF、可解析、不外传、"隐私门禁真的会红"、
                     ".github/workflows 里每个 run: 块都能被 PowerShell 5.1 解析，且 YAML 没被 tab 毁掉"
@@ -393,7 +393,7 @@ $env:KA_LANG = 'en'                 # 只影响当前这个进程，不动配置
 
 ## 测试
 
-82 个行为测试，跑真机、真电源 API、真事件日志、真计划任务，不是 mock：
+89 个行为测试（82 个 `It`，部分内含用例表），跑真机、真电源 API、真事件日志、真计划任务，不是 mock：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\ka-tests.ps1
@@ -432,7 +432,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\ka-tests.ps1
 
 套件会先把 `config.json`、`intent.json`、`state.json`、`ka.log`、`.server.json` 备份，跑完在 `finally` 里还原，并停掉自己启动的 worker —— 中途崩了也不会让这台机器处于"意外被保护/意外没保护"的状态。同一段 `finally` 还会把**进程已经不在了**的面板句柄扫掉（含被强杀的测试面板留下的 `.server-<端口>.json`），但**pid 还活着的句柄一个都不碰**，所以你开着的面板不会因为这些测试而失联。已安装的看门狗计划任务也在同一段 `finally` 里停用并按捕获到的状态还原：看门狗每 10 分钟对账的就是这些测试正在改写的 `intent.json`/`state.json`，实测它会把自己启动的 worker 按 `reason=stopped` 收割掉，让两个测试看起来像产品 bug。
 
-当前状态：**82 个 `It` 用例，最后一次全量实机运行为 2026-08-30（通过 82，失败 0，跳过 0）**。用例数与文件里 `grep -c "It '"` 的 82 一致，但"失败 0"是那一天那次运行的结果 —— 这一行新立的规矩对它自己同样成立：想引用当天状态就得当天跑一遍，跑不了就别替它说话。**2026-09-04 又动了套件两处**（面板句柄那条断言改走 `Get-KaServerHints`，`finally` 加了陈旧句柄清扫），改后**没有再全量实跑**，所以上面那个"失败 0"不顺延到今天。
+当前状态：**82 个 `It` 用例（部分内含用例表，CI 上一轮实际执行 89 次），最后一次全量实机运行是 2026-09-08 的 CI——通过 84，失败 0，跳过 5**。那次跑在 GitHub 的一次性 Windows runner 上（这就是本套件的既定跑法：不动任何人的真机器），5 条跳过全部署名机器形态：没有登记看门狗任务、虚机固件能力位与 `powercfg /a` 文本失配、近 14 天没有 506 低功耗会话事件（两条）、全新数据根没有 `STARTED` 行。**每一条"跳过"都说得出"为什么这台机器验不了"，验得了的机器上牙齿原样保留**；换台真笔记本跑，它们会重新变红或变绿，而不是永远绿。`grep -c "It '"` 的 82 是静态用例数，与执行数不是一回事——这条规矩对它自己同样成立：引用哪次运行，就说哪次运行的数。
 
 ### 独立门禁与实测探针
 
@@ -492,14 +492,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File packaging\build.ps1 -Stage -
 
 `setup.exe` 这一块已经不再悬着了：它在**本机**被真装真卸过，20 条断言、开始菜单/注册表/端口/计划任务的前后对比、卸载钩子的耗时、任务导出再逐字节补回，全写在《安装版：setup.exe》那一节，命令是 `packaging/ka-test-install.ps1 -WithWorker -SelfTest`（`-SelfTest` 会连两个突变一起跑，证明这套断言抓得住红）。在这台机器上跑它的代价同样写在那一节里——它会把你的 `KeepAwake-Guard` / `KeepAwake-Logon` 删掉再补回来，所以别在没备份的情况下跑。
 
-现在只剩一件事没验证：**上面这些在 GitHub 的一次性 runner 上跑会怎样**——原因是这两个 workflow 至今没有执行过，原因见本节末尾。找编译器这一步 `packaging/ka-iscc.ps1` 只有一份实现，`build.ps1` 和探针共用它，CI 装完之后还要用同一个函数再找一遍（机器级安装落在 `Program Files (x86)`，和本机这次的用户级路径不是同一个目录）。
+上面这些在 GitHub 的一次性 runner 上**已经真跑过**（2026-09-08 起每个 push 都跑，实测记录见本节末尾）。找编译器这一步 `packaging/ka-iscc.ps1` 只有一份实现，`build.ps1` 和探针共用它，CI 装完之后还要用同一个函数再找一遍（机器级安装落在 `Program Files (x86)`，和本机这次的用户级路径不是同一个目录）——这一步在 runner 上实测通过。
 
 CI 侧两个 workflow：
 
 - `ci.yml`（push `main` / 每个 PR）复用 `build-test.yml`：先装 Inno Setup 并用 `Get-KaIscc` 复核找得到编译器（这样 `probe-iss` 在 CI 上永远不会走到"跳过"那个分支），再 `-Gates -Probes`，然后跑 `ka-tests.ps1` 全量行为套件（这一步在 GitHub 的临时 Windows runner 上跑，不动任何人的机器——这正是本地不允许随手跑它的那个理由），接着 `build.ps1 -Stage -Installer -Smoke` 出三件套，然后**把刚做好的那个 `setup.exe` 装上再卸掉**（`packaging/ka-test-install.ps1 -WithWorker -SelfTest`，也就是上面那 20 条断言加两个突变，整轮 2 分 41 秒），最后把包含 `setup.exe` 的 `dist` 作为 artifact 上传。
 - `release.yml`（打 `v*` tag 或手动 dispatch）先 `needs: build-test`，再核对 tag 与 `-ShowVersion` 一致、`choco install innosetup`、`build.ps1 -Installer -Smoke`、**当场把 `dist` 里的文件数死锁为三件套并逐个拿 `SHA256SUMS` 重算比对**，然后建 GitHub Release 上传。
 
-要说清楚的：**这个仓库现在还没有配 git remote**（`git remote -v` 是空的），所以上面两个 workflow 从来没有执行过；`tests/ka-workflow.ps1` 能保证的只是每个 `run:` 块能被 5.1 解析、YAML 没有 tab 缩进，Actions 自己的求值器那一层只有真跑一次才知道。建仓、加 remote、推 `v1.0.0` tag 这三步是人的动作。
+上面两个 workflow 从 2026-09-08 起在公开仓库 <https://github.com/faruheaisha/keepawake> 的每个 push 上真跑。头两轮各揪出一批只有真跑才看得见的缺陷，全部修掉：
+
+- **首轮（push 136730d）套件 10 条红，修复 d10f1bb**：两条真坏引用（`Get-KaRoot` 在阶段 1 的程序/数据目录分离里改名为 `Get-KaPath`，套件有一处没跟上；`probe-wow64.ps1` 2026-09-04 毕业进 tests/ 之后，撞上了后来才立的 per-thread 电源请求扫描名单）；一条断言消息把自己打崩（`Assert` 的消息串是急切求值的，空数组路径上 `Split-Path -Leaf $null` 抛异常，把一条本来会过的测试打死）；七条机器假设（runner 没有电池、14 天没有 506 待机事件、虚机固件能力位与 `powercfg /a` 文本失配等）——按同一条规矩处理：**这台机器验不了就诚实 `Skip` 并写明为什么**，不放松成永远绿；物理机上牙齿原样保留。
+- **第二轮（d10f1bb）套件全绿（84 通过 / 0 失败 / 5 跳过），安装器步骤又揪出一条，修复 d482076**：GitHub runner 的 `%TEMP%` 是 8.3 短路径（`C:\Users\RUNNER~1\...`），`Get-ChildItem` 返回的 `FullName` 却是长拼写（多 3 个字符），按短路径长度 `Substring` 切相对名少切 3 位，每个条目前残留目录名末两位——`ka-test-install-a2b0c748` 装出了 `48/CHANGELOG.md`，23 个清单文件全部被记成"多余"。不是 Inno 装错了地方，是断言切错了字符串。本机造了一个 11 字符父目录（差值同为 3）复现出逐字节相同的红，修复（按枚举器拼写的根切）后同输入转绿。
+- **第三轮（d482076）全绿，11 分 49 秒**：门禁+探针约 6 分、套件约 3 分、三件套构建数秒、把做好的 `setup.exe` 在 runner 上装上再卸掉（`-SelfTest` 两个突变照常各红在自家断言上、净装绿）。
+
+`tests/ka-workflow.ps1` 能保证的只是每个 `run:` 块能被 5.1 解析、YAML 没有 tab 缩进——上面这些是 Actions 求值器那一层的，只有真跑一次才知道。现在知道了。
 
 这一节只管**怎么出**一次 release。**拿到** release 的人看到什么、怎么核对、两条路径各自怎么装和卸，在《拿到 release 之后》。
 
