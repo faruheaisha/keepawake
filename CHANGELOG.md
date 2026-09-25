@@ -181,7 +181,10 @@
   17 条跑完仍是那 1 条红——`probe-mutex-identity` 的 C 段要做默认数据根 mutex 的第一个持有者，而这台
   机器上保护正在跑（`state.json` 的 `pid=23496` 存活、文件 mtime 2026-09-26 01:40:21，`Test-KaWorkerMutex`
   实测 `True`，`Local\KA-Worker-DCA86D0FFFB8` 被它占着）。红得和上一轮一字不差，不是回归，也不去动那个
-  worker。
+  worker。github.com 还没通（api 200 / github 000，代理端口没人监听），所以**在本地替 CI 先看了一遍**：
+  `git clone` 一份干净副本（`bad35e7`），用**那份副本自己检出的规则文本**跑它的源码，三条全绿
+  （副本里 `tests/ka-tests.ps1` 实测 BOM 在、CRLF 计数 0）。
+  也就是说推送之后 CI 那三条不该出意外，真出意外就是 runner 环境而不是规则本身。
   过程中被自己的 harness 咬到两次，都记在这里因为它正是"绿了也不作数"的那一类：① harness 函数用
   `Write-Output` 打统计行，返回值就变成了 `[信息, 目录]` 数组，`$root` 拿到那句中文，`Get-ChildItem`
   对一个不存在的驱动器**报的是"-File 参数不存在"**而不是路径错——一个纯工具 bug 长得像语法不支持；
