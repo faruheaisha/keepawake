@@ -97,7 +97,12 @@ $null = Wait-Job -Job $hold -Timeout 15
 $gotLine = (Receive-Job -Job $hold *>&1 | Out-String).Trim()
 Remove-Job -Job $hold -Force
 Write-Output "  holder job said: $gotLine ; OpenExisting error: $(if ($why) { $why } else { 'none' })"
-if ($gotLine -notmatch 'got=True') { Bad "control failed: the holder never got the mutex, so contention proves nothing ($gotLine)" }
+# This control takes the *default* root's name, so it needs to be the first taker. On a machine
+# where protection is live right now it cannot be: the running worker already owns
+# Local\KA-Worker-<default suffix>, and the job prints got=False. Measured 2026-09-25 on a box
+# with a panel worker alive - and the same red reproduced from a pristine `git archive HEAD`, so
+# it is the machine, not the code under test. CI runs this where nothing is protecting.
+if ($gotLine -notmatch 'got=True') { Bad "control failed: the holder never got the mutex, so contention proves nothing ($gotLine) - 若这台机器正在防休眠，先停掉再跑本探针" }
 elseif ($contended) { Ok 'OpenExisting from a second process sees the name as taken - the collision is real, not theoretical' }
 else { Bad 'the name read as free while another process held it - the observation is broken' }
 

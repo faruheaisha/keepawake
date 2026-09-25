@@ -119,10 +119,11 @@ function Apply-Flags {
         $script:lastError = ''
         return $true
     } catch {
-        # The exception text stays in the log - a stack string is not something to put in a
-        # pill, and it is already on the one screen built to show it.
+        # The lastError token is what the pill and the CLI render, in the reader's language.
+        # The log gets the same token plus a code - the exception's own prose belongs to no
+        # language the user chose, and ka.log is not where it may be written down.
         $script:lastError = "settes-throw:$Why"
-        Add-KaLog "FAIL pid=$PID $($script:lastError) $($_.Exception.Message)"
+        Add-KaLog "FAIL pid=$PID $($script:lastError) err=$(Get-KaErrorToken $_)"
         return $false
     }
 }
@@ -313,7 +314,7 @@ try {
                         }
                     } catch {
                         $pulseResult = 'error'
-                        Add-KaLog "WARN pid=$PID pulse-error msg=$($_.Exception.Message)"
+                        Add-KaLog "WARN pid=$PID pulse-error err=$(Get-KaErrorToken $_)"
                     }
                 }
             }

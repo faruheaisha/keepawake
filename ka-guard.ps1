@@ -85,9 +85,13 @@ try {
             alive   = $result.alive })
     }
 } catch {
-    $result.action = "error: $($_.Exception.Message)"
+    # `action` is a machine token: the finally block logs it, -Json hands it to whoever started
+    # the task, and both render it in their own words. So the failure goes in as a token too,
+    # with the code in its own field - not as the sentence Windows happened to speak.
+    $result.action = 'error'
+    $result.error = Get-KaErrorToken $_
     try { if ($Json) { $result | ConvertTo-Json -Compress | Write-Output } } catch { }
-    Add-KaLog "GUARD-FAILED $($_.Exception.Message)"
+    Add-KaLog "GUARD-FAILED err=$($result.error)"
     exit 1
 } finally {
     Add-KaLog ('GUARD action={0} intent={1} workers={2} alive={3}' -f `

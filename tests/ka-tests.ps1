@@ -548,10 +548,15 @@ try {
         }
     }
 
-    It '日志调用点只写 ASCII：Add-KaLog 里没有汉字' {
-        # README promises the log is machine vocabulary. That is only true if nobody writes a
-        # sentence into it, and a regex over lines misses the `Add-KaLog ('...' -f ...)` calls
-        # that continue onto a second line - so this reads the syntax tree instead.
+    It '日志调用点只写 ASCII：既没有汉字，也没有 Windows 的句子' {
+        # README promises the log is machine vocabulary. Two ways to break that promise: write a
+        # sentence into the source, or hand Add-KaLog the OS's own translated sentence. The
+        # second one is what really happened (ka.log, 2026-08-31: 「server request error: 无法连接到
+        # CIM 服务器。内存不足」) and no CJK-literal regex can see it, because the Chinese came from
+        # Windows at runtime. So this also bans the message property itself; Get-KaErrorToken is
+        # the answer that stays ASCII in every UI language.
+        # A regex over lines is not enough either - `Add-KaLog ('...' -f ...)` continues onto a
+        # second line, so the whole thing is read from the syntax tree.
         $bad = @()
         foreach ($f in @('ka-core.ps1', 'ka-server.ps1', 'ka-worker.ps1', 'ka-guard.ps1', 'ka-tray.ps1', 'ka.ps1')) {
             $tok = $null; $err = $null
@@ -562,9 +567,38 @@ try {
                 if ("$($c.CommandElements[0].Extent.Text)" -ne 'Add-KaLog') { continue }
                 $n2 = ([regex]::Matches($c.Extent.Text, '\p{IsCJKUnifiedIdeographs}')).Count
                 if ($n2) { $bad += ('{0}:{1} 有 {2} 个汉字' -f $f, $c.Extent.StartLineNumber, $n2) }
+                foreach ($m in [regex]::Matches($c.Extent.Text, 'Exception\s*\.\s*Message')) {
+                    $bad += ('{0}:{1} 把 Windows 的本地化句子写进日志（{2}），要用 Get-KaErrorToken' -f `
+                             $f, $c.Extent.StartLineNumber, $m.Value)
+                }
             }
         }
         Assert ($bad.Count -eq 0) ('日志里混进了句子：' + ($bad -join '；'))
+    }
+
+    It '面板收到的 Reason 与看门狗的 action 不能是 Windows 的原话（只能上词典或给代码）' {
+        # The test below this one bans hard-coded sentences in a Reason; a runtime sentence is
+        # worse, because it arrives in the Windows UI language rather than the language the
+        # visitor picked. alert.dataDirUnwritable / config.writeFail already interpolate
+        # Get-KaLastWriteCode for exactly this reason, so a Reason is either dictionary wording
+        # (Get-KaText, translated per request) or a Get-KaErrorToken code - never the message.
+        # The one exception is marked in place: a config-refusal Reason is our own
+        # Get-KaText 'config.enum' sentence, which is already the request's language.
+        $bad = @()
+        $q = [string][char]34 + [char]39
+        foreach ($f in @('ka-core.ps1', 'ka-server.ps1', 'ka-worker.ps1', 'ka.ps1', 'ka-lid.ps1', 'ka-guard.ps1')) {
+            $i = 0
+            foreach ($line in [IO.File]::ReadAllLines((Join-Path $root $f))) {
+                $i++
+                if ($line -match '^\s*#') { continue }
+                if ($line -notmatch "(Reason|reason|action)\s*=") { continue }
+                if ($line -notmatch 'Exception\s*\.\s*Message') { continue }
+                if ($line -match 'Get-KaText') { continue }     # wording from our own dictionary is allowed
+                if ($line -match 'refusal-wording only') { continue }
+                $bad += ('{0}:{1}' -f $f, $i)
+            }
+        }
+        Assert ($bad.Count -eq 0) ('Reason 直接用了 Windows 的原话，英文面板上会混进中文：' + ($bad -join '；'))
     }
 
     It '交给面板的 Reason 不能是硬编码句子（面板会原样显示）' {
@@ -594,11 +628,11 @@ try {
             @(
                 '2026-08-29 13:57:30  SERVER pid=25720 port=8791 url=http://127.0.0.1:8791/'
                 '2026-08-29 13:57:31  REJECT /api/x GET : origin'
-                '2026-08-29 13:57:35  server start failed pid=31337 port=8791 msg=Address already in use'
+                '2026-08-29 13:57:35  server start failed pid=31337 port=8791 err=HttpListenerException#0x80004005#win32=183'
                 '2026-08-29 13:57:36  SERVER pid=31337 port=8792 url=http://127.0.0.1:8792/'
             ) | Set-Content -LiteralPath $log -Encoding UTF8
             Assert-Eq (Get-KaServerLastLine -LogPath $log -ServerPid 31337) `
-                '2026-08-29 13:57:35  server start failed pid=31337 port=8791 msg=Address already in use' `
+                '2026-08-29 13:57:35  server start failed pid=31337 port=8791 err=HttpListenerException#0x80004005#win32=183' `
                 '应当引用自己那行失败，而不是自己随后的成功行'
             Assert-Eq (Get-KaServerLastLine -LogPath $log -ServerPid 25720) '' '别的 pid 的话不能当本进程失败的原因'
             Assert-Eq (Get-KaServerLastLine -LogPath $log -ServerPid 99999) '' '日志里没有这个 pid 时不能编造原因'

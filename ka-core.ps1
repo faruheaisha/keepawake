@@ -575,6 +575,57 @@ function Add-KaLog {
     }
 }
 
+function Get-KaErrorToken {
+    <#
+        The ASCII half of a failure: <type>#<hresult>[#win32=N][#<error id>]. Written for ka.log,
+        and for every payload field that a surface then wraps in its own sentence - because a
+        Windows error message is NOT machine vocabulary.
+
+        Measured on this zh-CN box (_tmp/probe-err-fields.ps1, probe-err-fields2.ps1): a CIM
+        failure arrives with Message already translated (无效命名空间), and PowerShell copies a
+        hand-thrown string into FullyQualifiedErrorId as well (请求体过大（999 字节）). Type names,
+        HRESULTs and cmdlet error ids stayed ASCII in every case. That is the same half
+        Test-KaPathWritable returns as .Code, and the same half alert.dataDirUnwritable renders.
+
+        Which part carries the signal varies by failure, so all three go in:
+          * CimException.HResult is the generic 0x80131500 - the real WMI code only exists in the
+            error id (HRESULT 0x8004100e = WBEM_E_INVALID_NAMESPACE), so dropping the id loses
+            the diagnosis on exactly the calls this tool makes most.
+          * A .NET throw reaches a cmdlet catch wrapped in MethodInvocationException, so the
+            innermost type and HRESULT are the informative pair (IOException#0x80070020 for a
+            file sharing violation, not the wrapper).
+        The error id is used only when it is printable ASCII end to end. A field that has learned
+        a sentence is dropped whole rather than trimmed to the consonants left behind, and what
+        remains - type plus HRESULT - is thin but true. Losing the OS's prose from the log is the
+        point; the sentence still reaches a person, in the language that surface was asked to use.
+    #>
+    param($Record)
+    $e = $Record
+    if ($Record -is [System.Management.Automation.ErrorRecord]) { $e = $Record.Exception }
+    if ($null -eq $e) { return 'none' }
+    $deep = $e
+    while ($deep.InnerException) { $deep = $deep.InnerException }
+    $bits = @($deep.GetType().Name)
+    try {
+        if ([int]$deep.HResult) { $bits += '0x{0:X8}' -f [int]$deep.HResult }
+    } catch { }
+    try {
+        # An ExternalException's HRESULT is often the generic 0x80004005 while the number that
+        # says what happened is the Win32 code under it - 183 ERROR_ALREADY_EXISTS is the whole
+        # story of a panel that cannot bind its port, and it is nowhere in the HRESULT.
+        if ($deep -is [Runtime.InteropServices.ExternalException]) {
+            $native = [int]$deep.NativeErrorCode
+            if ($native) { $bits += 'win32={0}' -f $native }
+        }
+    } catch { }
+    if ($Record -is [System.Management.Automation.ErrorRecord]) {
+        $id = "$($Record.FullyQualifiedErrorId)".Trim()
+        # 0x20-0x7E only, no whitespace folded away: a single non-ASCII character fails the field.
+        if ($id -and $id -notmatch '[^\x20-\x7E]' -and -not ($bits -contains $id)) { $bits += $id }
+    }
+    return ($bits -join '#')
+}
+
 # ---------------------------------------------------------------- configuration
 # Enum-typed config keys in one place. The reader below falls back quietly (config.json
 # can be hand-edited or written by an older version, and the tool must still start);
@@ -2789,10 +2840,11 @@ function Install-KaGuard {
                         -Settings $settings -User $me -Force -ErrorAction Stop | Out-Null
                     $boot.mode = 'interactive'; $boot.ok = $true
                 } catch {
-                    # Scheduler exception messages end with a newline; the reason goes
-                    # into a sentence, so it has to arrive trimmed.
-                    $boot.mode = 'denied'; $boot.reason = "$($_.Exception.Message)".Trim()
-                    Add-KaLog "guard boot-task denied: $($boot.reason)"
+                    # Denied is the honest word, and the code is the honest detail: the
+                    # scheduler speaks in the Windows UI language, which is not this user's
+                    # panel language and has no business in ka.log either.
+                    $boot.mode = 'denied'; $boot.reason = Get-KaErrorToken $_
+                    Add-KaLog "guard boot-task denied err=$($boot.reason)"
                 }
             }
             if ($boot.ok) { Add-KaLog "guard boot task installed mode=$($boot.mode)" }
@@ -2800,7 +2852,9 @@ function Install-KaGuard {
         $script:KaGuardCache = $null
         return @{ Ok = $true; Status = (Get-KaGuardStatus); Boot = $boot }
     } catch {
-        return @{ Ok = $false; Reason = $_.Exception.Message }
+        # The CLI and the panel both put this string inside a sentence they already own
+        # (cli.guardFail / guard.fail), so the detail has to survive a language change.
+        return @{ Ok = $false; Reason = (Get-KaErrorToken $_) }
     } finally {
         $ErrorActionPreference = $ErrorActionPreferenceOld
     }
@@ -2814,7 +2868,7 @@ function Uninstall-KaGuard {
                 Unregister-ScheduledTask -TaskName $n -Confirm:$false -ErrorAction Stop
                 $removed += $n
             }
-        } catch { return @{ Ok = $false; Reason = $_.Exception.Message } }
+        } catch { return @{ Ok = $false; Reason = (Get-KaErrorToken $_) } }
     }
     Add-KaLog "guard uninstalled ($($removed -join ', '))"
     $script:KaGuardCache = $null
@@ -3262,10 +3316,10 @@ function Get-KaSleepEvidence {
         }
     } catch {
         # Some error records arrive with an empty Message (observed live: the panel then read
-        # "unknown reason"). The type name is still a machine token and still better than silence.
-        $msg = "$($_.Exception.Message)".Trim()
-        if (-not $msg) { $msg = "$($_.Exception.GetType().FullName)" }
-        $r.reason = $msg
+        # "unknown reason"), and a Get-WinEvent failure arrives with a Message in whichever
+        # language Windows speaks. Both are solved by the same field: the panel renders
+        # ev.failed around this, so it has to be a code, not somebody's sentence.
+        $r.reason = Get-KaErrorToken $_
     }
     # Outside the try: a failed query is exactly the case that has to be declared blind, and
     # skipping the call there would leave `instrument` '' - which no surface can render.

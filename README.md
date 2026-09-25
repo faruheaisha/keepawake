@@ -238,7 +238,7 @@ ka.bat / on.bat / off.bat / panel.bat / tray.bat     双击入口（ASCII 内容
         ├── ka-lid.ps1     合盖动作读改还原（唯一需要管理员的路径）
         └── ka-tray.ps1    WinForms 托盘图标
 dashboard/          index.html + styles.css + app.js + i18n.js（原生 JS，无框架、无 CDN、无构建；i18n.js 是中英两套词典）
-tests/ka-tests.ps1  89 个行为测试（82 个 It，部分内含用例表），实机跑；CI 每轮在 GitHub 的一次性 runner 上全量跑一遍
+tests/ka-tests.ps1  83 个 It 用例（部分内含用例表；最近一轮全量执行是 89 次），实机跑；CI 每轮在 GitHub 的一次性 runner 上全量跑一遍
 tests/ka-encoding.ps1 / ka-syntax.ps1 / ka-privacy.ps1 / ka-privacy-mutation.ps1 / ka-workflow.ps1
                     独立门禁：BOM + 纯 LF、可解析、不外传、"隐私门禁真的会红"、
                     ".github/workflows 里每个 run: 块都能被 PowerShell 5.1 解析，且 YAML 没被 tab 毁掉"
@@ -375,9 +375,9 @@ $env:KA_LANG = 'en'                 # 只影响当前这个进程，不动配置
 - 面板右上角有 自动 / 中文 / English 三档，点了立刻重绘并写回 `config.json`；命令行与托盘下次启动读同一个值，作用范围见本节最后一条。
 - `auto` 的定义按界面各取最贴近的信号：面板在浏览器里渲染，所以跟随**浏览器**语言；命令行跟随 Windows 的**当前用户界面语言**，读的是注册表 `HKCU:\Control Panel\Desktop\MuiCached\MachinePreferredUILanguages`（也就是"设置 → 时间和语言 → 显示语言"写进去的那个值），拿不到才退到 `CurrentUiCulture`。**不用 `CurrentUICulture` 作首选是实测结论**：本机它报 `en-US`，而 `MuiCached` 报 `zh-CN`，Windows 界面确实是中文 —— 用错了会让一个中文用户一开机就拿到英文命令行。
 - 词典只有中英两种。日语、德语、法语系统的用户拿到的是英文：这是有意的兜底，比给一个看不懂的语言好，也不会让"我的系统不是中文"变成用不了。
-- **日志和 `state.json` 不受语言影响**：`PULSE`、`HEARTBEAT`、`EXIT`、`settes-zero:initial`、`note=lock-screen`、`note=battery-floor`、`note=il-mismatch`、`PULSE-SKIP reason=il-mismatch`、`PULSE-SKIP reason=lock-screen`、待机原因标记 `screen-off` / `idle` / `lid` 这些标记是机器读的，永远是 ASCII。面板的波形、`evidence` 的统计、测试断言都靠它们；显示时再经词典换成句子。所以换语言**不改变任何行为，只改变措辞**，也意味着 worker 更新不会把一句新话术硬塞进每种界面里。
+- **日志和 `state.json` 不受语言影响**：`PULSE`、`HEARTBEAT`、`EXIT`、`settes-zero:initial`、`note=lock-screen`、`note=battery-floor`、`note=il-mismatch`、`PULSE-SKIP reason=il-mismatch`、`PULSE-SKIP reason=lock-screen`、待机原因标记 `screen-off` / `idle` / `lid`、失败代码 `err=CimException#0x80131500#HRESULT 0x8004100e,GetCimInstanceCommand`（异常类型 # HRESULT # Win32 码 # cmdlet 错误 id，这几样 Windows 自己都不翻译）这些标记是机器读的，永远是 ASCII。面板的波形、`evidence` 的统计、测试断言都靠它们；显示时再经词典换成句子。所以换语言**不改变任何行为，只改变措辞**，也意味着 worker 更新不会把一句新话术硬塞进每种界面里。
 - `language` 在读写两端规则不同，是有意的：**写入端拒绝**（`ka.bat config -Set language=de` 与面板上点一个非法值都会报错，且不落盘），因为你刚打错的那个字符应该当场知道；**读取端宽容**（config.json 是手改的、从别的机器同步来的、上个版本写的，任何一种都不能让工具起不来，只能回落默认）。
-- 当前覆盖范围：**全部界面中英全量** —— 面板 `dashboard/i18n.js` 两套词典 459 个键；命令行 `status` / `report` / `check` / `start` / `stop` / `config` / `guard` / `serve` 等全部输出、托盘菜单与气泡、`ka.bat lid` 的合盖文案、看门狗与面板进程的控制台行，统一走服务端 zh/en 词典（缺键、占位符对不上、英文值里混进中文，测试直接失败）。两条兜底测试把成品抓在手里：把 `/api/state`（面板每 2 秒轮询的那个负载）按英文渲染后逐字符串叶子查汉字，以及真实跑一遍 `ka.ps1 status` 的英文输出逐行查汉字（两处都放行路径——项目目录名本身就是中文，而路径是你的数据不是我们的话术）。唯一的例外：`ka-guard-missing-core.txt` 那一行天生双语，因为它写下的前提是 `ka-core.ps1` 已经丢了、词典跟着一起丢了。
+- 当前覆盖范围：**全部界面中英全量** —— 面板 `dashboard/i18n.js` 两套词典各 470 个键（zh 与 en 键集相同，条数用 `awk` 数两个块的键行得到）；命令行 `status` / `report` / `check` / `start` / `stop` / `config` / `guard` / `serve` 等全部输出、托盘菜单与气泡、`ka.bat lid` 的合盖文案、看门狗与面板进程的控制台行，统一走服务端 zh/en 词典（各 372 键，数是 `ka-core.ps1` 加载后 `$script:KaUi.zh.Count` 读出来的，不是数行数猜的；缺键、占位符对不上、英文值里混进中文，测试直接失败）。两条兜底测试把成品抓在手里：把 `/api/state`（面板每 2 秒轮询的那个负载）按英文渲染后逐字符串叶子查汉字，以及真实跑一遍 `ka.ps1 status` 的英文输出逐行查汉字（两处都放行路径——项目目录名本身就是中文，而路径是你的数据不是我们的话术）。唯一的例外：`ka-guard-missing-core.txt` 那一行天生双语，因为它写下的前提是 `ka-core.ps1` 已经丢了、词典跟着一起丢了。
 - **`report` 与 `status` 只发数据，不发句子**：风险条目、建议理由、红色提醒条、同类软件名在 JSON 里长这样 —— `{"id":"report.risk.lid-hidden"}`、`{"id":"report.why.half-of-lock-timer","secs":180}`、`{"level":"bad","id":"alert.multiWorker","count":2}`、`{"id":"competitor.powerToys"}`。`id` 就是三本词典（服务端 zh、服务端 en、面板 i18n.js）里共同的键名，所以一条测试就能从**发出端**向外查覆盖：词典缺键、占位符少给了数、面板少写一行，都会在测试里失败，而不是等用户看到一个空句子。认不出的 `id` 显示成 `id` 本身（可 grep），不会显示成空白。代价是命令行不再"顺手 Write-Host 一句话"，好处是两种界面永远说同一套话。
 
 ## 东西写在哪儿
@@ -426,7 +426,7 @@ $env:KA_LANG = 'en'                 # 只影响当前这个进程，不动配置
 
 ## 测试
 
-89 个行为测试（82 个 `It`，部分内含用例表），跑真机、真电源 API、真事件日志、真计划任务，不是 mock：
+83 个 `It` 用例（部分内含用例表；最近一轮全量 CI 实际执行 89 次），跑真机、真电源 API、真事件日志、真计划任务，不是 mock：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\ka-tests.ps1
@@ -465,7 +465,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\ka-tests.ps1
 
 套件会先把 `config.json`、`intent.json`、`state.json`、`ka.log`、`.server.json` 备份，跑完在 `finally` 里还原，并停掉自己启动的 worker —— 中途崩了也不会让这台机器处于"意外被保护/意外没保护"的状态。同一段 `finally` 还会把**进程已经不在了**的面板句柄扫掉（含被强杀的测试面板留下的 `.server-<端口>.json`），但**pid 还活着的句柄一个都不碰**，所以你开着的面板不会因为这些测试而失联。已安装的看门狗计划任务也在同一段 `finally` 里停用并按捕获到的状态还原：看门狗每 10 分钟对账的就是这些测试正在改写的 `intent.json`/`state.json`，实测它会把自己启动的 worker 按 `reason=stopped` 收割掉，让两个测试看起来像产品 bug。
 
-当前状态：**82 个 `It` 用例（部分内含用例表，CI 上一轮实际执行 89 次），最后一次全量实机运行是 2026-09-08 的 CI——通过 84，失败 0，跳过 5**。那次跑在 GitHub 的一次性 Windows runner 上（这就是本套件的既定跑法：不动任何人的真机器），5 条跳过全部署名机器形态：没有登记看门狗任务、虚机固件能力位与 `powercfg /a` 文本失配、近 14 天没有 506 低功耗会话事件（两条）、全新数据根没有 `STARTED` 行。**每一条"跳过"都说得出"为什么这台机器验不了"，验得了的机器上牙齿原样保留**；换台真笔记本跑，它们会重新变红或变绿，而不是永远绿。`grep -c "It '"` 的 82 是静态用例数，与执行数不是一回事——这条规矩对它自己同样成立：引用哪次运行，就说哪次运行的数。
+当前状态：**静态 83 个 `It` 用例（部分内含用例表），最后一次全量实机运行是 2026-09-08 的 CI——那一轮静态数是 82，实际执行 89 次：通过 84，失败 0，跳过 5**。那次跑在 GitHub 的一次性 Windows runner 上（这就是本套件的既定跑法：不动任何人的真机器），5 条跳过全部署名机器形态：没有登记看门狗任务、虚机固件能力位与 `powercfg /a` 文本失配、近 14 天没有 506 低功耗会话事件（两条）、全新数据根没有 `STARTED` 行。**每一条"跳过"都说得出"为什么这台机器验不了"，验得了的机器上牙齿原样保留**；换台真笔记本跑，它们会重新变红或变绿，而不是永远绿。`grep -c "It '"` 的 83 是静态用例数，与执行数不是一回事——这条规矩对它自己同样成立：引用哪次运行，就说哪次运行的数，所以上面那句"通过 84"属于 2026-09-08 那一轮，而它跑的时候还没有第 83 个 `It`；新加的那条要等下一次 CI 才有自己的执行结果。
 
 ### 独立门禁与实测探针
 

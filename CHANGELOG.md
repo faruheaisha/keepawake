@@ -164,6 +164,45 @@
 
 ## 未发布 / 下一步
 
+- **`ka.log` 里的本地化句子换成错误码**（2026-09-25）。README 与 PRIVACY 承诺日志是 ASCII 机器词汇，
+  实际却在失败行上食言：`server request error: 无法连接到 CIM 服务器。` ——Windows 会按系统显示语言翻译
+  `Exception.Message`，而**异常类型名、HRESULT、Win32 错误码、cmdlet 的 `FullyQualifiedErrorId` 它不翻译**。
+  新增 `Get-KaErrorToken`，只留这几样，形状 `<类型>#<HRESULT>[#win32=<码>][#<错误 id>]`；HEAD 上 12 处
+  往日志或面板 `Reason`/`action` 里写原话的调用点全部改掉（ka-core 4：boot-task 拒绝、guard 装/卸、
+  evidence；ka-server 4：json 序列化、两处启动失败、请求循环；ka-worker 2；ka-guard 2→1，看门狗的
+  `action` 从 `"error: <句子>"` 变成 `'error'` + `err=<代码>`）。**本机对着真 CIM 失败复算**：旧那行 6 个
+  汉字，新那行 `err=CimException#0x80131500#HRESULT 0x8004100e,GetCimInstanceCommand` 零非 ASCII；手工
+  `throw` 的中文 → `RuntimeException#0x80131501`（这条说明为什么不能指望 id：它可能就是句子本身，所以
+  token 只在类型/HResult/Win32 码之后追加 id，且 id 含非 ASCII 时直接丢弃）；被包一层的 .NET 异常取最
+  内层 → `IOException#0x80070020`；端口被占 → `HttpListenerException#0x80004005#win32=183`（HRESULT 一律
+  是 `0x80004005`，只有 Win32 码说得出"已经存在"，故 `ExternalException` 额外取 `NativeErrorCode`）。
+  测试加了两条能咬的：`Add-KaLog` 从"数源码里的汉字"扩成**看语法树**、出现 `Exception.Message` 就红；
+  另一条管 `Reason` / `action`。后者唯一的豁免是配置被拒那一行——`Set-KaConfig` 抛的句子本来就是我们
+  自己的词典、按请求语言出，豁免靠行尾 `# refusal-wording only` 标记，**把标记删掉测试必须变红**（这条
+  也核了）。七条腿一次性核完并连跑两遍一致：工作树绿 / HEAD 红且点名 / **旧规则对 HEAD 绿**（证明 v1.0.0
+  的检查是瞎的，不是被测的代码碰巧干净）/ 单行突变只点那一行 / 删标记红。
+  **同类问题还没修的那一半**：19 处把 Windows 原话塞进词典句子的 `{msg}` 占位符仍然在（`proc.noStart`、
+  `server.noStart`、`guard.defFail`、`ka-core.ps1:335`、`ka-lid.ps1` 四处、面板 `api.badJson`、托盘 8 处
+  （气泡副文本 6、状态读取失败的标题 1、`SELFTEST FAILED` 输出 1）、`ka.ps1` 两处）。句子是翻对的，插进去那一截不是——英文面板上会中英混排。这次没动它：
+  改成"只给代码"还是"代码 + 可翻译句子"是个协议决定，得连面板怎么显示一起定，不顺手改。
+  **看得见的变化**（同一决定的另一面，先记下）：看门狗装不上时，面板气泡与 CLI 那行现在末尾是一串
+  代码（`guard.fail {op} {msg}` 的 `{msg}`、`cli.guardBootDenied` 的 `{reason}`），不再是一句 Windows 的
+  话——跟 `config.writeFail` 用 `Get-KaLastWriteCode` 是同一个形状。代码能 grep、能贴进 issue，但它不
+  "读得懂"；中文 CLI 用户在中文机器上拿到的确实比原来生涩一点（原来是"拒绝访问。"，现在是
+  `...UnauthorizedAccessException#0x80070005,...`），换回来的是同一条消息在英文面板上不再混进中文。
+  下一步该给这两个表面补一句"把这串代码贴到 issue 里"的提示，属于 v1.1 的面板打磨，不混进这次修复。
+  **本轮在本地跑了什么**：门禁 5 道全绿（含改过的 `tests/ka-tests.ps1` 能被 PowerShell 5.1 解析）；探针 17 条跑完
+  1 条红——`probe-mutex-identity` 的 C 段要做默认数据根 mutex 的第一个持有者，而这台机器上保护正在跑
+  （worker pid 23496 持有 `Local\KA-Worker-DCA86D0FFFB8`，`Test-KaWorkerMutex=True`）。用 `git archive HEAD`
+  摊开一份**纯 HEAD** 跑同一个探针，红得一字不差（`got=False`），所以是机器状态不是回归；这条前提现在写进了
+  探针注释（CI 的 runner 上没有活的 worker，那条腿在那里本来就是绿的）。全量套件按惯例不在本机跑。
+- **README 里两个自己被磁盘证伪的数字**（2026-09-25）。面板词典写"两套词典 459 个键"，实测
+  `dashboard/i18n.js` 的 zh 块与 en 块各 470 行键（`awk` 按两个块的行范围数）；服务端词典没有直接写数，
+  就按套件自己的口径写 `$script:KaUi.zh.Count` = 372（加载后读，不是数行数）。另一处是把执行数当静态数
+  用："89 个行为测试（82 个 It）"——静态数早就是 82 之外的数了，本轮加了一条测试后 `grep -c "It '"` = 83，
+  而 89 是 2026-09-08 那轮 CI **实际执行**的次数。现在三处统一写成"静态 83 / 最近一轮执行 89"，并且明说
+  那句"通过 84"属于 2026-09-08 那一轮、它跑的时候第 83 条还不存在——新加的那条要等下一次 CI 才有自己的
+  结果。同一条规矩对它自己成立：数字要写口径，引用哪次运行就说哪次运行的数。
 - **发布这一侧：成了**（2026-09-08 16:30:06Z）。在那道读回 release 页的断言之上再发一次，
   `v1.0.0` 的 Release 页上真有三个文件，而 GitHub 自己算出的资产摘要与 release 里那份 `SHA256SUMS`
   **逐字节相同**（zip `7f460cd8…4e15`、setup.exe `6769efea…ebfc`）——也就是说下载者照 README《先核对哈希》

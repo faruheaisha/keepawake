@@ -67,7 +67,7 @@ function Invoke-KaReason {
 function ConvertTo-KaJsonSafe {
     param($Object, [int]$Depth = 9)
     try { return ($Object | ConvertTo-Json -Depth $Depth) } catch {
-        Add-KaLog "FAIL pid=$PID json serialize: $($_.Exception.Message)"
+        Add-KaLog "FAIL pid=$PID json-serialize err=$(Get-KaErrorToken $_)"
         # Not ConvertTo-KaJsonSafe: that is the call that just failed.
         return (@{ ok = $false; reason = (Get-KaText 'api.serialize') } | ConvertTo-Json -Compress)
     }
@@ -283,7 +283,12 @@ function Invoke-KaApi {
                     try {
                         $ok = Set-KaConfig -Patch $patch
                     } catch {
-                        return @{ status = 400; body = (ConvertTo-KaJsonSafe @{ ok = $false; reason = $_.Exception.Message }) }
+                        # Every throw inside Set-KaConfig is Get-KaText wording chosen for THIS
+                        # request's language, so the message here is ours rather than Windows' -
+                        # which is the only reason this line is allowed to reach a visitor. The
+                        # rule lives in tests/ka-tests.ps1 ('Reason 不能是 Windows 的原话'), and the
+                        # marker at the end of the next line is what exempts it.
+                        return @{ status = 400; body = (ConvertTo-KaJsonSafe @{ ok = $false; reason = $_.Exception.Message }) } # refusal-wording only
                     }
                     Invalidate-KaStateCache
                     if (-not $ok) {
@@ -297,13 +302,13 @@ function Invoke-KaApi {
                 '/api/guard/install' {
                     $r = Install-KaGuard
                     Invalidate-KaStateCache
-                    Add-KaLog "api guard install pid=$PID ok=$($r.Ok) $($r.Reason)"
+                    Add-KaLog "api guard install pid=$PID ok=$($r.Ok)$(if ($r.Reason) { ' err=' + $r.Reason })"
                     return @{ status = $(if ($r.Ok) { 200 } else { 500 }); body = (ConvertTo-KaJsonSafe $r) }
                 }
                 '/api/guard/uninstall' {
                     $r = Uninstall-KaGuard
                     Invalidate-KaStateCache
-                    Add-KaLog "api guard uninstall pid=$PID ok=$($r.Ok) $($r.Reason)"
+                    Add-KaLog "api guard uninstall pid=$PID ok=$($r.Ok)$(if ($r.Reason) { ' err=' + $r.Reason })"
                     return @{ status = $(if ($r.Ok) { 200 } else { 500 }); body = (ConvertTo-KaJsonSafe $r) }
                 }
                 '/api/check' {
@@ -383,7 +388,7 @@ try {
     $listener.Start()
     $started = $true
 } catch {
-    Add-KaLog "server dual-prefix start failed pid=$PID port=$Port fallback=127.0.0.1 msg=$($_.Exception.Message)"
+    Add-KaLog "server dual-prefix start failed pid=$PID port=$Port fallback=127.0.0.1 err=$(Get-KaErrorToken $_)"
 }
 if (-not $started) {
     try {
@@ -395,7 +400,7 @@ if (-not $started) {
         $listener.Start()
         $started = $true
     } catch {
-        Add-KaLog "server start failed pid=$PID port=$Port msg=$($_.Exception.Message)"
+        Add-KaLog "server start failed pid=$PID port=$Port err=$(Get-KaErrorToken $_)"
     }
 }
 if (-not $started) {
@@ -422,9 +427,12 @@ $script:KaShutdown = $false
 try {
     while ($listener.IsListening -and -not $script:KaShutdown) {
         $ctx = $listener.GetContext()
+        # Cleared outside the try: a request that fails before the assignment must not be
+        # logged against the path the *previous* request used.
+        $path = ''
         try {
-            $script:KaReqLang = Get-KaRequestLang -Ctx $ctx
             $path = $ctx.Request.Url.AbsolutePath
+            $script:KaReqLang = Get-KaRequestLang -Ctx $ctx
             $deny = Test-KaAllowed -Ctx $ctx -Path $path
             if ($deny) {
                 # The log is machine vocabulary: a code, not the localized sentence, so an
@@ -447,7 +455,7 @@ try {
                 Send-KaStatic -Ctx $ctx -Path $path
             }
         } catch {
-            Add-KaLog "server request error: $($_.Exception.Message)"
+            Add-KaLog "server request error pid=$PID path=$path err=$(Get-KaErrorToken $_)"
             Send-KaResponse $ctx 500 (Invoke-KaReason (Get-KaText 'api.internal'))
         } finally {
             # A request that sends no X-Ka-Lang must not be answered in whoever asked last.
