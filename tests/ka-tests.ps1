@@ -557,14 +557,20 @@ try {
         # the answer that stays ASCII in every UI language.
         # A regex over lines is not enough either - `Add-KaLog ('...' -f ...)` continues onto a
         # second line, so the whole thing is read from the syntax tree.
+        # The file list is discovered rather than remembered: ka-lid.ps1 writes to ka.log and was
+        # not in the hardcoded six, so a Chinese line added there would have passed for nothing.
         $bad = @()
-        foreach ($f in @('ka-core.ps1', 'ka-server.ps1', 'ka-worker.ps1', 'ka-guard.ps1', 'ka-tray.ps1', 'ka.ps1')) {
+        $files = @(Get-ChildItem -LiteralPath $root -Filter '*.ps1' -File | ForEach-Object { $_.Name } | Sort-Object)
+        Assert ($files -contains 'ka-core.ps1') ("根目录只扫到 {0} 个 .ps1，连 ka-core.ps1 都不在里面（{1}）——脚本搬家了，这条检查什么也扫不到" -f $files.Count, ($files -join ' '))
+        $seen = 0
+        foreach ($f in $files) {
             $tok = $null; $err = $null
             $ast = [System.Management.Automation.Language.Parser]::ParseFile(
                 (Join-Path $root $f), [ref]$tok, [ref]$err)
             Assert ($err.Count -eq 0) "$f 语法有 $($err.Count) 个错误，AST 检查不可信"
             foreach ($c in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)) {
                 if ("$($c.CommandElements[0].Extent.Text)" -ne 'Add-KaLog') { continue }
+                $seen++
                 $n2 = ([regex]::Matches($c.Extent.Text, '\p{IsCJKUnifiedIdeographs}')).Count
                 if ($n2) { $bad += ('{0}:{1} 有 {2} 个汉字' -f $f, $c.Extent.StartLineNumber, $n2) }
                 foreach ($m in [regex]::Matches($c.Extent.Text, 'Exception\s*\.\s*Message')) {
@@ -573,6 +579,7 @@ try {
                 }
             }
         }
+        Assert ($seen -ge 40) ("只数到 {0} 个 Add-KaLog 调用点（2026-09-26 实测 46 个），绿了也不作数——它扫的不对" -f $seen)
         Assert ($bad.Count -eq 0) ('日志里混进了句子：' + ($bad -join '；'))
     }
 
@@ -585,19 +592,23 @@ try {
         # The one exception is marked in place: a config-refusal Reason is our own
         # Get-KaText 'config.enum' sentence, which is already the request's language.
         $bad = @()
-        $q = [string][char]34 + [char]39
-        foreach ($f in @('ka-core.ps1', 'ka-server.ps1', 'ka-worker.ps1', 'ka.ps1', 'ka-lid.ps1', 'ka-guard.ps1')) {
+        $files = @(Get-ChildItem -LiteralPath $root -Filter '*.ps1' -File | ForEach-Object { $_.Name } | Sort-Object)
+        Assert ($files -contains 'ka-core.ps1') ("根目录只扫到 {0} 个 .ps1，连 ka-core.ps1 都不在里面（{1}）——这条检查什么也扫不到" -f $files.Count, ($files -join ' '))
+        $seen = 0
+        foreach ($f in $files) {
             $i = 0
             foreach ($line in [IO.File]::ReadAllLines((Join-Path $root $f))) {
                 $i++
                 if ($line -match '^\s*#') { continue }
                 if ($line -notmatch "(Reason|reason|action)\s*=") { continue }
+                $seen++
                 if ($line -notmatch 'Exception\s*\.\s*Message') { continue }
                 if ($line -match 'Get-KaText') { continue }     # wording from our own dictionary is allowed
                 if ($line -match 'refusal-wording only') { continue }
                 $bad += ('{0}:{1}' -f $f, $i)
             }
         }
+        Assert ($seen -ge 60) ("只读到 {0} 行 Reason/action 赋值（2026-09-26 实测 86 行），绿了也不作数——它扫的不对" -f $seen)
         Assert ($bad.Count -eq 0) ('Reason 直接用了 Windows 的原话，英文面板上会混进中文：' + ($bad -join '；'))
     }
 
@@ -607,14 +618,19 @@ try {
         $bad = @()
         $q = [string][char]34 + [char]39          # both quote characters, without nesting them in the literal
         $pat = "(Reason|reason)\s*=\s*\(?\s*[$q][^$q(]*\p{IsCJKUnifiedIdeographs}"
-        foreach ($f in @('ka-core.ps1', 'ka-server.ps1', 'ka-worker.ps1', 'ka.ps1', 'ka-lid.ps1')) {
+        $files = @(Get-ChildItem -LiteralPath $root -Filter '*.ps1' -File | ForEach-Object { $_.Name } | Sort-Object)
+        Assert ($files -contains 'ka-core.ps1') ("根目录只扫到 {0} 个 .ps1，连 ka-core.ps1 都不在里面（{1}）——这条检查什么也扫不到" -f $files.Count, ($files -join ' '))
+        $seen = 0
+        foreach ($f in $files) {
             $i = 0
             foreach ($line in [IO.File]::ReadAllLines((Join-Path $root $f))) {
                 $i++
                 if ($line -match '^\s*#') { continue }
+                if ($line -match "(Reason|reason)\s*=") { $seen++ }
                 if ($line -match $pat) { $bad += ('{0}:{1}' -f $f, $i) }
             }
         }
+        Assert ($seen -ge 60) ("只读到 {0} 行 Reason 赋值（2026-09-26 实测 70 行），绿了也不作数——它扫的不对" -f $seen)
         Assert ($bad.Count -eq 0) ('Reason 里写死了汉字，英文界面上翻不出来：' + ($bad -join '；'))
     }
 
