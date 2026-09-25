@@ -167,10 +167,11 @@
 - **`ka.log` 里的本地化句子换成错误码**（2026-09-25）。README 与 PRIVACY 承诺日志是 ASCII 机器词汇，
   实际却在失败行上食言：`server request error: 无法连接到 CIM 服务器。` ——Windows 会按系统显示语言翻译
   `Exception.Message`，而**异常类型名、HRESULT、Win32 错误码、cmdlet 的 `FullyQualifiedErrorId` 它不翻译**。
-  新增 `Get-KaErrorToken`，只留这几样，形状 `<类型>#<HRESULT>[#win32=<码>][#<错误 id>]`；HEAD 上 12 处
-  往日志或面板 `Reason`/`action` 里写原话的调用点全部改掉（ka-core 4：boot-task 拒绝、guard 装/卸、
-  evidence；ka-server 4：json 序列化、两处启动失败、请求循环；ka-worker 2；ka-guard 2→1，看门狗的
-  `action` 从 `"error: <句子>"` 变成 `'error'` + `err=<代码>`）。**本机对着真 CIM 失败复算**：旧那行 6 个
+  新增 `Get-KaErrorToken`，只留这几样，形状 `<类型>#<HRESULT>[#win32=<码>][#<错误 id>]`；改前那一版上 12 处
+  往日志或面板 `Reason`/`action` 里写原话的语句全部改掉，落在 **11 个调用点**上（ka-core 4：boot-task 拒绝、
+  guard 装/卸、evidence；ka-server 4：json 序列化、两处启动失败、请求循环；ka-worker 2；ka-guard 1——
+  `action` 与 `GUARD-FAILED` 那行共用同一个 token，看门狗的 `action` 从 `"error: <句子>"` 变成 `'error'` +
+  `err=<代码>`）。**本机对着真 CIM 失败复算**：旧那行 6 个
   汉字，新那行 `err=CimException#0x80131500#HRESULT 0x8004100e,GetCimInstanceCommand` 零非 ASCII；手工
   `throw` 的中文 → `RuntimeException#0x80131501`（这条说明为什么不能指望 id：它可能就是句子本身，所以
   token 只在类型/HResult/Win32 码之后追加 id，且 id 含非 ASCII 时直接丢弃）；被包一层的 .NET 异常取最
