@@ -69,9 +69,51 @@ if ($c.name -and $c.name -ne $a.name) { Ok 'a separate data root gets its own mu
 else { Bad "KA_DATA did not change the identity (C=$($c.name) A=$($a.name))" }
 
 Write-Output '--- C. is the shared name actually contended across processes?'
+# Before staging a holder, ask who already holds the name. Measured 2026-09-25 (and reproduced from
+# a pristine `git archive HEAD`): on a box where protection is live, the running worker owns
+# Local\KA-Worker-<default suffix>, so the holder job below can never be first taker - it prints
+# got=False, and the leg went red as if the product were broken. It is the machine. The fix is not
+# to skip the question: a live foreign holder is a *better* answer than a job, because it is the
+# product's own worker contending for the name from another process. So the route is chosen by
+# measurement, and the PROBE OK line says which one ran.
+#
+# OpenExisting proves the name exists; WaitOne(0) is what proves someone else owns it right now.
+# If this process does get it, it releases at once - ka-worker.ps1:70 takes the mutex once at
+# startup and never re-requests it, so a momentary second applicant cannot disturb the live
+# protection this box depends on.
+$heldBy = $null
+try {
+    $pre = [System.Threading.Mutex]::OpenExisting($a.name)
+    try { $mine = $pre.WaitOne(0) } finally { $pre.Close() }
+    if (-not $mine) { $heldBy = 'foreign' }
+} catch [System.Threading.WaitHandleCannotBeOpenedException] { $heldBy = $null }
+  catch { $heldBy = $null }
+if ($heldBy) {
+    $workers = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" -ErrorAction SilentlyContinue |
+                 Where-Object { "$($_.CommandLine)" -like '*ka-worker.ps1*' -and "$($_.CommandLine)" -notlike '*_tmp*' })
+    $who = if ($workers.Count) { (($workers | ForEach-Object { [string]$_.ProcessId }) -join ',') } else { 'unknown pid' }
+    Write-Output ("  a live process outside _tmp already owns {0} (pid {1}) - contending against the product's own worker" -f $a.name, $who)
+    $contended = $false
+    try {
+        $mm = [System.Threading.Mutex]::OpenExisting($a.name)
+        $mine2 = $mm.WaitOne(0)
+        if ($mine2) { [void]$mm.ReleaseMutex() }
+        $mm.Close()
+        $contended = -not $mine2
+    } catch { Write-Output ("  OpenExisting error: {0}" -f $_.Exception.GetType().Name) }
+    if ($contended) {
+        Ok "the name reads as taken to this process while pid $who holds it - contention proven against a real worker, not a job"
+        $route = 'live worker pid ' + $who
+    } else {
+        Bad 'a foreign pid owns the name and OpenExisting + WaitOne(0) still handed it to us - the observation is broken'
+        $route = 'live worker, observation broken'
+    }
+    Write-Output '  SKIP the holder-job control - it cannot be first taker while somebody else owns the name'
+} else {
 # A job is a separate process. Observe contention while it is holding the name, *then* collect
 # what the holder reported - reading the job before it finishes yields nothing, which is a
 # broken harness, not a negative result.
+$route = 'holder job'
 $hold = Start-Job -ArgumentList $a.name -ScriptBlock {
     param($n)
     try {
@@ -105,6 +147,7 @@ Write-Output "  holder job said: $gotLine ; OpenExisting error: $(if ($why) { $w
 if ($gotLine -notmatch 'got=True') { Bad "control failed: the holder never got the mutex, so contention proves nothing ($gotLine) - 若这台机器正在防休眠，先停掉再跑本探针" }
 elseif ($contended) { Ok 'OpenExisting from a second process sees the name as taken - the collision is real, not theoretical' }
 else { Bad 'the name read as free while another process held it - the observation is broken' }
+}
 
 Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 if ($fail.Count) {
@@ -112,5 +155,5 @@ if ($fail.Count) {
     $fail | ForEach-Object { Write-Output ('  - ' + $_) }
     exit 1
 }
-Write-Output 'PROBE OK: the mutex keys on data root + SID, not on the install folder'
+Write-Output ('PROBE OK: the mutex keys on data root + SID, not on the install folder (contention observed against ' + $route + ')')
 exit 0
