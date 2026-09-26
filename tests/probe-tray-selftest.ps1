@@ -17,22 +17,29 @@
          on 'SELFTEST OK' + exit 0.
       2. clean       - body ran in FullLanguage against a -DataDir of ours: both languages
          rendered, the menu really has its 5 duration / 4 interval items, OK printed.
-      3. mut-frozen  - Refresh-State resolves the new language but never relabels. The pre-fix
+      3. handoffs    - no runner in this repository ever *performs* a tray click (a real click
+         starts a worker and registers a scheduled task), so the one place a preset's number
+         leaves the menu and enters the engine is read off the syntax tree instead: exactly one
+         duration handler passing $this.Tag to -Minutes, exactly one interval handler writing
+         $this.Tag into antiLockIntervalSec, and no arithmetic anywhere near either. Three
+         in-memory sabotages must each be named; none of them starts a process.
+      4. mut-frozen  - Refresh-State resolves the new language but never relabels. The pre-fix
          tray (English items under a header that just switched), and it is caught by the per-item
          fidelity check, which is the stricter of the two guards: the stale Chinese label no
          longer equals what the now-English catalog renders for that same Tag.
-      4. mut-nolang  - Refresh-State never even re-resolves the language, so the menu stays
+      5. mut-nolang  - Refresh-State never even re-resolves the language, so the menu stays
          internally consistent in one language forever. Fidelity cannot see that (label and
          expectation drift together), and this is exactly the case the en!=zh backstop exists
          for. Measured, not assumed: this is the only injection that reaches that backstop.
-      5. mut-unit    - the preset labels rebuilt off the Tag with the seconds formatter, which is
+      6. mut-unit    - the preset labels rebuilt off the Tag with the seconds formatter, which is
          the actual historical bug ("30 分钟" shown as "30 秒", same digits, 1/60th the time).
          Mutated in both places the label is written, or Update-TrayLabels would overwrite the
          injected construction text and the leg would escape.
-      6. controls    - each mutant tree re-run with its injection switched off. Without this a red
-         could have come from the copying rather than from the mutation.
+      7. controls    - each mutant tree re-run in the same leg with its injection switched off
+         (printed as '<name>(ctrl)'). Without this a red could have come from the copying rather
+         than from the mutation.
 
-    Legs 3 and 5 both die on the fidelity check, so the probe additionally requires their failure
+    Legs 4 and 6 both die on the fidelity check, so the probe additionally requires their failure
     messages to differ: two mutations printing one identical message means one of them is not
     testing what it claims.
 
@@ -164,8 +171,74 @@ Write-Host ('  ' + $(if ($p.Count) { 'FAIL' } else { 'ok  ' }) + ' clean        
            ' lines=' + $r.lines + ' (' + ('{0:0.0}' -f $r.secs) + 's) presetDur en="' + $en + '" zh="' + $zh + '" ' + ($p -join '; '))
 if ($p.Count) { $bad++ }
 
-# ---------------------------------------------------------------- 3-6. mutants, each with its control
-$n = 2
+<#
+    ---------------------------------------------------------------- 3. the click handoffs, read
+    off the AST. Nothing in this repository ever *performs* a tray click: the self test builds the
+    menu and refreshes it, and a real click would start a worker and register a scheduled task on
+    whoever's machine runs this probe. So the one place where a preset's number leaves the menu
+    and enters the engine is not covered by execution - and it is precisely the unit-swap class
+    this probe exists for (a Tag holding minutes, handed to something that reads seconds). What
+    can be checked without starting anything is the handoff itself, and the rule is written at
+    the grammar level rather than for the two numbers we happen to have: no arithmetic may appear
+    anywhere between `$this.Tag` and the engine call. `* 60` and `/ 60` are the same bug wearing
+    different signs. Each red case also names which handoff it died on, so a guard that fires
+    cannot be riding on an unrelated one.
+#>
+$handoffs = @(
+    @{ Name = 'duration'; Pick = { param($t) $t -match '(?<![\w-])Start-Protect(?![\w-])\s+-Minutes' }
+       Must = @('-Minutes', '$this.Tag') }
+    @{ Name = 'interval'; Pick = { param($t) $t -match 'antiLockIntervalSec\s*=' }
+       Must = @('antiLockIntervalSec', '$this.Tag') }
+)
+function Get-HandoffProblem([string]$Text) {
+    $errs = $null
+    $ast = [Management.Automation.Language.Parser]::ParseInput($Text, [ref]$null, [ref]$errs)
+    if ($errs -and $errs.Count) { return @('ka-tray.ps1 does not parse: ' + $errs[0].Message) }
+    $blocks = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.ScriptBlockExpressionAst] }, $true) |
+                ForEach-Object { $_.Extent.Text })
+    # An empty collection here would make every count assertion below true over nothing.
+    if (-not $blocks.Count) { return @('ka-tray.ps1 has not one script block - this is not the tray source') }
+    $problems = @()
+    foreach ($h in $handoffs) {
+        $mine = @($blocks | Where-Object { & $h.Pick $_ })
+        if ($mine.Count -ne 1) { $problems += ($h.Name + ': ' + $mine.Count + ' click handlers, want exactly 1'); continue }
+        foreach ($m in $h.Must) { if ($mine[0] -notlike ('*' + $m + '*')) { $problems += ($h.Name + ' handler no longer contains ' + $m) } }
+        if ($mine[0] -match '[*/]') { $problems += ($h.Name + ' handler does arithmetic on the Tag: ' + $mine[0].Trim('{ }')) }
+    }
+    return $problems
+}
+
+$handoffSrc = [IO.File]::ReadAllText((Join-Path $root 'ka-tray.ps1'))
+$handoffCases = @(
+    @{ Tag = 'clean'; Want = 0; Expect = '' }
+    @{ Tag = 'duration /60'; Want = 1; Expect = 'duration handler does arithmetic'
+       Sabotage = @('Start-Protect -Minutes ([double]$this.Tag)', 'Start-Protect -Minutes ([double]$this.Tag / 60)') }
+    @{ Tag = 'interval *60'; Want = 1; Expect = 'interval handler does arithmetic'
+       Sabotage = @('antiLockIntervalSec = [int]$this.Tag', 'antiLockIntervalSec = [int]$this.Tag * 60') }
+    @{ Tag = 'duration no-Tag'; Want = 1; Expect = 'duration handler no longer contains $this.Tag'
+       Sabotage = @('Start-Protect -Minutes ([double]$this.Tag)', 'Start-Protect -Minutes 30') }
+)
+Write-Output '--- 3. the Tag -> engine handoff inside each click handler (AST; nothing is started)'
+foreach ($c in $handoffCases) {
+    $txt = $handoffSrc
+    if ($c.Sabotage) {
+        $n = @([regex]::Matches($txt, [regex]::Escape($c.Sabotage[0]))).Count
+        if ($n -ne 1) { Write-Host ('  FAIL sabotage anchor matched ' + $n + ' times, want 1'); $bad++; continue }
+        $txt = $txt.Replace($c.Sabotage[0], $c.Sabotage[1])
+    }
+    $probs = @(Get-HandoffProblem $txt)
+    $p = @()
+    if ($probs.Count -ne $c.Want) { $p += ('problems=' + $probs.Count + ' want ' + $c.Want) }
+    if ($c.Expect -and (($probs -join '; ') -notlike ('*' + $c.Expect + '*'))) { $p += ('did not name "' + $c.Expect + '"') }
+    if (-not $c.Expect -and $probs.Count) { $p += 'clean tree is already wrong' }
+    Write-Host ('  ' + $(if ($p.Count) { 'FAIL' } else { 'ok  ' }) + ' ' + $c.Tag.PadRight(16) +
+               ' problems=' + $probs.Count + ' want ' + $c.Want + '  ' + ($p -join '; ') +
+               $(if ($probs.Count) { ' [' + ($probs -join '; ') + ']' } else { '' }))
+    if ($p.Count) { $bad++ }
+}
+
+# ---------------------------------------------------------------- 4-7. mutants, each with its control
+$n = 3
 $said = @{}
 foreach ($name in @('frozen', 'nolang', 'unit')) {
     $n++

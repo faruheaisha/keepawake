@@ -164,6 +164,34 @@
 
 ## 未发布 / 下一步
 
+- **上一条那句"CI 一次也没跑过"从这一轮起是旧账；顺手审自己刚写的那条腿，审出两个 harness 骗我**
+  （2026-09-26，接上一条）。先闭环：run `36227348476`（sha `74db958`，就是把探针接上去的那个提交）
+  `conclusion=success`，`ok   probe-tray-selftest.ps1       25s`，整轮 `----- 23 run, 0 red`，runner 上
+  托盘进程真的起来了并印出 `ok   clean        exit=0 lines=7 (3.3s) presetDur en="30 min" zh="30 分钟"`，
+  三个突变体各自红在自己的守卫上——`frozen` 在 runner 上印的是
+  `preset reads "30 min" but its Tag 30 min is "30 分钟"`，两种语言的位置与本机相反，因为 runner 的界面语言是
+  en，判据两侧都读同一份 catalog，所以换语言不影响它红。**顺带一条省事的实测结论**：无头的 GitHub runner 上
+  `NotifyIcon` 和 `ContextMenuStrip` 都建得起来，托盘这个面不需要再为 CI 写一个 headless 替身。
+  然后回头审我往探针里新加的那条**点击交接**腿——`ka-tray.ps1` 里把 `$this.Tag` 交给引擎的两个处理器，是"预设的
+  分钟数离开菜单、进引擎"的唯一出口，也正是本探针要防的单位串线那一类；但**这个仓库里没有任何自动检查真的按过一次
+  托盘菜单**（真点一下会起 worker、注册计划任务，落在谁的机器上都不该），所以它只能读语法树：恰好一个时长处理器把
+  `$this.Tag` 交给 `-Minutes`、恰好一个间隔处理器把它写进 `antiLockIntervalSec`、且两者之间不许出现任何算术
+  （`* 60` 与 `/ 60` 是同一个病换了个符号）。第一版带着两个 bug，都不是产品红，是**我的检查自己不会红**：
+  ① **`$bad = 0` 排在这条腿之后**。腿里的 `$bad++` 加在一个尚未初始化的变量上，紧接着被 `$bad = 0` 抹掉——
+  FAIL 照样印在屏幕上，探针**照样 exit 0**，这条腿当时纯属装饰。修法是把整条腿挪到计数器初始化之后，并且不再靠
+  "我看过顺序了"，而是拿索引钉死：`order: badInit=8209 leg3=10554 tail=11682`，三者不满足这个次序脚本直接 throw。
+  ② **"点名点错了就该红"那句判据恒假**：写成 `$probs[0] -notlike '*handler*'`，而所有问题文案里都带 `handler`
+  这个词，于是整条 `and` 链永远为假，那句 `did not name` 一次也不会触发。判据不能"大概能抓到"，得能红：改成每条破坏
+  自带一个 `Expect` 子串（`duration handler does arithmetic` / `interval handler does arithmetic` /
+  `duration handler no longer contains $this.Tag`），再跑一次线检（`_tmp/wire-check-t3.ps1`：只抠出这条腿和末尾
+  的 exit-code 判断，跳过所有起进程的腿）——`none`→exit 0、把 `Expect` 改错→exit 1 并印
+  `did not name "interval handler does something else entirely"`、把 `Want` 从 0 改成 5→exit 1、把破坏的锚点改成
+  对不上的串→exit 1 并印 `sabotage anchor matched 0 times, want 1`。四次翻转就是这根线的四段，挨个通。
+  本机门禁 `----- 5 run, 0 red`，整条探针本机 `PROBE OK: ... 3 mutations each red on their own guard and green
+  with the injection switched off`（约 70 秒，runner 上 25 秒）。**这条腿没覆盖的部分留着说实话**：它是语法层的，
+  证明的是"没有算术夹在 `$this.Tag` 和引擎之间"，**不证明真按一次菜单能起 worker**；"真的点击一次托盘菜单"这件事
+  本仓库至今仍然没有任何自动检查做过。
+
 - **`ka-tray.ps1 -SelfTest` 那个主体，CI 一次也没跑过**（2026-09-26，接上两条）。先记账：上一条推上去之后
   run `36225438637`（sha `90438c3`）全绿——门禁+探针 `----- 22 run, 0 red`，套件 `通过 86，失败 0，跳过 5`，
   被挪出 `if ($running)` 的那半条在 runner 上印 `PASS`（用例名"英文界面上不会有中文：ka.ps1 status 的真实输出"）。
