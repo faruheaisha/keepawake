@@ -59,7 +59,9 @@ jobs:
       - name: Install and uninstall the setup.exe
         # The only place in the pipeline where the artifact a downloader double-clicks is actually
         # executed. Everything upstream can say the .iss compiles; only this can say the install
-        # lands 23 files + Inno's own two, opens no panel, writes no scheduled task, and that the
+        # lands the manifest's files + Inno's own two (the assertion is $manifest.Count + 2, so it
+        # follows the manifest instead of a number typed here - a typed 23 went stale the day the
+        # manifest became a tree scan), opens no panel, writes no scheduled task, and that the
         # uninstall hook runs stop-server / stop / unguard before it deletes anything.
         #   -WithWorker  starts protection from the installed copy first, so the hook has a live
         #                power request to release instead of an empty promise.

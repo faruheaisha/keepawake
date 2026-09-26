@@ -164,6 +164,44 @@
 
 ## 未发布 / 下一步
 
+- **最后一份手写的清单，也正是"发出去的是什么"那一份**（2026-09-26，接上一条）。同一句问句问到第三
+  次，这回不问闸门，问发布：`tests/ka-release-files.ps1` 里那 17 个代码文件名是我一个个敲的。敲的清单
+  只会以一种方式坏——**文件在仓库里、不在清单里，于是它就不在 release 里，而链路上一切照旧全绿**：
+  `build.ps1` 把 zip 与清单双向对账（多出条目 throw、条目字节数不对 throw、`Copy-ManifestTo` 撞上清单
+  点名而树上没有的文件也 throw），可对的是"清单说了什么"，清单没说过的那个名字对它三处都是透明的。
+  改法与前两轮同一路：**不问"清单里有什么"，去看"树里有什么"**——根 `*.ps1` + 根 `*.bat` + `dashboard/**`
+  递归；文档那 6 份仍然手写（往根目录扔一个新 `.md` 是编辑决定，不是多出一个程序）。推导第一眼就给出
+  `24 ≠ 23`，多的那一个正是洞：**`dashboard\favicon.svg`**。已发布那份 zip 是**逐条目量过的**（`gh api`
+  下载 v1.0.0 的 `KeepAwake-1.0.0-portable.zip`，246,246 字节，`ZipFile::OpenRead` 列全表）：23 个条目，
+  `favicon` 一个都没有；而 `dashboard/index.html:10` 按名字要它（`<link rel="icon" href="/favicon.svg">`），
+  `ka-server.ps1:336-337` 找不到文件就回 `404 api.dashMissing`。`KeepAwake.iss` 的 `[Files]` 自己写明
+  "没有文件表，装的是 `build.ps1` 按清单暂存的那份"（第 91-93 行），所以 `setup.exe` 走的是同一份清单、
+  同一个洞——这半句是**读出来的**，没有把 2.3MB 的 exe 拆开验。时间线也照着仓库：文件 `37fb023`
+  （2026-09-03）进仓库，清单最后一次被碰是 `b2b55b1`（2026-09-04），**晚一天的文件，清单永远不会知道**。
+  红态两对，都是跑出来的：① 老那份手写清单配新腿（`probe-build-selftest` 的 `extrafile`：往一次性树根
+  放一个没有任何清单点名的 `ka-extra.ps1`，要求冒烟**绿**且 zip 里**有**那一条目）→ `exit=1`、
+  `FAIL ka-extra.ps1 is a program file at the repository root and the portable zip does not carry it
+  (23 entries)`；换成推导那份 → `exit=0`。② 这轮新加的"两棵绿树的 zip 逐条目对照，差集必须正好是注入
+  的那一条"——在 `_tmp` 的探针副本里让 `extrafile` 顺手删掉 `dashboard\favicon.svg`：**冒烟照样绿**
+  （少一个面板资源不影响 `status -Json`）、`-notcontains` 照样过，只有逐条目对照开口
+  `FAIL the extrafile zip also lost something the clean tree carries: dashboard/favicon.svg`、`exit=1`。
+  也就是说"漏发一个文件"这件事在上一轮之前**没有任何一层看得见**，现在不仅看得见，而且被证明看得见。
+  顺带同一形状的检查：推导若扫不到 `ka.ps1`/`ka-core.ps1`/`ka-gate.ps1`/`ka-server.ps1`/`ka-worker.ps1`
+  或五个 `.bat` 里任何一个就 throw，dashboard 文件少于 4 个也 throw——"扫不到东西"长得最像通过。
+  本机数字（都在磁盘上可重读）：`info portable zip entries: this tree = 24, with one root script no list
+  names = 25`、`PROBE OK: ... a root script that no list names still ships ...`、`probe-motw` 那句跟着
+  变成 `a Zone-3 download of 24 files ...`、五道门禁 `----- 5 run, 0 red`。文档里那几个 23/25 一起改：
+  README 三处计数、`dashboard/` 那行目录树（它自己也少写了 favicon.svg——**文档里的清单是同一种洞的
+  第三个身体**）、`build-test.yml` 注释里那个 23 换成"断言是 `$manifest.Count + 2`，跟着清单走"，
+  免得下一次再敲错一个数（`ka-test-install.ps1` 本来就是从清单算的，所以它这一轮自动变成 26）。
+  一条**本机红**记清楚，不是产品红：整轮 `----- 18 run, 1 red`，唯一那条红是 `probe-mutex-identity.ps1`
+  的争用对照 `holder job said: got=False ; OpenExisting error: none`——名字找得到却拿不到，说明有人正
+  持着默认数据根的 `Local\KA-Worker-DCA86D0FFFB8`，而它就是这台机器上活着的那个 worker（pid 21688，
+  `-DataDir C:\Users\DELL\AppData\Local\KeepAwake`，当场从 `Win32_Process` 读到的命令行）。探针自己在
+  100-104 行把这条写成了已知环境事实（2026-09-25 从 `git archive HEAD` 的干净副本复现过同样一次红）。
+  **没有为了让它绿而停掉正在防休眠的进程**——那是这台机器的用途，不是测试的障碍；runner 那一步照旧绿，
+  因为那儿没有任何东西在保护。这一轮**没有**动已发布的 v1.0.0：重打包要重打 tag，那是另一件事。
+
 - **同一个病根第三次量出来：内容被拆开写、或者压根不需要内容可读**（2026-09-26，接上一条）。
   上三条把"找什么名字"改成"管哪种通道"之后，剩下的问句是：**通道里的内容如果拼开来写呢？如果这条通道
   根本不看内容呢？**实测（`_tmp/shell-open-check.ps1`：往暂存副本注 5 种写法，`git show HEAD:tests/ka-privacy.ps1`
@@ -189,8 +227,16 @@
   是数出来的，不是我在注释里推的。本机 `----- 5 run, 0 red`、14 条腿全红、`MUTATION CHECK OK: all 14 defects
   each red on their own rule, and the clean copy green`。**仍然拦不住的照旧写明白**（README/PRIVACY/闸门注释
   三处都写了）：已经在册那 10 处如果只把**参数**换成一个不带 scheme 的裸主机，行数不变、也没有 scheme 可读，
-  这一层只能靠"面板 URL 是 `ka-core.ps1` 里唯一一个回环字面量拼出来的"间接兜。runner 上这一版的数字要等下次
-  push 之后才知道，在那之前上面这些是本机的。
+  这一层只能靠"面板 URL 是 `ka-core.ps1` 里唯一一个回环字面量拼出来的"间接兜。
+  **runner 的数字到齐了，与本机逐字相同**：run `36233069528`（head `46b765e`，`conclusion=success`，
+  job `108379761010`）在一次性 Windows runner 上印 `scanning 22 shipped files`、
+  `ok rule 1: 12 URL literal(s), 0 only visible once adjacent literals are joined, 0 dangling scheme(s),
+  hosts = 127.0.0.1 x11, localhost x1`、
+  `ok rule 5: 10 shell hand-off(s) in 6 file(s), counts named = build.ps1 x2, ka.ps1 x2, ka-core.ps1 x2,
+  ka-lid.ps1 x1, ka-test-install.ps1 x2, ka-tray.ps1 x1`、`PRIVACY GATE OK`、
+  `MUTATION CHECK OK: all 14 defects each red on their own rule, and the clean copy green`、
+  套件 `通过 86，失败 0，跳过 5`。那两处 `x2`/`x1` 的分布在 runner 上也是同一份 `$shellAllow` 在对账，
+  不是巧合——这台机器与那台机器上的树是同一份 checkout。
 
 - **"扫的是哪些文件"也是同一份问句，只是升了一级：安装器从来没被扫过**（2026-09-26，接上一条）。
   上两条把"找什么名字"改成"管哪种通道"，改完立刻用同一个问句问自己：这条闸门的 `$files` 是怎么来的？
