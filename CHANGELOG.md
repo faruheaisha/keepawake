@@ -207,6 +207,11 @@
   `MUTATION CHECK OK: all 8 defects each red on their own rule, and the clean copy green`，门禁
   `----- 5 run, 0 red`。**这条规则的边界**：管的是响应头通道，不管 `ContentType` / `StatusCode` 这些强类型属性
   （那里塞不进任意头名）；至于 `HttpListener` 自己默认带出去的 `Server:` 头，那是内核的行为，不在源码文本里。
+  **CI 已接上**（run `36231033681`，sha `4669f3c`）：runner 上印
+  `ok   rule 4: 1 response header write(s), 0 CORS grant(s), names allowed = Cache-Control`、
+  `MUTATION CHECK OK: all 8 defects ...`、整轮 `----- 23 run, 0 red`、套件 `通过 86，失败 0，跳过 5`
+  ——家族标记在干净检出上零误伤，这条最有价值的就是它不是在开发机上验的。
+  （再往后的第九条、第十条腿属于下一轮，`cc2a23f` 那一轮被并发取消，见下一条。）
 
 - **隐私闸门 rule 2 的 fail-open：这次不是"清单会过期"，是"清单本来就漏"**（2026-09-26，接上一条）。
   前三条讲的是检查内部的手写清单——风险在"将来"。这一条是**今天就摸得到的洞**，而且摸它的是产品对用户
