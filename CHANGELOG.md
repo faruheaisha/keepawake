@@ -164,6 +164,26 @@
 
 ## 未发布 / 下一步
 
+- **同一条规矩用到探针自己头上：`probe-clm-gate` 的"有哪几个入口"也是手写的**（2026-09-26，接上一条）。
+  A 段拿一份写死的 6 个文件名去查闸门接没接。规则没错，错在它假设"这 6 个就是全部"——今天成立，第七个
+  入口落地那天就不成立，而 CLM 闸门恰恰是下载者环境里最容易被半路降级的那道（`ka-gate.ps1` 存在的理由）。
+  改成**发现**：入口集合 = 发布清单里的顶层 `.ps1` ∩ "在可执行行上真的 dot-source `ka-core.ps1`"。两个细节
+  是实测出来的：`ka-gate.ps1` 只在文档注释里提过一次 `ka-core.ps1`，用行首点源判据它自然落在集合外；
+  `ka-guard.ps1` 不点字面量，它先 `$core = Join-Path ...` 再 `. $core`（为了在库缺失时自己印一条告警），
+  所以成员测试认这两种写法。顺手把 A 段原来的 `*'<name>'*` 宽松匹配收紧成行首点源——注释里出现文件名再
+  也不会被读成"它在第 42 行加载了库"。发现只做一半不够：新加一条 `reaches ka-core but no CLM case runs it`，
+  **找到了却没跑过**必须同样算红，否则清单只是把洞从"没看见"改成"看见了但假装没事"；空清单不许当绿，直接
+  `PROBE FAILED - no shipped script dot-sources ka-core.ps1`。
+  线检 `_tmp/wire-check-clm.ps1`：在 `_tmp/clm-wire/` 里搭一个**假仓库根**（复制 `ka*.ps1` + 一份只留 A 段
+  的探针 + 一份改过的发布清单），真仓库一个字节没动。四次翻转：
+  `baseline exit=0`（`discovered 6 ... A GREEN: 6 entries, 6 covered`）、塞进没接闸门的 `ka-extra.ps1` →
+  `exit=1` 且 `FAIL ka-extra.ps1  gate=- exit=- core=3 no gate dot-source, no exit-2 call, reaches ka-core
+  but no CLM case runs it`、塞进**接了闸门但没有用例**的 → `exit=1` 只报后一条（证明两条判据各自独立）、
+  把发布清单缩到只剩两个库文件 → `exit=1` 且印那条"成员测试坏了"。整条探针本机
+  `PROBE OK: 9 cases green now, 7 red without the gate, 6 entry points gated before ka-core`，门禁
+  `----- 5 run, 0 red`。集合的边界也说清楚：**发现的范围是发布清单**，一个存在但从不随包发出去的文件不在
+  这里被查——那是另一条规则（什么该进清单）的地盘。
+
 - **上一条那条腿自己也带着一份写死的清单——这是 `ka-lid` 那个错的第三种犯法**（2026-09-26，接上一条）。
   上一条留下的点击交接判据点名了两处出口（duration 走 `-Minutes`、interval 走 `antiLockIntervalSec`），可
   "菜单还能把数字交给谁"这件事如果是手写的，那第三个交接冒出来时没有任何东西会拦——跟当年 `ka-lid` 漏在

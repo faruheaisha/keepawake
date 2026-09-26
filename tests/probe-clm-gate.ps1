@@ -4,9 +4,10 @@
 
     Three legs, because each one catches a different way this could be decoration:
 
-      A. static wiring  - every entry point dot-sources the gate and exits BEFORE it can
-         reach ka-core.ps1. Without this, "wired into all six" would be a claim about files
-         nobody opened.
+      A. static wiring  - every shipped script that reaches ka-core.ps1 dot-sources the gate and
+         exits BEFORE that line, and each one also has a case below. The set is discovered from the
+         shipped inventory, not typed here: "wired into all six" was a claim about files nobody
+         opened, and a seventh one arriving ungated would have been invisible to a hand-written list.
       B. dynamic refusal - a copy of each entry point, run as the process entry point (-File,
          the only shape where `exit` reaches the host code) with the language mode downgraded
          one line above the gate call. Four ka.ps1 cases also cover zh/en.
@@ -21,7 +22,26 @@
 #>
 $root = Split-Path -Parent $PSScriptRoot
 $work = Join-Path $root '_tmp/clm-gate'   # scratch stays in the ignored _tmp, never beside the shipped tests
-$entries = @('ka.ps1', 'ka-worker.ps1', 'ka-server.ps1', 'ka-guard.ps1', 'ka-tray.ps1', 'ka-lid.ps1')
+
+# "Which files can reach the library" is not a list this probe gets to keep by hand - ka-lid once
+# sat outside a hand-written inventory and nothing noticed. Membership is a fact about the file: it
+# dot-sources ka-core.ps1 on an executable line (ka-gate.ps1 only mentions the name in comments, so
+# it drops out on its own), and the universe is the shipped inventory, because a file that exists
+# but never ships cannot be counted as protected.
+function Test-CoreDotSource([string]$Line) {
+    $t = $Line.Trim()
+    # Two shapes are in use: ka.ps1 & friends dot-source the literal path, ka-guard.ps1 resolves
+    # $core first so it can refuse a missing library with a message of its own.
+    return ($t -match "^\.\s.*'ka-core\.ps1'" -or $t -match '^\.\s+\$core\b')
+}
+. (Join-Path $PSScriptRoot 'ka-release-files.ps1')
+$entries = @(foreach ($f in @(Get-KaReleaseFile | Where-Object { $_ -notmatch '[\\/]' -and $_ -like '*.ps1' })) {
+    if (@(Get-Content -LiteralPath (Join-Path $root $f) | Where-Object { Test-CoreDotSource $_ }).Count) { $f }
+})
+if (-not $entries.Count) {
+    Write-Output 'PROBE FAILED - no shipped script dot-sources ka-core.ps1: the inventory or the membership test is broken'
+    exit 1
+}
 
 # Each case is one entry point, the arguments that are harmless to it, and the language.
 # ka-worker gets a fractional -Minutes and every non-CLI leg gets its own -DataDir, so a leg
@@ -49,21 +69,26 @@ function Refusal([string]$Lang) {
 
 # ---------------------------------------------------------------- A. static wiring
 Write-Output '--- A. every entry point gates before it loads the library'
+Write-Host ('  discovered ' + $entries.Count + ' shipped scripts that reach ka-core.ps1: ' + ($entries -join ', '))
+$knownCases = @($cases | ForEach-Object { $_.Entry } | Select-Object -Unique)
 $staticBad = 0
 foreach ($e in $entries) {
     $lines = Get-Content -LiteralPath (Join-Path $root $e)
     $gate = -1; $exit = -1; $core = -1
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $t = $lines[$i]
-        if ($gate -lt 0 -and $t -like "*'ka-gate.ps1'*") { $gate = $i }
+        if ($gate -lt 0 -and $t.Trim() -match "^\.\s.*'ka-gate\.ps1'") { $gate = $i }
         if ($exit -lt 0 -and $t -match 'if \(-not \(Test-KaLanguageMode\)\) \{ exit 2 \}') { $exit = $i }
-        if ($core -lt 0 -and ($t -like "*'ka-core.ps1'*" -or $t -eq '. $core')) { $core = $i }
+        if ($core -lt 0 -and (Test-CoreDotSource $t)) { $core = $i }
     }
     $why = @()
     if ($gate -lt 0) { $why += 'no gate dot-source' }
     if ($exit -lt 0) { $why += 'no exit-2 call' }
     if ($core -lt 0) { $why += 'ka-core never dot-sourced?' }
     elseif ($exit -ge 0 -and $exit -gt $core) { $why += "gate at line $($exit+1) is after ka-core at $($core+1)" }
+    # Finding the file is only half the job: an entry point nobody runs under a downgraded mode is
+    # discovered-but-untested, which has to be as loud as being ungated.
+    if ($knownCases -notcontains $e) { $why += 'reaches ka-core but no CLM case runs it' }
     if ($why) { $staticBad++ }
     Write-Host ('  {0}{1,-16} gate={2} exit={3} core={4} {5}' -f $(if ($why) { 'FAIL ' } else { 'ok   ' }),
                $e, $(if ($gate -ge 0) { $gate + 1 } else { '-' }), $(if ($exit -ge 0) { $exit + 1 } else { '-' }),
@@ -72,7 +97,7 @@ foreach ($e in $entries) {
 
 # ---------------------------------------------------------------- function-name collisions
 # Two files defining the same function is silent and order-dependent, and ka-gate.ps1 exists to
-# be dot-sourced ahead of ka-core.ps1 by all six entry points - so a collision there is a bug
+# be dot-sourced ahead of ka-core.ps1 by every entry point - so a collision there is a bug
 # this probe would otherwise never see.
 Write-Output '--- A2. no function defined twice across the shipped files'
 $names = @{}
