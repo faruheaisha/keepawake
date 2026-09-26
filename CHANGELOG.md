@@ -164,6 +164,78 @@
 
 ## 未发布 / 下一步
 
+- **CI 那一步为什么被人工取消过两次，答案在 runner 自己的等待逻辑里**（2026-09-26/27，#65 #66）。
+  两次取消（run `36242306473` 停在 31 分、`36243977634` 停在 60 分）都不是产品红，是 `tests/ka-ci.ps1`
+  用 `Start-Process -Wait` 等每个子脚本：`.NET` 的 `WaitForExit()` 等的是 stdout 管道到 EOF，
+  而被等的脚本留下一个继承写端的孙进程（面板就是那个孙进程），EOF 就永远不来。改完的形状：直接孩子
+  是 `cmd.exe`（它随脚本一起退出，对孩子留下的活口是瞎的），脚本的文本走同一个控制台（一路
+  `Start-Process -NoNewWindow`），退出码由 cmd 自己写进 verdict 文件，循环只 `HasExited` 轮询到截止点、
+  超时就 `taskkill /T` 整棵子树。头一份证据是一张**单一真源**的四行表（`_tmp/wait-table-run1.log`，
+  孩子印一行标记 + 起一个活 6 秒的孙进程 + `exit 5`）：`-PassThru` 配 `HasExited` 轮询 0.7 秒返回、
+  看得见孙进程、代码回 `$null`→`0`（撒谎）；`-PassThru` 配 `WaitForExit()` 0.8 秒返回、同样撒谎；
+  `Start-Process -Wait -PassThru` 8.1 秒返回、代码 5（真话）、**但看不见孙进程**；
+  `[Diagnostics.Process]::Start` + 重定向 stdout 而从不读 + `WaitForExit` 0.8 秒返回、代码 5、看得见
+  孙进程，**而孩子印的那行标记整个丢了**（`marker-in-log=NO`）。四种形状各有各的瞎法，所以
+  `ka-ci.ps1` 顶部那张表把"哪种瞎在哪一列"写成实测行，而不是脚注——上一版这里的几个数字是别处抄来的、
+  和本机重测的对不上，本轮是先补出这张单一真源的表才把数字钉死的。收集器本身每行花 8.1 秒，而它检查的
+  那个等待逻辑 0.7 秒返回，这句话也写进去了。
+  钉它的是两条新探针：`tests/probe-ci-harness.ps1`（六个一次性夹具——干净 / `exit 5` / 睡 600 秒 /
+  留一个 GUI 活口 / 把启动它的 cmd 先杀掉 / 留一个控制台活口——交给**真** runner 跑；`ka-c-hang` 与
+  `ka-e-nocmd` 共用一次调用所以汇总行必须同时数到两个；同一份"控制台活口"夹具再走一遍**修复前那个
+  `-Wait` 形状**做差分，实测 `old shape: 16s, exit code 0` 对发出去的 runner `3s and red`；干净那条
+  不是填充物——runner 第一版对什么都没留的脚本印 `left 1 descendant(s) alive:`，因为空结果回来是空
+  字符串而 `@('')` 有一个元素，还把夹具自己的 `conhost.exe` 一起列出来，这两处都会把**没有泄漏的真
+  CI 步骤**判红；被点名的每个 pid 还必须晚于本探针的开始时刻）和 `tests/probe-ci-harness-selftest.ps1`
+  （检查上面那条**会不会红**：把 `ka-ci.ps1` 复制到 `_tmp/` 副本、只加两行、两条臂各自用环境变量打开，
+  臂 1 关掉"还剩活口"的报告→要求恰好那两条泄漏腿红且**不许有一条都没红**的情况静默通过，臂 2 把
+  **跑这条自检的进程自己的 pid** 塞进活口名单→实测 2 条 finding 逐条写着
+  `born 23:28:31 - before this probe started at 23:29:14, so it is not a leftover of any leg`，
+  两个注入都关掉的对照副本必须还是绿的）。
+  本机全量 `-Gates -Probes`：先 `----- 27 run, 2 red`（`_tmp/ci-gates-probes-run1.log`），两个红都当场
+  落实了成因——`probe-server-hint.ps1` 报 `left 1 descendant(s) alive: 21688:powershell.exe`，是出生
+  时间窗只有下界、pid 被回收后老进程被认成本轮活口（修完 `ok probe-server-hint.ps1 34s`，
+  `_tmp/ci-window-fix1.log` 第 16 行）；`probe-mutex-identity.ps1` 是环境性的，见下下条，
+  **不能靠停掉用户的 worker 去把它变绿**。两条都修完之后同一入口重跑：
+  **`----- 27 run, 0 red`**（`_tmp/ci-gates-probes-run2.log`，00:19:54 → 00:43:08 = 23m14s，
+  与 27 行各自耗时之和 1392s 对得上，所以那个 23 分钟不是排队等出来的），这一轮里
+  `probe-bat-entry.ps1` 单跑 69s、`probe-ci-harness.ps1` 39s、它的自检 117s、
+  `probe-mutex-identity.ps1` 8s 绿、`probe-server-hint.ps1` 44s 绿。
+- **那条 sweep 里唯一没查清的东西：一次 `answered 0`**（2026-09-27，#64 的尾巴）。
+  `tests/probe-bat-entry.ps1 -SelfTest` 十四次里有一次是**没有注入缺陷**的那个子进程印
+  `an unknown name answered 0, not 404`（端口 58426，同一个文件几分钟前和几分钟后都是绿的，
+  `_tmp/bat-entry-selftest-cleanup.log` 逐行可重读；harness 自己也照实说了——
+  `the un-defected run did not come out green (verdict=FAILED exit=1) - the reds below would prove nothing`）。
+  两次受控复现各 0 次偏差：30 对同一连接的 KeepAlive 开与关（`_tmp/panel-keepalive-probe.ps1`），
+  40 对再挂一个每 120 ms 打六条路由的第二客户端（`_tmp/panel-load-flake.ps1`）——所以连接池复用与
+  并发负载是**被排除**，不是被解释；那次红字把 `$r.Error` 丢了，所以机制至今未知。能做的是把"形状"
+  钉住：`Status 0` 是"一个 HTTP 状态码都没到过"，于是 `Invoke-Route` 只给这一种形状三次机会、每次隔
+  400 ms，**真的回了状态码的绝不重试**，每条 `[panel]` 红字现在带 `status=/tries=/errors=`。
+  代价与限度一并写明：这是让那条腿去容忍一个本文件并不理解的失败，而加上它之后那次 sweep 每条路由
+  都是 `tries=1`、一行 `note:` 都没有——**它至今没被观察到吸收过一次真实的 flake**。
+  同一条 sweep 现在收尾是绿的（`_tmp/bat-entry-selftest-retry.log`：干净子进程 `verdict=OK`，五个变异体
+  `badentry`/`wrongtarget`/`unreachable`/`missingasset`/`leakchild` 各红在自己那条腿上），
+  整条 8m35s（`CreationTime 23:58:31 → LastWriteTime 00:07:06`），单跑 129s。新增的 `leakchild` 那条
+  量的不是产品而是**这个文件自己的收尾**：`Stop-Scratch` 以前等满 10 秒就把结果丢掉，等于一条挂在睡眠
+  上的断言；现在它等的是实测（还活着就红、点名 pid 与它是哪个脚本）。`off.bat` 也不再挂在 SKIP 里——
+  `[off-idle]` 那条腿每次都真跑它，SKIP 那三行末尾自己写着这一句。**顺带查出一个 CI 覆盖洞**（#68）：
+  `ka-ci.ps1:96` 的 `-Probes` 按 glob 跑 `tests/probe-*.ps1` 且**每个都不带参数**，所以 9 个会注入缺陷
+  的探针里，7 个"文件形状"的自检每轮 CI 都跑，而把自检藏在自己文件那个 `[switch]$SelfTest` 后面的两个
+  （`probe-bat-entry`、`probe-native`）**一次也没进过 CI**。接不接还没定，先把单位说清楚：本机那条
+  sweep 实测 8m35s，本机整步 `-Gates -Probes` 23m14s，而已推上去那一版在 CI 的同一句是 8m10s
+  （run `36237945409` 的日志时间戳）——**这是两台机器，不能把 8m35s 直接加到 8m10s 上**，CI 侧真实
+  增量要等这条推上去、在那台一次性 runner 上量一次才知道；新那两个探针也还没在 runner 上跑过。
+  这条洞写在 README 的探针清单与表格里，不当它不存在。
+- **"跨进程真的抢得到"现在有两条路由，由实测选**（2026-09-27）。`probe-mutex-identity.ps1` 在正在防休眠
+  的机器上必然红：那条控制要当"第一个拿的人"，而这台机器上用户的 worker（pid 21688）已经持有
+  `Local\KA-Worker-DCA86D0FFFB8`，job 于是印 `got=False`（2026-09-25 实测，且从 `git archive HEAD` 的
+  干净副本复现过同一句红——是机器，不是被测代码）。**修法不是把它变绿，是换一个更强的证据**：先问
+  `OpenExisting` + `WaitOne(0)`（前者只证明名字存在，后者才证明别的进程正持有），确实被持有就改成
+  "和产品自己的 worker 争"，末行印 `contention observed against live worker pid 21688`
+  （`_tmp/mutex-livewholder1.log`），并把 job 那条控制**明写着 SKIP**；没有持有者就照旧走 job，CI 那条路
+  本轮**没有在 runner 上重测**。取到手立刻释放——`ka-worker.ps1:70` 只在启动时拿一次、之后从不重新申请，
+  短暂的第二个申请人动不了正在跑的保护；跑完复查 `state.json` 仍是 `displayActive=True antiLock=True
+  pid=21688`，这条是查过的不是假设的。
+
 - **四个双击入口里那一行命令，从来没有一条被真的执行过**（2026-09-26，接上一条）。同一句问句第五次问出去，
   这回不问清单、不问字节形状，问**内容**：`on.bat` 写的是 `start -Minutes %~1` 还是 `start -Minute %~1`？
   上一轮那道闸门钉的是"cmd 会不会读错这份文件"，而它读得懂一个 `serve` 拼成 `serveX`。
