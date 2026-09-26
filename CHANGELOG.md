@@ -164,6 +164,23 @@
 
 ## 未发布 / 下一步
 
+- **第三份、也是最后一份手写的文件清单：`probe-migrate` 自己抄了一份"程序目录里有什么"**（2026-09-26，接上一条）。
+  上两条把托盘 sink 和 CLM 入口改成了发现，`tests/` 里还剩一处 12 行的写死数组——而被抄的那份
+  `ka-release-files.ps1` 的头注释记着它**已经被抄过两次、并因此漂移过一次**（`PRIVACY.md` / `SECURITY.md` /
+  `CHANGELOG.md` 落地时只有两份探针里的一份跟上了）。现在程序目录 = 发布清单 ∩ "代码自己会打开的东西"
+  （`*.ps1` 与 `dashboard\*`），`.bat` 启动器和文档不在里面：迁移逻辑读的是脚本和被面板取用的前端，
+  往夹具里塞 `LICENSE` 不会让哪条断言多测到东西。空清单或只捞出库文件一律不许当绿：
+  `the derived program list is not a program directory`；清单指到仓库里没有的文件也直接失败
+  （`source tree is missing ... lists a file the repository does not have`）。
+  线检 `_tmp/wire-check-migrate.ps1`：把探针**从文件头到 `New-Data` 之前**的那段原样切出来（也就是真跑的那段
+  推导与 `New-Program`），配一份改过清单的假发布清单，落在 `_tmp/mig-wire/` 的假仓库根上，真仓库一个字节没动。
+  四次翻转实测：`baseline exit=0 / DERIVED 12 / COPIED 12`、清单里加一个仓库里**存在**的 `ka-extra.ps1` →
+  `exit=0 / DERIVED 13 / COPIED 13`（新脚本自动进来，不用改探针）、加一个**不存在**的 → `exit=1` 点名它、
+  清单缩到只剩 `ka-core.ps1` + `README.md` → `exit=1` 报"这不是一个程序目录"。整条探针本机重跑
+  `PROBE OK: migration brings an old install forward without ever replacing a file the data root already has`
+  （A-D 四段全绿）。**这轮的边界照旧说清楚**：推导的范围仍是那份清单，一个"该随包发出去却漏进清单"的文件
+  不归这里管——那是打包规则的地盘，不是夹具的地盘。
+
 - **同一条规矩用到探针自己头上：`probe-clm-gate` 的"有哪几个入口"也是手写的**（2026-09-26，接上一条）。
   A 段拿一份写死的 6 个文件名去查闸门接没接。规则没错，错在它假设"这 6 个就是全部"——今天成立，第七个
   入口落地那天就不成立，而 CLM 闸门恰恰是下载者环境里最容易被半路降级的那道（`ka-gate.ps1` 存在的理由）。

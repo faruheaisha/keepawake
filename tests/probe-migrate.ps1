@@ -10,9 +10,16 @@ $fail = New-Object System.Collections.Generic.List[string]
 function Bad([string]$m) { $script:fail.Add($m); Write-Output ('  FAIL ' + $m) }
 function Ok([string]$m)  { Write-Output ('  ok   ' + $m) }
 
-$files = @('ka.ps1', 'ka-core.ps1', 'ka-gate.ps1', 'ka-worker.ps1', 'ka-server.ps1',
-           'ka-guard.ps1', 'ka-lid.ps1', 'ka-tray.ps1',
-           'dashboard\index.html', 'dashboard\app.js', 'dashboard\styles.css', 'dashboard\i18n.js')
+# What sits in a program directory is not typed here either: this probe used to carry its own copy
+# of the file list, which is exactly how two lists of the same thing drift (ka-release-files.ps1
+# records that it already happened twice). A program directory is the shipped scripts plus the
+# dashboard, so the list is derived from the manifest and a new shipped script joins automatically.
+. (Join-Path $root 'tests/ka-release-files.ps1')
+$files = @(Get-KaReleaseFile | Where-Object { $_ -like '*.ps1' -or $_ -like 'dashboard\*' })
+if ($files.Count -lt 2 -or $files -notcontains 'ka.ps1' -or $files -notcontains 'ka-core.ps1') {
+    Write-Output ('  FAIL the derived program list is not a program directory: ' + ($files -join ', '))
+    exit 1
+}
 
 function Write-Json([string]$Path, [string]$Text) {
     New-Item -ItemType Directory -Force -Path (Split-Path $Path) | Out-Null
@@ -25,7 +32,7 @@ function New-Program([string]$Config) {
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     foreach ($f in $files) {
         $src = Join-Path $root $f
-        if (-not (Test-Path -LiteralPath $src)) { throw "source tree is missing $f - the list above is stale" }
+        if (-not (Test-Path -LiteralPath $src)) { throw "source tree is missing $f - tests/ka-release-files.ps1 lists a file the repository does not have" }
         $dst = Join-Path $dir $f
         New-Item -ItemType Directory -Force -Path (Split-Path $dst) | Out-Null
         Copy-Item -LiteralPath $src -Destination $dst -Force
