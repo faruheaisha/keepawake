@@ -19,7 +19,8 @@
     A comment mentioning a URL counts: this scans literals, and the honest reading of rule 1 is
     "no non-loopback URL appears in the shipped text at all". Loopback examples in prose are
     fine, so the rule is not weakened to accommodate the docs - docs/ and README are out of
-    scope here because a documented GitHub link is not an egress path.
+    scope here because a documented GitHub link is not an egress path. packaging/ is in scope
+    since 2026-09-26: the installer runs before any of this code does, so it is not documentation.
 
     Usage:  powershell -NoProfile -ExecutionPolicy Bypass -File tests/ka-privacy.ps1
             ... -Root <dir>     scan another copy (used to prove the gate can fail)
@@ -31,12 +32,21 @@ $ErrorActionPreference = 'Stop'
 if (-not $Root) { $Root = Split-Path -Parent $PSScriptRoot }
 if (-not (Test-Path -LiteralPath $Root)) { Write-Host "no such root: $Root"; exit 2 }
 
-# Shipped product surface only: the engines, the CLI, the launchers, the panel.
+# Shipped product surface only: the engines, the CLI, the launchers, the panel - and the installer,
+# which is the first thing a downloader runs and used to be outside this scan entirely (measured
+# 2026-09-26: packaging/ holds 4 files and zero 'http' substrings, so this closed a door nobody had
+# walked through yet rather than a hole; a [Run] openurl or a Start-Process of a downloader added
+# there would have been invisible to the file that exists to make "nothing leaves the machine" a
+# checked claim).
 $files = @(Get-ChildItem -LiteralPath $Root -Filter '*.ps1' -File | ForEach-Object { $_.FullName })
 $files += @(Get-ChildItem -LiteralPath $Root -Filter '*.bat' -File | ForEach-Object { $_.FullName })
 $dash = Join-Path $Root 'dashboard'
 if (Test-Path -LiteralPath $dash) {
     $files += @(Get-ChildItem -LiteralPath $dash -File -Recurse | ForEach-Object { $_.FullName })
+}
+$pack = Join-Path $Root 'packaging'
+if (Test-Path -LiteralPath $pack) {
+    $files += @(Get-ChildItem -LiteralPath $pack -File -Recurse | ForEach-Object { $_.FullName })
 }
 if (-not $files.Count) { Write-Host "nothing to scan under $Root"; exit 2 }
 

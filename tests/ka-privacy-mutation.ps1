@@ -15,13 +15,18 @@ function Stage-Copy {
     if (Test-Path -LiteralPath $red) { Remove-Item -LiteralPath $red -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $red | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $red 'dashboard') | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $red 'packaging') | Out-Null
     # -Path, not -LiteralPath: -LiteralPath does not expand the wildcard and would silently
     # stage nothing.
     Copy-Item -Path (Join-Path $root '*.ps1') -Destination $red
     Copy-Item -Path (Join-Path $root '*.bat') -Destination $red
     Copy-Item -Path (Join-Path $root 'dashboard\*') -Destination (Join-Path $red 'dashboard')
+    Copy-Item -Path (Join-Path $root 'packaging\*') -Destination (Join-Path $red 'packaging')
     if (-not (Test-Path -LiteralPath (Join-Path $red 'ka-core.ps1'))) {
         throw "staging failed: nothing was copied into $red"
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $red 'packaging\KeepAwake.iss'))) {
+        throw 'staging failed: the installer did not come along, so the installer leg of this run would be about nothing'
     }
 }
 
@@ -42,7 +47,7 @@ function Run-Gate {
 # One line of shipped code per leg, chosen so that each one trips exactly the rule named in Want.
 # The two composed-host legs are the ones the gate used to miss entirely (measured 2026-09-26):
 # no scheme:// literal for rule 1 to see, and no API name on the old exact-name list to match.
-$core = 'ka-core.ps1'; $worker = 'ka-worker.ps1'; $srv = 'ka-server.ps1'; $css = 'dashboard\styles.css'
+$core = 'ka-core.ps1'; $worker = 'ka-worker.ps1'; $srv = 'ka-server.ps1'
 $defects = @(
     @{ Name = 'telemetry endpoint as a literal'; File = $core; Anchor = '$script:KaVersion ='
        Line = '$KaTelemetry = "https://telemetry.example.com/v1/event"'
@@ -73,6 +78,13 @@ $defects = @(
     @{ Name = 'an unknown header carrying the machine name'; File = $srv; Anchor = "`$Ctx.Response.Headers.Add('Cache-Control', 'no-store')"
        Line = "`$Ctx.Response.Headers.Add('X-Ka-Machine', `$env:COMPUTERNAME)"
        Want = @("sets response header 'X-Ka-Machine'") }
+    # The installer is scanned since 2026-09-26. It carried no 'http' substring at all that day, so
+    # this leg is the door being closed, not a hole being patched - which is exactly why it needs its
+    # own injection: "we scan packaging/ too" is worth nothing until something proves the scanner
+    # actually reaches a file in there.
+    @{ Name = 'an update check in the installer'; File = 'packaging\KeepAwake.iss'; Anchor = 'OutputDir={#OutDir}'
+       Line = 'Filename: "https://update.example.com/v1/check"; Description: "Check for updates"; Flags: shellopen nowait'
+       Want = @('non-loopback URL literal: https://update.example.com/v1/check') }
 )
 
 $fail = @()

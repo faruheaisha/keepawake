@@ -164,6 +164,23 @@
 
 ## 未发布 / 下一步
 
+- **"扫的是哪些文件"也是同一份问句，只是升了一级：安装器从来没被扫过**（2026-09-26，接上一条）。
+  上两条把"找什么名字"改成"管哪种通道"，改完立刻用同一个问句问自己：这条闸门的 `$files` 是怎么来的？
+  答案是"顶层 `*.ps1` + `*.bat` + `dashboard/**`"——**`packaging/` 不在里面**，而 `KeepAwake.iss` 是下载者
+  双击的第一个东西：它里面一条 `[Run] ... openurl` 就是出网路径，而且发生在本产品任何一行代码运行之前。
+  说实话的一半：**当天 `packaging/` 四个文件里字符串 `http` 出现 0 次**，所以这一条关的是一扇门、不是
+  已经有人走过的洞；但"我们现在也扫安装器"这句话本身不值得信，除非有一条注入替它作证。于是给变异腿加第
+  九条（往暂存副本的 `.iss` 里塞一条升级检查），并给暂存函数加一条守卫：`packaging\KeepAwake.iss` 没跟着
+  复制过去就 throw（否则这条腿就是关于虚无的断言，跟托盘那轮"改了没跑过的检查"同罪）。
+  A/B 拿旧那份闸门对照（`git show 4669f3c:tests/ka-privacy.ps1`）：同一个注入副本 **旧 exit=0、新 exit=1**，
+  `rule 1: 13 URL literal(s), hosts = 127.0.0.1 x11, localhost x1, update.example.com x1`，
+  finding 原话 `KeepAwake.iss:66 non-loopback URL literal: https://update.example.com/v1/check (host=update.example.com)`；
+  扫描面从 18 个文件变成 22 个，干净树照旧 `PRIVACY GATE OK`。九条腿全红在各自规则上：
+  `MUTATION CHECK OK: all 9 defects each red on their own rule, and the clean copy green`。
+  **CI 的账也如实记**：`cc2a23f`（规则 2 那一版）那一轮被 workflow 并发**取消**了（我推 `4669f3c` 时它还在跑），
+  它验的文件集是 `4669f3c` 的子集，所以覆盖没丢、但那一版的 runner 数字拿不到；`4669f3c`（run `36231033681`）
+  的结果出来之前，上面这些数字都只是本机的。
+
 - **同一个洞在隔壁那条规则上又量出来一次：规则 4 只认 `Access-Control` 这一个字串**（2026-09-26，接上一条）。
   上一条讲的是规则 2 的"要去找的 API 名字"清单；改完之后顺手用同一个问法去问规则 4——"如果出网/发头
   用的名字不在你的清单里呢？"。答案当场量出来（`_tmp/privacy-hole-check.ps1`，副本注两行进 `ka-server.ps1`）：
