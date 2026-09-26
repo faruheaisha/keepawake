@@ -2,6 +2,7 @@
     [switch]$Power,
     [switch]$Show,
     [switch]$SelfTest,
+    [switch]$LeakChild,
     [string]$Mutate = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -59,6 +60,21 @@ $ErrorActionPreference = 'Stop'
          The leg that pins "an unknown name must 404" was red on the product because of this, and
          the product was right.
 
+      6. A connection can also answer nothing, and that is not the product's fault to prove. One
+         sweep in fourteen printed "an unknown name answered 0, not 404" from the *un-defected*
+         child - port 58426, same file green minutes before and after it (_tmp/bat-entry-selftest-
+         cleanup.log). Two controlled sweeps did not reproduce it: 30 pairs reusing one connection
+         with KeepAlive on and off, then 40 pairs while a second client polled /, /styles.css,
+         /app.js, /i18n.js, /favicon.svg and /api/state every 120 ms (_tmp/panel-keepalive-probe.ps1,
+         _tmp/panel-load-flake.ps1) - 0 deviations, so pool reuse and concurrent load are ruled out,
+         not explained. The mechanism is still unidentified; what is identified is the shape, because
+         Status 0 is the value Invoke-Route returns when no HTTP status ever arrived. So -Retry gives
+         that shape three attempts, and every [panel] red now carries status=/tries=/errors= (see
+         Format-RouteMiss). Being straight about the cost of this: it makes the leg tolerant of a
+         failure this file does not understand, and the sweep that followed came back with tries=1 on
+         every route and no note line at all - the retry has not yet been observed absorbing a real
+         flake, so nothing about the mechanism has been proven by adding it.
+
     What each leg pins:
 
       ka.bat    both branches - no argument and `status` - must agree, and `-Json` must report the
@@ -83,7 +99,17 @@ $ErrorActionPreference = 'Stop'
                 desk it is skipped out loud unless -Power is given.
 
     -SelfTest re-runs this file as a child once per injected defect, one defect per run, and
-    requires each to go red inside its own leg - and the un-defected run to stay green.
+    requires each to go red inside its own leg - and the un-defected run to stay green. Measured
+    cost of the whole sweep on this box: 8m35s for six children (_tmp/bat-entry-selftest-retry.log,
+    CreationTime 23:58:31 -> LastWriteTime 00:07:06), against 129s for one plain run. That number is
+    why no CI step passes this switch - ka-ci.ps1 -Probes globs tests/probe-*.ps1 and runs each one
+    without arguments, so the sweep runs only when a person asks for it.
+
+    -LeakChild is how that sweep attacks this file instead of the product: the last thing before
+    cleanup starts one scratch process whose command line carries the staged path and a script name
+    no cleanup needle reaches, and the run has to go red in [cleanup] for it. Without that arm the
+    10-second wait in Stop-Scratch is a sleep with a verdict hanging off nothing, which is what it
+    was before this line existed.
 #>
 
 $here = $PSScriptRoot
@@ -280,19 +306,54 @@ function Get-MachineKaProc {
     return @($out | Sort-Object)
 }
 
-function Stop-Scratch {
-    foreach ($needle in @('ka-worker.ps1', 'ka-server.ps1', 'ka-tray.ps1')) {
-        foreach ($procId in @(Get-ScratchProc $needle)) {
-            try { Stop-Process -Id $procId -Force -ErrorAction Stop } catch { }
-        }
+function Format-ScratchAlive {
+    # pid:script for every child of the staged tree that is still running. Get-ScratchProc hands back
+    # bare pids because that is what Stop-Process wants; a finding has to name the script too, or the
+    # reader has to go looking for it.
+    $out = @()
+    foreach ($r in @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" -ErrorAction SilentlyContinue)) {
+        $cl = "$($r.CommandLine)"
+        if ($cl -notlike ('*' + $tree + '*')) { continue }
+        $m = [regex]::Match($cl, 'ka-(worker|server|tray)\.ps1')
+        $label = 'other-ps'
+        if ($m.Success) { $label = $m.Value }
+        $out += (([int]$r.ProcessId).ToString() + ':' + $label)
     }
-    for ($i = 0; $i -lt 40; $i++) {
-        if (@(Get-ScratchProc '.ps1').Count -eq 0) { break }
-        Start-Sleep -Milliseconds 250
-    }
+    return @($out | Sort-Object)
 }
 
-function Invoke-Route([int]$Port, [string]$Path) {
+function Stop-Scratch {
+    $refused = @{}
+    foreach ($needle in @('ka-worker.ps1', 'ka-server.ps1', 'ka-tray.ps1')) {
+        foreach ($procId in @(Get-ScratchProc $needle)) {
+            try { Stop-Process -Id $procId -Force -ErrorAction Stop }
+            catch { $refused[[int]$procId] = $_.Exception.Message }
+        }
+    }
+    $alive = @()
+    for ($i = 0; $i -lt 40; $i++) {
+        $alive = @(Get-ScratchProc '.ps1')
+        if ($alive.Count -eq 0) { break }
+        Start-Sleep -Milliseconds 250
+    }
+    # The 40 x 250ms loop used to throw away what it waited for: it broke or expired and nothing read
+    # the result, so cleanup looked like a step that had been verified while it had only been slept.
+    # A scratch process surviving here is its own finding - Get-MachineKaProc cannot catch it (it
+    # filters out this tree by design), and whoever runs the next probe would be tidying up after us.
+    if ($alive.Count -eq 0) { return }
+    Bad 'cleanup' ('left alive after the 10s wait: ' + (@(Format-ScratchAlive) -join ', '))
+    foreach ($id in @($refused.Keys)) {
+        # Only a refusal that also survived is a finding; a Stop-Process that lost the race with a
+        # self-exiting child says nothing about this tree.
+        if ($alive -contains $id) { Bad 'cleanup' ('pid ' + $id + ' refused Stop-Process: ' + $refused[$id]) }
+    }
+    foreach ($procId in $alive) { Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Milliseconds 500
+    $again = @(Format-ScratchAlive)
+    if ($again.Count) { Bad 'cleanup' ('survived the second force-stop: ' + ($again -join ', ')) }
+}
+
+function Invoke-Route([int]$Port, [string]$Path, [switch]$Retry) {
     <#
         A real request against a real listener, through HttpWebRequest rather than
         Invoke-WebRequest. Measured reason: 5.1's Invoke-WebRequest reports a served 404 as an error
@@ -300,34 +361,68 @@ function Invoke-Route([int]$Port, [string]$Path) {
         request ka-server.ps1 had answered with 404 + a body (ka-server.ps1:334). A WebException
         carries the live response. The body is drained either way, because a 200 with an empty body
         is a file nobody can see and the byte count is compared against the file on disk.
+
+        -Retry is for one measured flake, nothing else. The un-defected child of the -SelfTest sweep
+        printed "an unknown name answered 0, not 404" once in fourteen runs while the same file was
+        green minutes before and after it; two controlled sweeps (30 pairs with KeepAlive on and off,
+        40 pairs while a second client polled six routes every 120 ms) came back 0 deviations, so the
+        mechanism is still unidentified. What is identified is the shape: Status 0 means no HTTP
+        status ever arrived. Only that shape gets a second and third attempt 400 ms apart. A status
+        that did arrive is never retried, so a real wrong answer cannot be buried under a lucky
+        second try. Wait-Port omits -Retry on purpose - "is it up yet" is answered by waiting.
     #>
-    $r = @{ Status = 0; Type = ''; Bytes = 0; Error = '' }
-    try {
-        $req = [System.Net.HttpWebRequest]::Create('http://127.0.0.1:' + $Port + $Path)
-        $req.Timeout = 8000
-        $req.ReadWriteTimeout = 8000
-        $req.UserAgent = 'ka-probe-bat-entry'
-        $req.Headers.Add('X-Ka-Client', 'ka-dashboard')
-        $resp = $req.GetResponse()
-    } catch [System.Net.WebException] {
-        $e = $_.Exception
-        if (-not $e.Response) { $r.Error = $e.Message; return $r }
-        $resp = $e.Response
-    } catch {
-        $r.Error = $_.Exception.Message
-        return $r
+    $max = 1
+    if ($Retry) { $max = 3 }
+    $errs = @()
+    $r = $null
+    for ($attempt = 1; $attempt -le $max; $attempt++) {
+        $r = @{ Status = 0; Type = ''; Bytes = 0; Error = ''; Tries = $attempt }
+        $resp = $null
+        try {
+            $req = [System.Net.HttpWebRequest]::Create('http://127.0.0.1:' + $Port + $Path)
+            $req.Timeout = 8000
+            $req.ReadWriteTimeout = 8000
+            $req.UserAgent = 'ka-probe-bat-entry'
+            $req.Headers.Add('X-Ka-Client', 'ka-dashboard')
+            $resp = $req.GetResponse()
+        } catch [System.Net.WebException] {
+            # A WebException carrying a response is an answer - 404 included - and belongs in the
+            # read below. The response-less kind is the only one that means "no status arrived".
+            if ($null -eq $_.Exception.Response) { $errs += $_.Exception.Message } else { $resp = $_.Exception.Response }
+        } catch {
+            $errs += $_.Exception.Message
+        }
+        if ($resp) {
+            try {
+                $r.Status = [int]$resp.StatusCode
+                $r.Type = "$($resp.ContentType)"
+                $ms = New-Object IO.MemoryStream
+                $s = $resp.GetResponseStream()
+                $s.CopyTo($ms)
+                $r.Bytes = [int]$ms.Length
+            } catch { $errs += $_.Exception.Message } finally {
+                try { $resp.Close() } catch { }
+            }
+        }
+        if ($errs.Count) { $r.Error = ($errs | Select-Object -Unique) -join ' | ' }
+        if ($r.Status -ne 0 -or $attempt -eq $max) { break }
+        Start-Sleep -Milliseconds 400
     }
-    try {
-        $r.Status = [int]$resp.StatusCode
-        $r.Type = "$($resp.ContentType)"
-        $ms = New-Object IO.MemoryStream
-        $s = $resp.GetResponseStream()
-        $s.CopyTo($ms)
-        $r.Bytes = [int]$ms.Length
-    } catch { $r.Error = $_.Exception.Message } finally {
-        try { $resp.Close() } catch { }
+    if ($r.Tries -gt 1) {
+        # Out loud, because a green that needed a second attempt is a fact about the machine and
+        # not a detail for the retry logic to swallow.
+        Write-Host ('  note: ' + $Path + ' needed ' + $r.Tries + ' attempts' +
+                   $(if ($r.Error) { ' (first: ' + $r.Error + ')' } else { '' })) -ForegroundColor DarkYellow
     }
     return $r
+}
+
+function Format-RouteMiss($r) {
+    # Every [panel] red names how many attempts it took and what each one said, so a surviving
+    # red is diagnosable instead of being a bare number that the next run may or may not repeat.
+    $t = 'status=' + $r.Status + ' tries=' + $r.Tries
+    if ($r.Error) { $t += ' errors=' + $r.Error }
+    return $t
 }
 
 function Wait-Port([int]$Port, [switch]$Down, [int]$Sec = 40) {
@@ -430,10 +525,10 @@ function Invoke-Legs {
         if ($dash.Count -lt 4) { Bad 'panel' ("only {0} dashboard files in the staged tree - the reachability loop below is about almost nothing" -f $dash.Count) }
         foreach ($f in $dash) {
             $rel = $f.FullName.Substring($dashRoot.Length).Replace('\', '/').TrimStart('/')
-            $r = Invoke-Route -Port $port -Path ('/' + $rel)
+            $r = Invoke-Route -Port $port -Path ('/' + $rel) -Retry
             if ($r.Status -ne 200) {
-                Bad 'panel' ("{0} ships in the release but the panel answers it with {1}{2} - a name no route list holds is a file nobody can load" -f `
-                    $rel, $r.Status, $(if ($r.Error) { ' (no response: ' + $r.Error + ')' } else { '' }))
+                Bad 'panel' ("{0} ships in the release but the panel answers it with {1} - a name no route list holds is a file nobody can load" -f `
+                    $rel, (Format-RouteMiss $r))
             } elseif ($r.Bytes -ne $f.Length) {
                 # ka-server.ps1:340 sends File.ReadAllBytes, so the browser is meant to receive the
                 # exact bytes the zip carried. A different count is a truncated or rewritten file.
@@ -445,13 +540,13 @@ function Invoke-Legs {
         $asked = @([regex]::Matches($html, '(?:src|href)="(/[^"#][^"]*)"') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
         if ($asked.Count -lt 3) { Bad 'panel' ("index.html only asked for {0} root-relative paths - the attribute scan has stopped reading the page" -f $asked.Count) }
         foreach ($u in $asked) {
-            $r = Invoke-Route -Port $port -Path $u
-            if ($r.Status -ne 200) { Bad 'panel' ("index.html asks for {0} and the panel answers {1}" -f $u, $r.Status) }
+            $r = Invoke-Route -Port $port -Path $u -Retry
+            if ($r.Status -ne 200) { Bad 'panel' ("index.html asks for {0} and the panel answers {1}" -f $u, (Format-RouteMiss $r)) }
         }
-        $n = Invoke-Route -Port $port -Path '/selftest-never-shipped.svg'
-        if ($n.Status -ne 404) { Bad 'panel' ("an unknown name answered {0}, not 404 - the server is resolving paths it was never told about" -f $n.Status) }
-        $st = Invoke-Route -Port $port -Path '/api/state'
-        if ($st.Status -ne 200) { Bad 'panel' ("the dashboard's own /api/state answered {0}" -f $st.Status) }
+        $n = Invoke-Route -Port $port -Path '/selftest-never-shipped.svg' -Retry
+        if ($n.Status -ne 404) { Bad 'panel' ("an unknown name answered {0}, not 404 - the server is resolving paths it was never told about" -f (Format-RouteMiss $n)) }
+        $st = Invoke-Route -Port $port -Path '/api/state' -Retry
+        if ($st.Status -ne 200) { Bad 'panel' ("the dashboard's own /api/state answered {0}" -f (Format-RouteMiss $st)) }
 
         # ka.bat reaches the stop, because that is how a person closes the panel.
         $s = Invoke-Bat 'ka.bat' 'stop-server'
@@ -496,7 +591,8 @@ function Invoke-Legs {
         }
     }
 
-    # ---- on.bat / off.bat for real. -Power only, and the reason is measured, not polite:
+    # ---- on.bat for real, both the bare and the timed form, and off.bat returning it to idle.
+    #      -Power only, and the reason is measured, not polite:
     #      ka-worker.ps1:152 sets nextPulse to *now*, so the anti-lock key fires on the first tick.
     if ($runPower) {
         $on = Invoke-Bat 'on.bat' ''
@@ -546,9 +642,13 @@ function Invoke-Legs {
             Start-Sleep -Milliseconds 1000
         }
     } else {
-        Write-Host '  SKIP on.bat / off.bat - the worker fires its anti-lock pulse on the first tick'
+        # on.bat alone, not off.bat: the [off-idle] leg above already ran off.bat, and writing an
+        # intent of `off` is what a stopped machine does anyway. Starting protection is the part
+        # that types a key.
+        Write-Host '  SKIP on.bat - the worker fires its anti-lock pulse on the first tick'
         Write-Host "       (ka-worker.ps1:152), so running protection here would type a key into the"
-        Write-Host '       session of a machine in use. They run on a GitHub runner, or with -Power.'
+        Write-Host '       session of a machine in use. It runs on a GitHub runner, or with -Power.'
+        Write-Host '       (off.bat is not skipped: the [off-idle] leg above ran it.)'
     }
 }
 
@@ -568,17 +668,20 @@ function Norm-Output([string]$line) {
 # ------------------------------------------------------------------ self-test
 function Get-Mutants {
     # Which defect can be injected at all depends on whether the power legs run: badminutes breaks
-    # the argument of a command that never executes without -Power.
-    $m = @('badentry', 'wrongtarget', 'unreachable', 'missingasset')
+    # the argument of a command that never executes without -Power. 'leakchild' is not a defect in the
+    # tree - it is a defect in this file's own cleanup, and it is the only thing that can prove the
+    # [cleanup] leg is a check and not a sleep.
+    $m = @('badentry', 'wrongtarget', 'unreachable', 'missingasset', 'leakchild')
     if ($runPower) { $m += 'badminutes' }
     return @($m)
 }
 
-function Run-Child([string]$Mode) {
+function Run-Child([string]$Mode, [switch]$Leak) {
     $out = Join-Path $env:TEMP ('kabatchild-' + [guid]::NewGuid().ToString('N') + '.out')
     try {
         $argl = '/c ""' + $ps51 + '" -NoProfile -ExecutionPolicy Bypass -File "' + $self + '"'
         if ($Mode) { $argl += (' -Mutate "{0}"' -f $Mode) }
+        if ($Leak) { $argl += ' -LeakChild' }
         if ($Power) { $argl += ' -Power' }
         $argl += (' > "{0}" 2>&1"' -f $out)
         # The trailing quote closes cmd's /c string and is load-bearing: with an odd number of quotes
@@ -607,6 +710,7 @@ $expect = @{
     unreachable  = @('panel')
     missingasset = @('panel')
     badminutes   = @('on-minutes', 'off')
+    leakchild    = @('cleanup')
 }
 
 function Get-Verdict($Child) {
@@ -629,7 +733,12 @@ function Run-SelfTest {
     # claim with no line above it is the same shape as "0 FAIL lines" from a child that never ran.
     Write-Host ("  run mutate='{0,-12}' verdict={1,-6} exit={2} fails={3}" -f '(none)', $cv, $clean.Exit, $clean.Fails.Count)
     foreach ($m in @(Get-Mutants)) {
-        $c = Run-Child $m
+        if ($m -eq 'leakchild') {
+            # No tree defect: the intact tree plus a process this file will not let go of.
+            $c = Run-Child '' -Leak
+        } else {
+            $c = Run-Child $m
+        }
         $allowed = $expect[$m]
         if ($c.TimedOut) { Bad 'selftest' ("mutant '{0}' never finished" -f $m); continue }
         $v = Get-Verdict $c
@@ -667,6 +776,16 @@ try {
         if ($drift.Count) {
             Bad 'machine' ("this run changed a Keep-Awake process it does not own: {0}" -f (($drift | ForEach-Object { $_.SideIndicator + ' ' + $_.InputObject }) -join ' / '))
         }
+        if ($LeakChild) {
+            # The [cleanup] leg's own red, and it has to be a leak Stop-Scratch cannot reap: killing
+            # the three known scripts is exactly what that leg does *not* check, because the wait loop
+            # then reads zero survivors and passes. So this one carries the staged path plus a name
+            # outside that list - which is also the realistic shape: a helper some entry point started
+            # and nobody's needle reaches. It runs nothing; the path sits behind a `#`.
+            $leak = Start-Process -FilePath $ps51 -PassThru -WindowStyle Hidden `
+                -ArgumentList ('-NoProfile -Command Start-Sleep -Seconds 90 # ' + (Join-Path $tree 'hold-open.ps1'))
+            Write-Host ('  leak child: pid ' + [int]$leak.Id + ' named hold-open.ps1, which no cleanup needle reaches')
+        }
     }
 } catch {
     $script:bad += ('setup died before the legs finished: ' + $_.Exception.Message)
@@ -685,7 +804,7 @@ if ($script:bad.Count) {
 $ran = 'ka/off/panel/tray executed; on.bat runs only with -Power or on a runner (anti-lock pulse on the first tick)'
 if ($runPower) { $ran = 'all five entries executed, on.bat and off.bat included' }
 if ($SelfTest) {
-    Write-Output ('PROBE OK: ' + @(Get-Mutants).Count + ' injected defects each turn their own leg red and the intact run stays green - ' + $ran)
+    Write-Output ('PROBE OK: ' + @(Get-Mutants).Count + ' injected defects each turn their own leg red and the intact run stays green (one of them aims at this file, not at the tree) - ' + $ran)
 } else {
     Write-Output ('PROBE OK: every double-click entry that can run here ran for real, and every dashboard file the release ships answered over HTTP - ' + $ran)
 }
