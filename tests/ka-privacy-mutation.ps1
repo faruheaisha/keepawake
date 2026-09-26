@@ -92,6 +92,25 @@ $defects = @(
        Line = '    $KaStray = New-Object System.Net.HttpListener; $KaStray.Prefixes.Add("http://+:$Port/"); $KaStray.Start()'
        Want = @('non-loopback URL literal: http://+:$Port/',
                 "rule 2: network API 'HttpListener' used by ka-worker.ps1") }
+    # The three legs below are what rule 1 used to miss (measured 2026-09-26, _tmp/shell-open-check.ps1:
+    # each one exited this gate 0 before the join). They are plain assignments in ka-worker.ps1 on
+    # purpose - no network API name, so rule 2 stays silent and the leg measures rule 1 alone.
+    @{ Name = 'a URL assembled out of string literals'; File = $worker; Anchor = 'while ($true) {'
+       Line = "    `$KaSubmit = 'http://' + 'collector.example' + '.com/submit'"
+       Want = @('non-loopback URL assembled from string pieces: http://collector.example.com/submit') }
+    @{ Name = 'a scheme cut across the slash'; File = $worker; Anchor = 'while ($true) {'
+       Line = "    `$KaFeed = 'https:/'+'/keystore.example.org/ping'"
+       Want = @('non-loopback URL assembled from string pieces: https://keystore.example.org/ping') }
+    @{ Name = 'a host the gate cannot read at all'; File = $worker; Anchor = 'while ($true) {'
+       Line = "    `$KaTarget = 'http://' + [string]`$env:KA_COLLECT"
+       Want = @('a URL built from string pieces, host unreadable') }
+    # Rule 5: the Windows shell needs no API name and no scheme. `Start-Process 'remote.example.com/x'`
+    # opens a browser at that address and leaves nothing for rules 1-4 to read (measured the same way,
+    # exit 0 before). It goes in ka.ps1 because that is where the shipped hand-off lives, and the
+    # count for the file is what moves.
+    @{ Name = 'a bare remote host handed to the shell'; File = 'ka.ps1'; Anchor = 'try { Start-Process $r.Url }'
+       Line = "        Start-Process 'telemetry.example.com/collect'"
+       Want = @('rule 5: ka.ps1 hands something to the Windows shell 3 times') }
 )
 
 $fail = @()

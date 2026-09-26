@@ -4,7 +4,7 @@
 
     PRIVACY.md promises a download-and-use product with no telemetry, no update check and no
     server of its own. That is only worth anything if a future commit cannot quietly break it.
-    Four rules, all of them textual on purpose: they run in a second, need no network, no
+    Five rules, all of them textual on purpose: they run in a second, need no network, no
     elevation, and no running worker.
 
       1. every http(s):// literal in shipped product code is a loopback URL;
@@ -15,6 +15,10 @@
       4. every response header the panel sets is named on an allow-list, and no Access-Control-*
          is ever among them - that is what makes the X-Ka-Client header a real cross-origin
          boundary rather than a suggestion;
+      5. every line that hands something to the Windows shell is counted per file, because that is
+         the one egress channel that needs neither a network API name (rule 2) nor a readable URL
+         literal (rule 1) - `Start-Process 'remote.example.com/x'` opens a browser and leaves no
+         other trace.
 
     A comment mentioning a URL counts: this scans literals, and the honest reading of rule 1 is
     "no non-loopback URL appears in the shipped text at all". Loopback examples in prose are
@@ -76,30 +80,67 @@ Write-Host ("scanning {0} shipped files under {1}" -f $files.Count, $Root)
 $loopback = @('127.0.0.1', 'localhost', '::1')
 $urls = 0
 $nskip = 0
+$joined = 0
+$dangling = 0
 $hosts = @{}
+# Two shapes used to walk past this rule, both measured 2026-09-26 on a staged copy of the
+# shipped surface (_tmp/shell-open-check.ps1): a URL spelled 'http://' + 'collector.example' +
+# '.com/x', and a scheme cut across the slash ('https:/' + '/collector.example.com/x'). The regex
+# below needs one character after '://', so a literal that ends there matches nothing at all -
+# the same flaw rule 4 shipped with for 'Access-' + 'Control-Allow-Origin', found the same way.
+# So every line is read twice: as written, and with adjacent string literals joined. A literal
+# that is *only* a scheme is a finding by itself, because it names a URL whose destination this
+# gate cannot read - which is also what 'http://' + $host looks like, where joining cannot help.
+$joinPat = "['`"]\s*\+\s*['`"]"
 foreach ($f in $files) {
     $i = 0
     foreach ($line in (Get-Content -LiteralPath $f -Encoding UTF8)) {
         $i++
-        foreach ($m in [regex]::Matches($line, 'https?://[^\s"''<>)\],;]+')) {
-            # An xmlns URI is a namespace name that happens to be spelled as a URL. The SVG
-            # 2000/svg one is in favicon.svg and inside one CSS data: URI; no code fetches
-            # it, and a browser is told never to. Exempted narrowly - the attribute, not the
-            # file type - so the same host in a fetch call would still fail this gate.
-            $before = $line.Substring(0, $m.Index)
-            if ($before -match "xmlns(:[A-Za-z0-9_-]+)?\s*=\s*[`"'']\s*$") { $nskip++; continue }
-            $urls++
-            $host_ = Get-UrlHost $m.Value
-            if (-not $hosts.ContainsKey($host_)) { $hosts[$host_] = 0 }
-            $hosts[$host_]++
-            if ($host_ -notin $loopback) {
-                $fail += ("{0}:{1} non-loopback URL literal: {2} (host={3})" -f `
-                          (Split-Path -Leaf $f), $i, $m.Value, $host_)
+        $seenHere = @{}
+        $readFromPieces = $false
+        foreach ($variant in @(@{ text = $line; join = $false },
+                               @{ text = ($line -replace $joinPat, ''); join = $true })) {
+            foreach ($m in [regex]::Matches($variant.text, 'https?://[^\s"''<>)\],;]+')) {
+                # An xmlns URI is a namespace name that happens to be spelled as a URL. The SVG
+                # 2000/svg one is in favicon.svg and inside one CSS data: URI; no code fetches
+                # it, and a browser is told never to. Exempted narrowly - the attribute, not the
+                # file type - so the same host in a fetch call would still fail this gate.
+                $before = $variant.text.Substring(0, $m.Index)
+                if ($before -match "xmlns(:[A-Za-z0-9_-]+)?\s*=\s*[`"'']\s*$") {
+                    if (-not $variant.join) { $nskip++ }
+                    continue
+                }
+                if ($seenHere.ContainsKey($m.Value)) { continue }
+                $seenHere[$m.Value] = $true
+                if ($variant.join) { $joined++; $readFromPieces = $true } else { $urls++ }
+                $host_ = Get-UrlHost $m.Value
+                if (-not $hosts.ContainsKey($host_)) { $hosts[$host_] = 0 }
+                $hosts[$host_]++
+                if ($host_ -notin $loopback) {
+                    # The plain wording is what the existing mutation legs assert on, so it is
+                    # kept verbatim; the assembled form gets its own message because the fix a
+                    # reader needs is different (put the host in one literal).
+                    if ($variant.join) {
+                        $fail += ("{0}:{1} non-loopback URL assembled from string pieces: {2} (host={3})" -f `
+                                  (Split-Path -Leaf $f), $i, $m.Value, $host_)
+                    } else {
+                        $fail += ("{0}:{1} non-loopback URL literal: {2} (host={3})" -f `
+                                  (Split-Path -Leaf $f), $i, $m.Value, $host_)
+                    }
+                }
             }
+        }
+        foreach ($m in [regex]::Matches($line, "['`"]https?://['`"]")) {
+            # Joining already read this line's host, so "host unreadable" would be false.
+            if ($readFromPieces) { continue }
+            $dangling++
+            $fail += ("{0}:{1} a URL built from string pieces, host unreadable: {2} - name the host as a literal so this gate can read where it goes" -f `
+                      (Split-Path -Leaf $f), $i, $line.Trim())
         }
     }
 }
-$ok += ("rule 1: {0} URL literal(s), hosts = {1}" -f $urls, `
+$ok += ("rule 1: {0} URL literal(s), {1} only visible once adjacent literals are joined, {2} dangling scheme(s), hosts = {3}" -f `
+        $urls, $joined, $dangling, `
         ((($hosts.Keys | Sort-Object) | ForEach-Object { "$_ x$($hosts[$_])" }) -join ', '))
 $ok += ("rule 1: {0} xmlns namespace(s) exempt (namespace names, never fetched)" -f $nskip)
 
@@ -266,6 +307,91 @@ if (-not $hdrSeen) {
 }
 $ok += ("rule 4: {0} response header write(s), {1} CORS grant(s), names allowed = {2}" -f `
         $hdrSeen, $corsLines, ($hdrAllow -join ', '))
+
+# ---- 5. every hand-off to the Windows shell is named, per file ------------------------
+# Rules 1-4 all read *content*: a URL literal, an API name, a bind prefix, a header name. The
+# shell is the one channel where none of those is required. `Start-Process 'collector.example.com/x'`
+# (no scheme: the shell adds http:// when it opens the default browser) leaves no URL literal for
+# rule 1, no type name for rule 2, and is neither a listener nor a response - measured 2026-09-26,
+# it exited this gate 0. What cannot be read by content can still be *counted*: the set of
+# PowerShell and Inno shapes that hand an argument to the shell is closed for practical purposes,
+# so every one of them in the shipped tree is named here with the count this file expects. A new
+# site is a finding until somebody adds it, which is the same forced decision rule 2 makes about
+# network families.
+#
+# What still gets through, stated rather than hidden: a shell-open line that is already on this
+# list can have its *argument* repurposed without changing the count, and a scheme-less bare host
+# has no shape rule 1 can read. Both are covered only indirectly, by ka-core building the panel
+# URL from one loopback literal that rule 1 does read.
+$shellPat = 'Start-Process|Invoke-Item|UseShellExecute|WScript\.Shell|Shell\.Application|' +
+            'cmd(?:\.exe)?\s+/c\s+start|explorer\.exe|openurl|shellexec'
+# Measured 2026-09-26: 11 hand-offs in shipped code, 10 of them Start-Process. The one prose hit
+# (ka-test-install.ps1's own docstring saying never to use -Wait) is skipped with the comment rule
+# below, which is why that file names 2 and not 3.
+$shellAllow = @{
+    'ka.ps1'                = 2
+    'ka-core.ps1'           = 2
+    'ka-tray.ps1'           = 1
+    'ka-lid.ps1'            = 1
+    'build.ps1'             = 2
+    'ka-test-install.ps1'   = 2
+}
+$shellLines = @{}
+$shellTotal = 0
+foreach ($f in $files) {
+    $leaf = Split-Path -Leaf $f
+    $i = 0
+    $inBlock = $false
+    foreach ($line in (Get-Content -LiteralPath $f -Encoding UTF8)) {
+        $i++
+        $code = $line
+        if ($inBlock) {
+            $close = $code.IndexOf('#>')
+            if ($close -lt 0) { continue }
+            $code = $code.Substring($close + 2)
+            $inBlock = $false
+        }
+        # Block comments go too: ka-test-install.ps1's own docstring says "never with
+        # Start-Process -Wait", and prose must not move a count that exists to catch code.
+        $code = [regex]::Replace($code, '<#.*?#>', '')
+        $open = $code.IndexOf('<#')
+        if ($open -ge 0) { $code = $code.Substring(0, $open); $inBlock = $true }
+        $t = $code.TrimStart()
+        # Whole-line comments and batch remarks: a PowerShell comment or a 'rem' line cannot
+        # launch anything.
+        if ($t -match '^(#|::|rem(\s|$))') { continue }
+        $n = ([regex]::Matches($code, $shellPat)).Count
+        if (-not $n) { continue }
+        $shellTotal += $n
+        if (-not $shellLines.ContainsKey($leaf)) { $shellLines[$leaf] = @() }
+        $shellLines[$leaf] += ("{0}:{1}" -f $leaf, $i)
+    }
+}
+foreach ($leaf in ($shellLines.Keys | Sort-Object)) {
+    $n = @($shellLines[$leaf]).Count
+    if (-not $shellAllow.ContainsKey($leaf)) {
+        $fail += ("rule 5: {0} hands something to the Windows shell at {1} and is not named in this file - say what it opens and why" -f `
+                  $leaf, (($shellLines[$leaf]) -join ', '))
+        continue
+    }
+    if ($n -gt $shellAllow[$leaf]) {
+        $fail += ("rule 5: {0} hands something to the Windows shell {1} times; this file names {2} - check {3}" -f `
+                  $leaf, $n, $shellAllow[$leaf], (($shellLines[$leaf]) -join ', '))
+    }
+}
+foreach ($leaf in $shellAllow.Keys) {
+    $n = @(if ($shellLines.ContainsKey($leaf)) { $shellLines[$leaf] } else { @() }).Count
+    if ($n -lt $shellAllow[$leaf]) {
+        $fail += ("rule 5: {0} is named for {1} shell hand-off(s) but only {2} are there - this check went stale, fix the count" -f `
+                  $leaf, $shellAllow[$leaf], $n)
+    }
+}
+if (-not $shellTotal) {
+    $fail += 'rule 5: no shell hand-off anywhere - either the tool opens nothing, or the pattern stopped matching'
+}
+$ok += ("rule 5: {0} shell hand-off(s) in {1} file(s), counts named = {2}" -f `
+        $shellTotal, $shellLines.Keys.Count, `
+        ((($shellAllow.Keys | Sort-Object) | ForEach-Object { "$_ x$($shellAllow[$_])" }) -join ', '))
 
 foreach ($s in $ok) { Write-Host ("  ok   {0}" -f $s) }
 if ($fail.Count) {
