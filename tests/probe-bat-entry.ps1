@@ -6,17 +6,20 @@
 )
 $ErrorActionPreference = 'Stop'
 <#
-    The five double-click entries are executed here. None of them had ever been executed anywhere.
+    Four of the five double-click entries had never been executed anywhere, and are here: nothing
+    but this file had ever started cmd.exe on on.bat / off.bat / panel.bat / tray.bat - in tests/
+    those four names appear only in the release manifest and in the byte-shape self test, which
+    rewrites them without ever running them.
 
-    release.yml's own text tells a downloader to "unzip it and double-click on.bat", README gives
-    the same instruction, and every check in this repository goes through ka.ps1 instead: the suite
-    and the packaging smoke call `ka.ps1 status -Json`, probe-motw runs the powershell line ka.bat
-    would have run, and nothing had ever started cmd.exe on on.bat / off.bat / panel.bat / tray.bat.
-    The entry point a person actually uses sat outside every gate - the same shape as the tray
+    ka.bat is the exception, and a thin one: probe-motw.ps1:142 runs `ka.bat status` out of a
+    Zone-3-marked copy and asserts exit=0 plus "at least 40 characters". That is the argument
+    branch - `if "%~1"==""` -> status, the line a person who just double-clicks actually gets, runs
+    here for the first time. The suite and the packaging smoke both go through ka.ps1 directly, so
+    the entry point a downloader uses sat outside every gate - the same shape as the tray
     -SelfTest body that turned out never to have run (probe-tray-selftest), one layer further out.
 
-    Two facts about .bat files were measured while writing this, and they decide the shape of every
-    assertion below.
+    Five facts about running .bat files were measured while writing this, and they decide the shape
+    of every assertion below.
 
       1. ERRORLEVEL is not a verdict. Three copies of one batch that runs a powershell script
          exiting 5, all measured through the same cmd /c: ending in `pause` -> 0, ending in
@@ -41,6 +44,20 @@ $ErrorActionPreference = 'Stop'
          exit when it finds the live icon - measured here as 20000, then "20000 + 16564", then 20000
          again a second later - so a count taken the moment the batch returns shows two. The tray leg
          waits for that to settle and then checks which pid survived, not just how many.
+
+      4. cmd /c "..." wants a balanced quote count. One missing closing quote and cmd prints
+         "The filename, directory name, or volume label syntax is incorrect." and exits *0*. The
+         first -SelfTest run of this file had that bug: all five children died on it instantly, each
+         "exit 0", and the parent reported green through the whole sweep. So a child's verdict is
+         read from the PROBE OK / PROBE FAILED line it writes into its own log, and a child that
+         wrote neither is a failure, whatever its exit code said.
+
+      5. Invoke-WebRequest on 5.1 loses a served 404. The panel answers an unmapped name with a real
+         404 and a body; the cmdlet throws, .Response is unreachable from the catch, and the status
+         reads back 0. Measured against the live panel: 0 there, 404 +
+         {"ok":false,"reason":"..."} through [System.Net.HttpWebRequest] + WebException.Response.
+         The leg that pins "an unknown name must 404" was red on the product because of this, and
+         the product was right.
 
     What each leg pins:
 
@@ -608,6 +625,9 @@ function Run-SelfTest {
         foreach ($l in $clean.Fails) { Bad 'selftest' ('        ' + $l) }
         Bad 'selftest' ('        child said: ' + (($clean.Text -replace '\s+', ' ').Trim()))
     }
+    # Printed even when it is green: the closing line claims "the intact run stays green", and a
+    # claim with no line above it is the same shape as "0 FAIL lines" from a child that never ran.
+    Write-Host ("  run mutate='{0,-12}' verdict={1,-6} exit={2} fails={3}" -f '(none)', $cv, $clean.Exit, $clean.Fails.Count)
     foreach ($m in @(Get-Mutants)) {
         $c = Run-Child $m
         $allowed = $expect[$m]

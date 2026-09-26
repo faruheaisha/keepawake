@@ -164,12 +164,20 @@
 
 ## 未发布 / 下一步
 
-- **五个 `.bat` 里那一行命令，从来没有一条被真的执行过**（2026-09-26，接上一条）。同一句问句第五次问出去，
+- **四个双击入口里那一行命令，从来没有一条被真的执行过**（2026-09-26，接上一条）。同一句问句第五次问出去，
   这回不问清单、不问字节形状，问**内容**：`on.bat` 写的是 `start -Minutes %~1` 还是 `start -Minute %~1`？
-  上一轮那道闸门钉的是"cmd 会不会读错这份文件"，而它读得懂一个 `serve` 拼成 `serveX`。改之前的原话是
-  `git grep -n 'ka\.bat' HEAD -- tests/ka-tests.ps1 packaging/` 只命中一处，还是 `build.ps1:141` 里的一句散文
-  ——**五个 `.bat` 一个也没被任何检查执行过**（上一条那句"仍然拦不住的"当时还少算了一个 `ka.bat`，它以为
-  `ka.bat` 是跑过的）。补的是 `tests/probe-bat-entry.ps1`：按发布清单复制一整棵一次性树到
+  上一轮那道闸门钉的是"cmd 会不会读错这份文件"，而它读得懂一个 `serve` 拼成 `serveX`。
+  **这句话的第一版写错了，而且是自己查出来才发现的**：我当时写"五个 `.bat` 一个也没被执行过"，证据是
+  `git grep -n 'ka\.bat' HEAD -- tests/ka-tests.ps1 packaging/` 只命中 `build.ps1:141` 的一句散文——可那条
+  grep 的范围是我自己划的，`tests/probe-motw.ps1` 不在里面，而它的第 142 行
+  `cmd /c call "<marked copy>\ka.bat" status` **确确实实把 `ka.bat` 跑过**（断言只有 `exit=0` 和"输出不少于 40 个字符"）。
+  划小范围的 grep 给一个"从来没有"当证据，和本轮要抓的那个病是同一个病。所以一个一个数清楚：
+  **`on/off/panel/tray` 四个从来没被任何检查执行过**——这四个名字在 `tests/` 里除了本探针只出现在
+  `ka-release-files.ps1`（清单）里，`on.bat` 与 `panel.bat` 另在 `probe-encoding-selftest.ps1` 里被**改**过字节
+  （改完交给扫描器读，没人跑过它们），`release.yml` 与 `KeepAwake.iss` 里的那几处是给下载者看的文字，
+  不是执行；`ka.bat` 跑过一次，跑的还是带参数那条分支——
+  **无参数那条分支（`if "%~1"==""` → `status`）是本轮第一次被执行**。
+  补的是 `tests/probe-bat-entry.ps1`：按发布清单复制一整棵一次性树到
   `_tmp/bat-entry/tree`，把 `$env:KA_DATA` 指到一次性数据根——**这一行必须在任何进程起来之前**，`ka-core.ps1:354`
   读的就是它，指错了 `off.bat` 会按数据根找到本机那个活着的 worker、判定"这是我们自己的"、然后把用户的防休眠
   关掉。然后拿 `cmd.exe` 把每个入口真跑一遍，断言的是**产物**：`ka.bat` 无参数与 `ka.bat status` 逐行同形，
@@ -188,7 +196,11 @@
   `[Diagnostics.Process]::Start` + `WaitForExit(ms)` 报 3（D）——探针取后者。③ cmd 的 `/c "..."` 要**引号数成对**：
   少一个闭引号，cmd 只印一句 `The filename, directory name, or volume label syntax is incorrect.` 然后**退出 0**，
   于是第一次 `-SelfTest` 的五个子进程一个都没跑成而 harness 全绿；判据从此不吃退出码，吃子脚本自己写的
-  `PROBE OK` / `PROBE FAILED` 标记。④ `Invoke-WebRequest` 在 5.1 上会把服务端明明白白返回的 404 吞成
+  `PROBE OK` / `PROBE FAILED` 标记。**③' 同一条理由抓到这轮自己一次**：那句"没坏的那棵全绿"以前只在**坏掉**
+  的时候说话——干净那条子运行跑了、判据也认了，transcript 上却一行都没有，所以它当时的证据是"没人反对"，
+  不是"有这一行"（和本轮开头那句"从来没被执行过"是同一个形状）。现在它和四个变异体同表同列印
+  `run mutate='(none)      ' verdict=OK exit=0 fails=0`，`_tmp/bat-entry-selftest5.log` 第一行。
+  ④ `Invoke-WebRequest` 在 5.1 上会把服务端明明白白返回的 404 吞成
   `Status 0`（`.Response` 不可达），"不存在的名字要 404"这条断言因此在**真面板**上是红的；换
   `[System.Net.HttpWebRequest]` + `WebException.Response` 才拿到那个 404 和 body
   `{"ok":false,"reason":"没有这个文件"}`——这条是本轮唯一一条"探针先把产品测试判错、再去量被测物"的记录。
@@ -300,8 +312,9 @@
   这句话之所以要写，是因为那条红字单独抄出来看，长得和一条真缺陷一模一样。
   **仍然拦不住的写在这里而不是藏起来**：`on.bat`/`off.bat`/`panel.bat`/`tray.bat` 到现在没有任何检查
   真的执行过一次（跑一次就真起保护，落在谁的机器上都不该），字节形状钉的是"cmd 会不会读错这份文件"，
-  钉不了"这一行命令对不对"——**这一条在本轮收尾时关掉了，见上方 `probe-bat-entry` 那一条；而且当时那句
-  还少算了一个：`ka.bat` 同样从来没被执行过**；`.cmd` 家族规则已经就位，而仓库今天**一个 `.cmd` 都没有**，所以那条臂
+  钉不了"这一行命令对不对"——**这一条在本轮收尾时关掉了，见上方 `probe-bat-entry` 那一条；那四个点得准，
+  没被列入的 `ka.bat` 也确实不是没跑过**（`probe-motw.ps1:142` 跑的是 `ka.bat status`，只是断言薄到
+  `exit=0` + 输出长度，且没碰无参数那条分支）；`.cmd` 家族规则已经就位，而仓库今天**一个 `.cmd` 都没有**，所以那条臂
   目前没有真实对象，替"没被认领"作证的是 `strayfile` 那条腿；认领检查走的是工作树，`git` 不在或不是
   仓库时（`_tmp` 里探针拼的副本）不-ignore 任何东西，那时"未认领"直接 throw——这是刻意的方向选择；
   `.gitattributes` 自己不在任何家族里（它 `w/lf` 是量出来的，不是断言的）。这一轮**没有**动已发布的
