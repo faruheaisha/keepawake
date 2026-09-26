@@ -164,6 +164,34 @@
 
 ## 未发布 / 下一步
 
+- **隐私闸门 rule 2 的 fail-open：这次不是"清单会过期"，是"清单本来就漏"**（2026-09-26，接上一条）。
+  前三条讲的是检查内部的手写清单——风险在"将来"。这一条是**今天就摸得到的洞**，而且摸它的是产品对用户
+  的头号承诺（`PRIVACY.md`：数据不会离开这台机器）。`tests/ka-privacy.ps1` 规则 2 原来拿一份**要去找的
+  API 名字**清单去扫：清单外的名字不会被看见，这是"名单式扫描"的定义而不是疏忽。实测（`_tmp/privacy-hole-check.ps1`，
+  把成品面抄进 `_tmp/privacy-hole/` 再往 `ka-worker.ps1` 的副本里加两行）：
+  一行 `System.Net.Sockets.Socket(...).Connect(('telemetry' + '.example' + '.com'), 80)`、一行
+  `[System.Net.Dns]::GetHostAddresses('collector' + '.example.net')`——**两份旧闸门都 exit=0**，
+  连一句 finding 都没有：规则 2 没有一个名字匹配，规则 1 只认 `https?://` 字面量、看不见拼出来的目的地。
+  改成扫**家族**：`System.Net` / `Sockets` / `Net.Dns` / `WebRequest` / `WebClient` / `HttpListener` /
+  `Smtp` / `TcpListener` / `certutil` / `bitsadmin` / `mshta` / `regsvr32` / `urlmon` / `winhttp` /
+  `wininet` / `ws2_32` / `xmlhttp`……理由是结构性的：BCL 的联网类型全在 `System.Net` 底下，P-Invoke 必须
+  把 DLL 名写进字符串，外部下载器必须出现在参数里——想不出名字不要紧，**躲不出家族**。改完同一个副本上
+  A/B：`socket exit=1`（`'Sockets' appears in ka-worker.ps1 and is not allow-listed` +
+  `'System.Net' used by ka-worker.ps1; allow-list says ka-server.ps1`）、`dns exit=1`（`'Net.Dns' appears ...`），
+  干净副本 `exit=0` 且 `rule 2: network APIs in shipped code = HttpListener, Invoke-WebRequest, System.Net, WebRequest`
+  ——新标记在真代码里的命中就是这 4 个、2 个文件，没有一条是误伤（挑标记时先量过全树命中数，
+  `Dns` 这种会撞上 `ka-server.ps1:17` 注释里"DNS rebinding"的写法一律不收）。
+  再补两条防空转的：`allow-list names 'X' but the scan never looks for it`（登记了一个扫描不找的标记
+  等于假覆盖）、`no System.Net hit anywhere - the scanner itself stopped working`（原来只对
+  `Invoke-WebRequest` 有这条哨兵）。
+  变异腿顺带从"四个缺陷一起注入"改成**一条腿一个缺陷**：一起注入时分不清哪条 finding 是谁的，
+  一个缺陷可以搭另一个的便车照样绿；现在每条腿要求 `exit=1` + 说出该说的那句 + **所有 finding 都指向
+  这条腿改的文件**，并在最前面跑一次**未注入**的副本要求它过（不过就说明某条规则太宽）。六条腿实测
+  findings=1/2/2/2/2/1：`MUTATION CHECK OK: all 6 defects each red on their own rule, and the clean copy green`，
+  门禁 `----- 5 run, 0 red`。`PRIVACY.md` 那句"没有上报代码可跑"跟着补了扫描的是家族不是名字清单。
+  **这个洞的边界仍然要说清楚**：家族前缀兜的是**出口**，规则 1 兜的是**目的地字面量**，一个运行时从用户
+  配置里读出来的主机名两条都看不见——那条路归 `config.json` 的取值校验管，不归这里。
+
 - **第三份、也是最后一份手写的文件清单：`probe-migrate` 自己抄了一份"程序目录里有什么"**（2026-09-26，接上一条）。
   上两条把托盘 sink 和 CLM 入口改成了发现，`tests/` 里还剩一处 12 行的写死数组——而被抄的那份
   `ka-release-files.ps1` 的头注释记着它**已经被抄过两次、并因此漂移过一次**（`PRIVACY.md` / `SECURITY.md` /
@@ -200,6 +228,11 @@
   `PROBE OK: 9 cases green now, 7 red without the gate, 6 entry points gated before ka-core`，门禁
   `----- 5 run, 0 red`。集合的边界也说清楚：**发现的范围是发布清单**，一个存在但从不随包发出去的文件不在
   这里被查——那是另一条规则（什么该进清单）的地盘。
+  **CI 已接上**：run `36229452100`（sha `d4ab27a`）在 runner 上印 `discovered 6 shipped scripts that reach
+  ka-core.ps1: ka.ps1, ka-worker.ps1, ka-server.ps1, ka-guard.ps1, ka-lid.ps1, ka-tray.ps1`、
+  `PROBE OK: 9 cases green now, 7 red without the gate, 6 entry points gated before ka-core`、
+  `ok   probe-clm-gate.ps1  15s`、`ok   probe-tray-selftest.ps1  34s`，整轮 `----- 23 run, 0 red`，
+  套件 `通过 86，失败 0，跳过 5`。
 
 - **上一条那条腿自己也带着一份写死的清单——这是 `ka-lid` 那个错的第三种犯法**（2026-09-26，接上一条）。
   上一条留下的点击交接判据点名了两处出口（duration 走 `-Minutes`、interval 走 `antiLockIntervalSec`），可

@@ -62,7 +62,10 @@
 
 - **没有上报代码可跑。**整个产品里唯一的网络客户端调用是面板进程访问 `http://127.0.0.1:<port>` 的
   `stop` 握手。没有 `Invoke-WebRequest`/`WebClient`/`HttpClient` 指向任何非回环地址——由
-  `tests/ka-privacy.ps1` 扫描全部 `.ps1`/`.js`/`.html`/`.bat` 字面量把守。
+  `tests/ka-privacy.ps1` 扫描全部 `.ps1`/`.js`/`.html`/`.bat` 字面量把守。它盯的是**网络能力的家族**
+  （`System.Net`、`Sockets`、`Net.Dns`、`WebRequest`、`certutil`/`bitsadmin`/`curl` 这类外部下载器、
+  `winhttp`/`wininet`/`ws2_32` 这类 DLL 名），不是"想得出来的 API 清单"：用没见过的写法出网，也得先
+  在那份闸门文件里登记过才行。
 - **没有需要上传的东西。**不激活、不验授权、不比对版本号。
 - **离线可用。**断网、防火墙全拒、无网卡的情况下，起停、面板、看门狗、`evidence` 全部照常工作
   （面板只监听回环，本来就不需要网络出口）。

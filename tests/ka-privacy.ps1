@@ -8,8 +8,9 @@
     elevation, and no running worker.
 
       1. every http(s):// literal in shipped product code is a loopback URL;
-      2. the set of network-capable client APIs in shipped code is an explicit allow-list, so
-         a new HTTP/socket helper is a deliberate edit to this file, not an accident;
+      2. the network-capable families touched by shipped code form an explicit allow-list, so
+         a new HTTP/socket/DNS helper - or a downloader named in an argument list - is a
+         deliberate edit to this file, not an accident;
       3. the dashboard listener binds loopback prefixes only (no "+", "*", 0.0.0.0);
       4. no response ever carries Access-Control-Allow-*, which is what makes the X-Ka-Client
          header a real cross-origin boundary rather than a suggestion.
@@ -91,24 +92,45 @@ $ok += ("rule 1: {0} URL literal(s), hosts = {1}" -f $urls, `
         ((($hosts.Keys | Sort-Object) | ForEach-Object { "$_ x$($hosts[$_])" }) -join ', '))
 $ok += ("rule 1: {0} xmlns namespace(s) exempt (namespace names, never fetched)" -f $nskip)
 
-# ---- 2. network-capable APIs are an explicit allow-list -------------------------------
+# ---- 2. network-capable code is an explicit allow-list -------------------------------
 # Measured 2026-09-04: the only client call in the product is ka-core.ps1 talking to the
 # panel it just started (a status probe and /api/server/stop). Anything else has to be
 # added here by hand, which is the point.
+#
+# Measured 2026-09-26: what is scanned used to be a list of API *names to look for*, and such a
+# list is fail-open by construction. A raw TCP socket plus a DNS lookup added to ka-worker.ps1 -
+# connect host built as 'telemetry' + '.example' + '.com' - left this gate at exit 0: no name on
+# the list matched, and rule 1 cannot see a host assembled out of pieces. So the markers below are
+# families, not products: every BCL network type lives under System.Net, a P-Invoke has to spell
+# its DLL name, and an external downloader has to be named in the argument list. Anything new
+# inside a family is a finding until somebody allow-lists it here, which is the decision the rule
+# exists to force. It does not make an unguessable capability impossible - it makes silence about
+# one require an edit to this file.
 $apiAllow = @{
-    'Invoke-WebRequest'     = @('ka-core.ps1')
+    'Invoke-WebRequest' = @('ka-core.ps1')
+    # Broader than the two above on purpose: catches [Net.WebRequest] and FtpWebRequest spelled
+    # without the Invoke- prefix.
+    'WebRequest'        = @('ka-core.ps1')
     # The dashboard's own listener. A server socket is not an egress path, but it is
     # network-capable code and it belongs on this list so that adding one is a decision.
-    'System.Net.HttpListener' = @('ka-server.ps1')
+    'System.Net'        = @('ka-server.ps1')
+    'HttpListener'      = @('ka-server.ps1')
 }
 # Every entry is matched as a literal string (see [regex]::Escape below): a pattern-looking
 # entry here would never match anything and would read as coverage while being dead code.
 $apiNames = @('Invoke-WebRequest', 'Invoke-RestMethod',
-              'System.Net.WebClient', 'Net.WebClient',
-              'Net.HttpWebRequest', 'Net.WebRequest', 'HttpClient', 'Sockets.TcpClient',
-              'Sockets.UdpClient', 'DownloadFile', 'DownloadString', 'UploadFile',
-              'UploadString', 'Start-BitsTransfer', 'curl.exe', 'wget',
-              'System.Net.HttpListener', 'WinHttp', 'InternetOpen')
+              'System.Net', 'Sockets', 'Net.Dns', 'HttpListener', 'WebClient', 'WebRequest',
+              'HttpClient', 'TcpListener', 'Sockets.TcpClient', 'Sockets.UdpClient', 'UdpClient',
+              'Smtp', 'MailMessage',
+              'DownloadFile', 'DownloadString', 'UploadFile', 'UploadString',
+              'Start-BitsTransfer', 'bitsadmin', 'curl.exe', 'wget',
+              'certutil', 'mshta', 'regsvr32', 'rundll32', 'urlmon', 'winhttp', 'wininet',
+              'ws2_32', 'xmlhttp', 'WinHttp', 'InternetOpen')
+foreach ($listed in $apiAllow.Keys) {
+    if ($apiNames -notcontains $listed) {
+        $fail += ("rule 2: allow-list names '{0}' but the scan never looks for it - dead cover" -f $listed)
+    }
+}
 $hits = @{}
 foreach ($f in $files) {
     $leaf = Split-Path -Leaf $f
@@ -136,11 +158,15 @@ foreach ($api in ($hits.Keys | Sort-Object)) {
         }
     }
 }
-# This one is here so an empty $hits cannot read as a pass: ka-core.ps1 really does call
-# Invoke-WebRequest (measured 2026-09-04), so if the scan no longer sees it the scanner is
-# broken, and "no findings" would be a lie rather than a clean bill.
-if ('Invoke-WebRequest' -notin $hits.Keys) {
-    $fail += 'rule 2: no Invoke-WebRequest hit anywhere - the scanner itself stopped working'
+# These are here so an empty $hits cannot read as a pass: ka-core.ps1 really does call
+# Invoke-WebRequest and ka-server.ps1 really does new up System.Net.HttpListener (measured
+# 2026-09-04, re-measured 2026-09-26 with the markers above hitting exactly those two files).
+# If the scan stops seeing either, the scanner is broken, and "no findings" would be a lie
+# rather than a clean bill.
+foreach ($must in @('Invoke-WebRequest', 'System.Net')) {
+    if ($must -notin $hits.Keys) {
+        $fail += ("rule 2: no {0} hit anywhere - the scanner itself stopped working" -f $must)
+    }
 }
 $ok += ("rule 2: network APIs in shipped code = {0}" -f (($hits.Keys | Sort-Object) -join ', '))
 
