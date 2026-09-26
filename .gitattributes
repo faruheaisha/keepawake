@@ -1,5 +1,7 @@
 # 默认按文本处理，但换行由仓库决定而不是各人的 git 配置决定：
 # .bat 只有 CRLF 才能可靠执行，LF 版本的 cmd 会在某些行上抽风。
+# 下面每一条 eol= 都只是一半：它改写检出时的字节，不检查已经躺在工作树里的那份。
+# 另一半在 tests/ka-encoding.ps1，它按家族逐字节量发出去的每个文本文件。
 * text=auto
 
 *.bat  text eol=crlf
@@ -10,8 +12,9 @@
 # Actions 的 YAML 锁 LF：tests/ka-workflow.ps1 解析的就是工作树里这几行，runner 上 checkout 出来的
 # 必须是同一份字节（这台机器 core.autocrlf=true，不锁的话默认落成就带 CR）。
 *.yml  text eol=lf
-# Inno 的 .iss 反过来给它一定吃得下的 CRLF：ISCC 是纯 Windows 工具，而这份脚本在本机一次都没编译过，
-# 第一次发布不该拿"应该没问题"去赌换行符。
+# Inno 的 .iss 反过来给它一定吃得下的 CRLF：ISCC 是纯 Windows 工具。这一条以前只是这里的一句话，
+# 2026-09-26 拿 `git ls-files --eol` 一量，磁盘上那份是 154 个裸 LF 而 `git status` 看着干净——
+# 现在 tests/ka-encoding.ps1 钉形状、tests/probe-iss.ps1 真把两种形状都编译一遍。
 *.iss  text eol=crlf
 
 *.svg  text

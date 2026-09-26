@@ -1,12 +1,12 @@
 ﻿param([switch]$Show)
 $ErrorActionPreference = 'Stop'
 <#
-    Self-test for packaging/build.ps1 -Smoke.
+    Self-test for packaging/build.ps1 -Smoke, and for the layout rule the release manifest enforces.
 
     The smoke is the only gate that claims "the thing a person downloads actually runs", and a
-    gate seen only green has proved nothing. So build four release trees inside a throwaway copy
+    gate seen only green has proved nothing. So build seven release trees inside a throwaway copy
     of the manifest - each one carrying exactly one defect the smoke would ship silently if it
-    were blind to it - and require three of them to turn the smoke red on its own assertion:
+    were blind to it - and require four of them to turn the smoke red on its own assertion:
 
       override - KA_DATA ignored, so the artifact writes into whoever built it. The portable
                  zip would still "work"; it would just work on somebody else's machine.
@@ -14,20 +14,29 @@ $ErrorActionPreference = 'Stop'
       litter   - status writes into its own program directory. Harmless on a writable folder,
                  fatal on a Program Files install - and the exact thing the no-fallback
                  doctrine says must never happen.
+      strayfile- a file at the repository root that no rule of the manifest claims. The previous
+                 round replaced 17 typed names with discovery, but discovery was three globs, and
+                 a glob is still an extension list wearing the word "discovered": a run.cmd or a
+                 notes.txt at the root matched none of them and quietly joined the set of things
+                 that are "not in the release" - the favicon.svg failure one layer up. The
+                 manifest now walks the root and requires every name to be claimed, so this tree
+                 has to die naming the file. Its control is the next leg.
+      strayoutside - the same file one directory down, under tests/. The root walk does not read
+                 there, so this one must stay green. Without it the red above is a claim about
+                 ".txt", not about an unclaimed root.
 
-    The fourth leg asks the opposite question, and it is the one this file could not ask while
+    One more leg asks the opposite question, and it is the one this file could not ask while
     the manifest was a typed list:
 
-      extrafile- a root .ps1 that no list names. The code half of the manifest used to be 17
-                 hand-typed names, and a typed name fails only one way: the file simply is not
-                 in the release, while every check that compares the zip against the manifest
-                 stays green. So the requirement here is green smoke *and* that entry present.
-                 Not hypothetical - switching the manifest to tree discovery surfaced
+      extrafile- a root .ps1 that no list names. A typed name fails only one way: the file simply
+                 is not in the release, while every check that compares the zip against the
+                 manifest stays green. So the requirement here is green smoke *and* that entry
+                 present. Not hypothetical - switching the manifest to tree discovery surfaced
                  dashboard\favicon.svg, which index.html asks for by name and which the published
                  v1.0.0 zip was measured not to carry (23 entries, no favicon among them).
 
     The same tree with no injection must stay green, or the reds above came from nothing.
-    -Show prints all five runs verbatim.
+    -Show prints all seven runs verbatim.
 #>
 $here = $PSScriptRoot
 $root = Split-Path -Parent $here
@@ -68,6 +77,13 @@ function Sabotage([string]$Dir, [string]$Mode) {
         # green with it there: ka-extra.ps1 is never dot-sourced by anything.
         [IO.File]::WriteAllText((Join-Path $Dir 'ka-extra.ps1'),
             "# build-selftest: a root script no list names" + "`n", $enc)
+        return
+    }
+    if ($Mode -eq 'strayfile' -or $Mode -eq 'strayoutside') {
+        # The same file, one directory apart. Only the root one is an unclaimed shipment.
+        $rel = if ($Mode -eq 'strayfile') { 'build-notes.txt' } else { 'tests\build-notes.txt' }
+        [IO.File]::WriteAllText((Join-Path $Dir $rel),
+            "build-selftest: a file no rule of the manifest claims`n", $enc)
         return
     }
     $f = Join-Path $Dir 'ka.ps1'
@@ -152,7 +168,7 @@ $bad += @(if (-not (Test-Path -LiteralPath $build)) { 'packaging/build.ps1 is go
 $runs = @{}
 try {
     if ($bad.Count) { throw ($bad -join '; ') }
-    foreach ($mode in @('override', 'crash', 'litter', 'extrafile', 'clean')) {
+    foreach ($mode in @('override', 'crash', 'litter', 'extrafile', 'strayfile', 'strayoutside', 'clean')) {
         $tree = New-Tree $mode
         $runs[$mode] = Run-Build $tree $mode
         # Captured before the finally block deletes the tree: this is the artifact the leg is
@@ -160,8 +176,10 @@ try {
         $runs[$mode].Entries = @(Get-ZipEntryName $tree)
     }
 } catch {
-    Write-Output ('  note ' + $_.Exception.Message)
-    Write-Output 'PROBE FAILED: setup'
+    # A setup death has to be a red. Printing "PROBE FAILED" and falling through leaves the bottom
+    # of this file free to print "PROBE OK" and exit 0; the null-run assertions below catch it
+    # today, and that is a coincidence worth removing.
+    $bad += ('setup died before the legs finished: ' + $_.Exception.Message)
 } finally {
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 }
@@ -170,8 +188,21 @@ if ($bad.Count) { foreach ($m in $bad) { Write-Output ('  FAIL ' + $m) }; Write-
 Require-Red $runs['override'] 'override' @("the artifact's dataRoot is", 'did not run')
 Require-Red $runs['crash'] 'crash' @('status -Json exited', 'did not run')
 Require-Red $runs['litter'] 'litter' @('wrote into its own program directory', 'did not run')
+Require-Red $runs['strayfile'] 'strayfile' @('build-notes.txt', 'no rule claims it')
 Require-Green $runs['clean'] 'the unsabotaged tree'
 Require-Green $runs['extrafile'] 'the tree with a root script no list names'
+Require-Green $runs['strayoutside'] "the tree whose unclaimed file sits under tests/, not at the root"
+
+# One defect per leg, asserted on the failure's own words. The singular "is at the repository root"
+# immediately after the name is what says "this leg blamed exactly one file" - a second unclaimed
+# name would join with ", " and take the plural. Whitespace is flattened first because the message
+# is one long sentence and the child may have wrapped it anywhere.
+$flat = ($runs['strayfile'].Text -replace '\s+', ' ')
+if ($flat -notlike '*build-notes.txt is at the repository root*') {
+    $shown = $flat
+    if ($shown.Length -gt 400) { $shown = $shown.Substring(0, 400) }
+    $bad += ('strayfile did not blame exactly one unclaimed root file (waiting for "build-notes.txt is at the repository root"). It said: ' + $shown)
+}
 
 # The two legs must differ in exactly one thing, or "the zip carries it" is an accident of staging.
 if (@($runs['clean'].Entries) -contains 'ka-extra.ps1') {
@@ -195,5 +226,5 @@ if (@($runs['clean'].Entries).Count -and @($runs['extrafile'].Entries).Count) {
 if ($bad.Count) { foreach ($m in $bad) { Write-Output ('  FAIL ' + $m) }; Write-Output ('PROBE FAILED: ' + $bad.Count + ' problem(s)'); exit 1 }
 Write-Output ('  info portable zip entries: this tree = ' + @($runs['clean'].Entries).Count +
               ', with one root script no list names = ' + @($runs['extrafile'].Entries).Count)
-Write-Output 'PROBE OK: each of the three broken artifacts turns the smoke red on its own assertion, a root script that no list names still ships, and the intact tree stays green'
+Write-Output 'PROBE OK: each of the four broken artifacts turns the smoke red on its own assertion, a root script that no list names still ships, a root file no rule claims stops the build, and the intact trees stay green'
 exit 0

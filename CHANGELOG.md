@@ -164,6 +164,74 @@
 
 ## 未发布 / 下一步
 
+- **`.gitattributes` 里那两句关于字节形状的话，磁盘上一次都没人执行过**（2026-09-26，接上一条）。
+  同一句问句第四次问出去：上三轮问的是"闸门在找哪些名字""清单里有什么"，这回问的是**发出去的那些字节
+  长什么样**。起点是一句 grep：`grep '\.bat' tests/ka-encoding.ps1` 空的——那道闸门只扫三个目录里的
+  `*.ps1`，而 `.gitattributes` 明明白白写着两句断言（".bat 只有 CRLF 才能可靠执行"、"给 .iss 一定吃得下
+  的 CRLF"）。拿 `git ls-files --eol` 一量，当场给出两种相反的答案：
+  `i/lf w/crlf attr=text eol=crlf ka.bat`（工作树同意）和 `i/lf w/lf attr=text eol=crlf packaging/KeepAwake.iss`
+  ——后者工作树里是 **154 个裸 LF**，属性说它是 CRLF。**而 `git status` 看着是干净的**：`eol=crlf` 只在
+  git *检出*一个文件时改写行尾，事后由编辑器或脚本写进去的字节没人管，比较时又要先过 clean filter，
+  所以这一处测量结果是本轮最好的一条反面证据——`git status --porcelain` 吐 ` M packaging/KeepAwake.iss`
+  （stat 缓存过期），`git diff --numstat` 对它**一个字都不吐**（内容归一化后相同）。顺着这个机制还有一层：
+  用 `-Apply` 把它修成 `CRLF=154 bareLF=0` 之后，`git diff HEAD -- packaging/KeepAwake.iss` **依旧是空的**
+  ——这次修复根本提交不出任何 blob 变化，而原因当场可重读、不必相信任何人的解释：`git show
+  HEAD:packaging/KeepAwake.iss` 打出来的原始字节是 **CR=0 / LF=154**（仓库里存的一直是纯 LF，
+  `eol=crlf` 是 checkout 那一刻才加上去的）。也就是说洞在**这台机器的工作树**里，不在仓库里；全新 clone
+  拿到的是 CRLF（属性会改写），所以 CI 从来没坏过，坏的是"我读过的那份字节、也是本机 ISCC 真吞下去的那份"。
+  **可提交的不是修复，是那道能看见它的闸门**——这句话本身就是这轮的全部内容。
+  闸门改成按**家族**查：`.ps1` 要 UTF-8 带 BOM + 纯 LF（5.1 用 ANSI 代码页解码无 BOM 的脚本）；
+  `.bat`/`.cmd`/`.iss` 要纯 CRLF、**零 BOM**、**零非 ASCII 字节**——`cmd.exe` 和 ISCC 都按系统 ANSI
+  代码页解码，本机 ACP 65001 把问题藏住，默认 zh-CN 安装是 936，那里一个 BOM 会让首行打印成 `ÿþ`、
+  一个汉字到达时已经是乱码；今天这五份 `.bat` 和那份 `.iss` 的 `nonAscii=0` 是数出来的，所以这个性质
+  从此被钉住而不是被假设。`dashboard/**` 与 `*.md` 只报不断（浏览器和人读它们，形状不是它们的契约）；
+  **落不进任何家族却出现在清单里的扩展名直接判失败**（"add a rule or stop shipping it"）。扫的文件集合
+  同样是查出来的：发布清单 ∪ `tests/*.ps1` ∪ `packaging/*.ps1` ∪ `packaging/*.iss`。
+  新闸门**当天就抓到自己人**：`Write` 落盘的第一版 `ka-encoding.ps1` 没有 BOM，是它自己报的
+  `ka-encoding.ps1  no BOM`。
+  闸门会不会红由 `tests/probe-encoding-selftest.ps1` 作证（第七道自检）：整棵一次性树、一条腿只坏一处、
+  六处分别是 `.ps1` 掉 BOM / `.ps1` 被 CRLF 化 / `on.bat` 变裸 LF / `ka.bat` 带 BOM / `panel.bat` 里塞一个
+  汉字 / `dashboard/` 放一个没有家族的 `evil.py`，每条腿要求 `exit≠0` + 点名这条腿改的那个文件 +
+  说出该说的那句 + **不许牵到别的文件**，没坏的那棵必须绿。判据里"CRLF"和"BOM"两个词要先过滤掉闸门的
+  `info` 行——那些行本来就写着 `CRLF=0`、`BOM=False`，不过滤会把每个面板资源读成第二条罪状。
+  **harness 在这轮里撒了两次谎，都被当场抓住**：① 第一次运行先印 `PROBE FAILED: setup`、再走到文件底部
+  印 `PROBE OK` 并 `exit 0`——`catch` 里没有把异常算成一条罪，于是"探针在自己的注入上崩了"这件事被它
+  自己宣布成通过；同样的 fall-through 一并加固到 `probe-build-selftest.ps1`。② 崩的原因是
+  `GetBytes((Get-Body $f) -replace 'a','b')`：方法调用里裸逗号是**参数分隔符**，于是实参变成
+  `(Get-Body $f)-replace 'a'` 和 `'b'` 两个，`Cannot find an overload for GetBytes and the argument count: 2`。
+  本机原话：`PROBE OK: six broken byte shapes each turn the encoding gate red on the file this leg broke,
+  and the intact copy stays green`。`probe-iss` 今天重跑，六条断言全绿，其中 `crlf: the CRLF shape a fresh
+  clone gets compiles too` 与 `naming: KeepAwake-1.0.0-setup.exe (2,097,762 bytes)`——**形状换了，编译器
+  照吃**，所以这轮的修复对产品没有任何风险，风险全在"文档说了一件事而没人检查"这一类。
+  同一条问句再往上一层，量出**清单的第二半还是漏的**：上一轮把 17 个手敲名字换成"推导"，可推导当时是
+  三个 glob，而 glob 就是一份穿了"发现"外衣的扩展名清单——根目录放一个 `run.cmd` 或 `notes.txt`，三个
+  glob 一个都不匹配，它就安静地进了"不在 release 里"那一堆，**和 favicon.svg 同一个病、往上一层**。
+  现在 `Get-KaReleaseFile` 反过来要求**每个根目录文件都被某条规则认领**（三个 glob / 六份点名文档 /
+  `.gitignore`+`.gitattributes` 两份仓库管道），没被认领的 throw 并点名它；"哪些是本机运行产物"不再抄
+  第二份名单，去问 `git check-ignore`（`.gitignore` 里连理由都写好了，两份同一个清单正是这个仓库存在的
+  理由）。`.cmd` 顺手进 glob：`.gitattributes` 和字节闸门早就把它当程序，只有清单没当。两条新腿加在
+  `probe-build-selftest.ps1`：`strayfile`（树根一个 `build-notes.txt` → 冒烟必须红在
+  `build-notes.txt is at the repository root`）和 `strayoutside`（同一个文件放进 `tests/` → 必须照旧绿，
+  否则那条断言说的其实是".txt"而不是"没被认领的根"）。判据吃的是消息自己的语法——**单数 is 就是"只怪了一个
+  文件"**，多一个会变成 `a, b are at...`，于是这条断言顺手也是"一条腿一个缺陷"的检查。这条腿的绿不算证据，
+  所以把认领检查改成 `if ($false -and $stray.Count)` 重跑整条探针（`_tmp/mutate-claim.ps1`，注入后先证明
+  needle 落地、还原后比对 sha256）：`mutant run exit=1`、四条 `FAIL`，其中最要命的一条是
+  `strayfile tree passed the smoke`，而那份 transcript 里 `packaging KeepAwake v1.0.0 (24 files ...)` 后面
+  跟着 `ok ... 24 entries` ——**没被认领的文件正安静地不在 release 里，全绿**；逐字节还原后 `exit=0` 回绿。
+  本机数字（都在磁盘上可重读）：五道门禁 `----- 5 run, 0 red`、`every shipped text file carries the byte
+  shape its family requires`；探针 `----- 19 run, 1 red`，唯一那条红仍然是 `probe-mutex-identity.ps1` 的
+  环境红，原话一字未变（`holder job said: got=False ; OpenExisting error: none`，握着默认数据根的就是本机
+  那个活着的 worker），**没有为了让它绿而停掉正在防休眠的进程**。文档计数又自己抓自己一次：README 那句
+  "外加六个『自检』"在 `077bbfd` 上对着 `git ls-tree HEAD tests/` 回答 **5**，手抄的第三个数说谎；这一轮
+  补上的正是缺的那一个，现在 19 个探针、六个自检，`ls tests/probe-*selftest* | wc -l` 当场对得上。
+  **仍然拦不住的写在这里而不是藏起来**：`on.bat`/`off.bat`/`panel.bat`/`tray.bat` 到现在没有任何检查
+  真的执行过一次（跑一次就真起保护，落在谁的机器上都不该），字节形状钉的是"cmd 会不会读错这份文件"，
+  钉不了"这一行命令对不对"；`.cmd` 家族规则已经就位，而仓库今天**一个 `.cmd` 都没有**，所以那条臂
+  目前没有真实对象，替"没被认领"作证的是 `strayfile` 那条腿；认领检查走的是工作树，`git` 不在或不是
+  仓库时（`_tmp` 里探针拼的副本）不-ignore 任何东西，那时"未认领"直接 throw——这是刻意的方向选择；
+  `.gitattributes` 自己不在任何家族里（它 `w/lf` 是量出来的，不是断言的）。这一轮**没有**动已发布的
+  v1.0.0。
+
 - **最后一份手写的清单，也正是"发出去的是什么"那一份**（2026-09-26，接上一条）。同一句问句问到第三
   次，这回不问闸门，问发布：`tests/ka-release-files.ps1` 里那 17 个代码文件名是我一个个敲的。敲的清单
   只会以一种方式坏——**文件在仓库里、不在清单里，于是它就不在 release 里，而链路上一切照旧全绿**：
@@ -200,7 +268,17 @@
   `-DataDir C:\Users\DELL\AppData\Local\KeepAwake`，当场从 `Win32_Process` 读到的命令行）。探针自己在
   100-104 行把这条写成了已知环境事实（2026-09-25 从 `git archive HEAD` 的干净副本复现过同样一次红）。
   **没有为了让它绿而停掉正在防休眠的进程**——那是这台机器的用途，不是测试的障碍；runner 那一步照旧绿，
-  因为那儿没有任何东西在保护。这一轮**没有**动已发布的 v1.0.0：重打包要重打 tag，那是另一件事。
+  因为那儿没有任何东西在保护。**runner 的数字回填完了**（run `36234920150`，sha `077bbfd`，`completed
+  success`）：那一轮 `----- 23 run, 0 red`（五道门禁 + 当时 18 条探针全绿），套件 `通过 86，失败 0，跳过 5`，
+  `probe-mutex-identity` 在 runner 上印的是 `PROBE OK: the mutex keys on data root + SID, not on the
+  install folder`——本机那条红因此被量化成"环境"而不是"产品"，两个同源检查唯一的差别就是有没有人在保护。
+  清单推导后的三个数都在日志里可重读：`ok KeepAwake-1.0.0-portable.zip : 24 entries, all present with
+  matching byte lengths, 0.27 MB`、`ok staging: 24 files in D:\a\keepawake\keepawake\dist\staging`、
+  `PROBE OK: a Zone-3 download of 24 files ...`；**装到盘上**那一个是 26——它是从 `ka-test-install.ps1
+  -SelfTest` 那条 `expectfiles` 突变腿自己的话里读出来的（`expected the 25 manifest files + Inno's own 2,
+  got 26 files, missing [], unexpected [unins000.dat, unins000.exe]`），而同一轮里干净那腿
+  （`run mutate='          ' exit=0 fails=0`）是绿的，所以 26 = 24 份清单 + Inno 自己的两个卸载器文件，
+  `unins000.dat`/`unins000.exe` 正是它按名字排除的那两个。这一轮**没有**动已发布的 v1.0.0：重打包要重打 tag，那是另一件事。
 
 - **同一个病根第三次量出来：内容被拆开写、或者压根不需要内容可读**（2026-09-26，接上一条）。
   上三条把"找什么名字"改成"管哪种通道"之后，剩下的问句是：**通道里的内容如果拼开来写呢？如果这条通道
