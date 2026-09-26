@@ -115,16 +115,26 @@ $MiMethod.DropDownItems.Add($MiMethodMouse) | Out-Null
 
 # The preset labels reuse the localized duration/second formatters, so the menu speaks
 # the same language as every other surface without carrying its own number words.
-$durations = [ordered]@{
-    (Format-KaDuration 1800)  = 30
-    (Format-KaDuration 3600)  = 60
-    (Format-KaDuration 7200)  = 120
-    (Format-KaDuration 28800) = 480
-    (Get-KaText 'tray.dur.unlimited') = 0
+#
+# One span, written twice, in two different units: the label is Format-KaDuration's seconds and
+# the Tag is Start-Protect's minutes. They are kept in separate fields on purpose - relabelling
+# off the Tag with the seconds formatter printed "30 分钟" as "30 秒" (same digits, a sixtieth of
+# the time), which is what Update-TrayLabels now avoids by going through this table.
+function Format-DurationPreset {
+    param([double]$Sec)
+    if ($Sec -eq 0) { return (Get-KaText 'tray.dur.unlimited') }
+    return (Format-KaDuration $Sec)
 }
-foreach ($k in $durations.Keys) {
-    $item = New-MenuItem $k
-    $item.Tag = [double]$durations[$k]
+$script:DurationPresets = @(
+    @{ Sec = 1800;  Min = 30 }
+    @{ Sec = 3600;  Min = 60 }
+    @{ Sec = 7200;  Min = 120 }
+    @{ Sec = 28800; Min = 480 }
+    @{ Sec = 0;     Min = 0 }
+)
+foreach ($d in $script:DurationPresets) {
+    $item = New-MenuItem (Format-DurationPreset $d.Sec)
+    $item.Tag = [double]$d.Min
     $item.Add_Click({ Start-Protect -Minutes ([double]$this.Tag) })
     $MiDuration.DropDownItems.Add($item) | Out-Null
 }
@@ -140,6 +150,10 @@ foreach ($k in $intervals.Keys) {
     $item.Add_Click({ Apply-Change -Patch @{ antiLockIntervalSec = [int]$this.Tag } })
     $MiInterval.DropDownItems.Add($item) | Out-Null
 }
+
+# The language every label above was written in. Refresh-State compares this against
+# config.json and calls Update-TrayLabels when they part - see the comment there.
+$script:TrayLang = Get-KaUiLanguage
 
 $tray = New-Object System.Windows.Forms.NotifyIcon
 $tray.Icon = $icons.off
@@ -173,6 +187,37 @@ function Set-TrayText {
     }
     if (-not $out) { $out = $Value.Substring(0, 57) }
     $tray.Text = $out + '…'
+}
+
+function Update-TrayLabels {
+    <#
+        The menu items are constructed with their text, so the catalog language they were built
+        in is frozen into them; Get-KaUiLanguage caches per process too. Together those two make
+        a language chosen in the dashboard invisible here - the header and the tooltip followed it
+        (Refresh-State rewrites those every tick) while the items stayed behind, which is a worse
+        menu than either language.
+
+        Assignment only, and driven off the Tag rather than by rebuilding: an item cleared out of
+        a dropdown loses its Click handler, and a menu the person is holding open would be taken
+        out of their hands mid-reach.
+    #>
+    $MiStart.Text = Get-KaText 'tray.mi.start'
+    $MiStop.Text = Get-KaText 'tray.mi.stop'
+    $MiDuration.Text = Get-KaText 'tray.mi.duration'
+    $MiDisplay.Text = Get-KaText 'tray.mi.display'
+    $MiAntiLock.Text = Get-KaText 'tray.mi.antilock'
+    $MiMethodKey.Text = Get-KaText 'tray.mi.key'
+    $MiMethodMouse.Text = Get-KaText 'tray.mi.mouse'
+    $MiOpen.Text = Get-KaText 'tray.mi.open'
+    $MiGuard.Text = Get-KaText 'tray.mi.guard'
+    $MiStopServer.Text = Get-KaText 'tray.mi.stopServer'
+    $MiQuit.Text = Get-KaText 'tray.mi.quit'
+    for ($n = 0; $n -lt $script:DurationPresets.Count; $n++) {
+        $MiDuration.DropDownItems[$n].Text = Format-DurationPreset ([double]$script:DurationPresets[$n].Sec)
+    }
+    foreach ($i in $MiInterval.DropDownItems) { $i.Text = Format-KaSeconds ([int]$i.Tag) }
+    # $MiHeader, $MiMethod and $MiInterval are rewritten by Refresh-State itself, so pushing the
+    # language in ahead of that call is enough for them.
 }
 
 function Format-Remaining {
@@ -264,6 +309,12 @@ function Refresh-State {
     try {
         $st  = Get-KaWorkerState
         $cfg = Get-KaConfig
+        # The config read this tick doubles as the language check: the panel writes its choice
+        # into this same file from another process, and Get-KaUiLanguage would otherwise keep
+        # answering in whatever this tray resolved when it started. KA_LANG still wins inside
+        # Resolve-KaLanguage, so forcing the language keeps working from here too.
+        $want = Set-KaUiLanguage -Configured $cfg['language']
+        if ($want -ne $script:TrayLang) { $script:TrayLang = $want; Update-TrayLabels }
         $intent = Get-KaIntent
         $running = [bool]$st
         # state.json is exactly what is missing when the data directory cannot be written, so
@@ -369,6 +420,50 @@ if ($SelfTest) {
                       ' antiLock=' + $MiAntiLock.Checked + ' method=' + $MiMethod.Text +
                       ' guard=' + $MiGuard.Checked + ' start=' + $MiStart.Enabled + ' stop=' + $MiStop.Enabled)
         if ($menu.Items.Count -lt 10 -or -not $iconName) { throw (Get-KaText 'tray.selftest.fail') }
+        # A language the dashboard writes into config.json has to reach the menu items, not just
+        # the header - that half used to be frozen at construction. Driven through the file, so
+        # the tick is what decides, and only into a -DataDir the caller named: a self test must
+        # never be able to edit anybody's real config.
+        if (-not $DataDir) { Write-Output 'SELFTEST lang=skip(no -DataDir, refusing to write a real config.json)' }
+        elseif ($env:KA_LANG) { Write-Output 'SELFTEST lang=skip(KA_LANG outranks config by design)' }
+        else {
+            $cfgPath = (Get-KaPath).config
+            $cfgRaw = if (Test-Path -LiteralPath $cfgPath) { [IO.File]::ReadAllText($cfgPath) } else { $null }
+            $byLang = @{}
+            try {
+                foreach ($l in @('en', 'zh')) {
+                    [IO.File]::WriteAllText($cfgPath, ('{ "version": 3, "language": "' + $l + '" }'),
+                                           (New-Object Text.UTF8Encoding($false)))
+                    Refresh-State
+                    # Each item must still read as what clicking it does. The presets are the one
+                    # place where a label is rebuilt from a table instead of straight from the
+                    # catalog, so they are also the place where a relabel can quietly change the
+                    # number's unit - "30 分钟" and "30 秒" share their digits.
+                    foreach ($i in $MiDuration.DropDownItems) {
+                        $row = $script:DurationPresets | Where-Object { [double]$_.Min -eq [double]$i.Tag } |
+                               Select-Object -First 1
+                        if (-not $row) { throw ('SELFTEST lang failed: no preset row for Tag ' + $i.Tag) }
+                        $want = Format-DurationPreset ([double]$row.Sec)
+                        if ($i.Text -ne $want) {
+                            throw ('SELFTEST lang failed: preset reads "' + $i.Text +
+                                   '" but its Tag ' + $i.Tag + ' min is "' + $want + '"')
+                        }
+                    }
+                    $byLang[$l] = $MiStop.Text + '|' + $MiOpen.Text + '|' + $MiQuit.Text + '|' +
+                                  $MiDuration.DropDownItems[0].Text + '|' + $MiInterval.DropDownItems[0].Text
+                    Write-Output ('SELFTEST lang=' + $l + ' stop=' + $MiStop.Text +
+                                  ' open=' + $MiOpen.Text + ' quit=' + $MiQuit.Text +
+                                  ' presetDur=' + $MiDuration.DropDownItems[0].Text +
+                                  ' presetInt=' + $MiInterval.DropDownItems[0].Text)
+                }
+                if ($byLang['en'] -eq $byLang['zh']) {
+                    throw 'SELFTEST lang failed: the menu items kept their text across a language change'
+                }
+            } finally {
+                if ($null -eq $cfgRaw) { Remove-Item -LiteralPath $cfgPath -Force -ErrorAction SilentlyContinue }
+                else { [IO.File]::WriteAllText($cfgPath, $cfgRaw, (New-Object Text.UTF8Encoding($false))) }
+            }
+        }
         Write-Output 'SELFTEST OK'
     } catch {
         Write-Output ('SELFTEST FAILED: ' + $_.Exception.Message)

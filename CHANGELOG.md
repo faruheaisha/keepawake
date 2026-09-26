@@ -164,6 +164,48 @@
 
 ## 未发布 / 下一步
 
+- **面板切了语言，活着的那个进程不跟着切**（2026-09-26，托盘是活的读者）。`dashboard/app.js` 的注释写着
+  语言存进 config.json"所以命令行和面板都跟着面板走"——命令行那半是对的（每次调用都是新进程），**托盘那半是
+  错的**：`Get-KaUiLanguage` 把解析结果缓在 `$script:KaUiLang`，一个进程一辈子只解析一次，没有任何东西去动
+  它。本机实测（`_tmp/check-language-cache.ps1`，两遍一字不差）：磁盘上 `config.json` 已写着 `"language":
+  "en"`，同一进程里 `Get-KaUiLanguage` 仍回 `zh`、`Get-KaText tray.mi.stop` 仍印 `停止保护`（4 个非 ASCII），
+  而同一时刻新起的进程回 `en`。落到界面上就是：面板里切成 English 之后，托盘**表头和 tooltip 换了、菜单项
+  还是中文**——比整块中文或整块英文都糟。
+  修法是三个机制，每个各留一条红的：① 写的一方 `Set-KaConfig` 落盘成功后把自己进程修正（那行的 `[void]`
+  是承重的：字符串一旦漏进成功流，所有 `if (-not (Set-KaConfig ...))` 调用点就变成了跟数组比）；②
+  `Set-KaUiLanguage -Configured` 解析并**返回**解析结果——用 `-Configured` 而不是 `-Explicit`，否则 `KA_LANG`
+  这个写明可以强制语言的后门会被文件值悄悄缴械；③ 读的双方在**本来就读配置的地方**推一把：托盘
+  `Refresh-State`（每 tick）、面板请求循环里"`X-Ka-Lang` 缺席"那一支（CLI 和探针不带那个头，正是文件说了算
+  的那批）。缓存本身不加 TTL、也不改成"每句话查一次盘"：面板已经用 `KaReqLang` 证明"外部推"这条路走得通，
+  反过来做代价在每条路径上。
+  验证是一次性 harness `_tmp/check-language-fix.ps1` 十腿，两遍一致；`tests/ka-tests.ps1` 全程没执行过。
+  1 工作树绿；2 关掉写方自修 → 新那条 `It` 红在「连着改两次语言，第二次没跟上」；3 去掉 `Set-KaUiLanguage`
+  的返回 → 红在「没把文件里的语言解析出来」；4 把字符串放进成功流 → 红在「返回值不再是布尔，而是
+  `[en True]`」；5 拿 **HEAD 那份 ka-core**（也就是发出去的 v1.0.0 的库）跑同一条正文 → 红在第二句，所以
+  「那一版确实会冻」是量出来的不是推的；6 真托盘 `-SelfTest` 两条 lang 腿绿（`en` 行零非 ASCII、`zh` 行有）；
+  7 把托盘那两行推换成 `$want = $script:TrayLang` → 两条腿全中文、自测红在 `kept their text`；8 活着的面板
+  收到不带语言的请求、文件由 zh 改 en → `reason` 从 10 个汉字变成零非 ASCII 且点名 `language`；9 对
+  ka-server 那三行做同样突变 → 改完文件它仍然中文（这一腿**写的时候先错位过**：最初复用了托盘的突变树，而
+  那三行是面板走的、托盘根本不走，跑之前换成给面板自己的突变才真的有牙齿）；10 见下一条。
+  **第 10 腿抓到的是本轮自己写进去的缺陷**：`Update-TrayLabels` 用 `Format-KaDuration ($item.Tag)` 重建时长
+  预设文案，而 **Tag 存的是分钟、`Format-KaDuration` 收的是秒**——换一次语言把「30 分钟」重贴成「30 秒」，
+  数字没变、时长少了六十倍。第一版九腿看不见它（那五条只问「en 和 zh 是否不同」），所以它当时是绿的；现在
+  预设表把两个单位分开存（`Sec` 给文案、`Min` 给点击），`Format-DurationPreset` 是唯一一处换算，自测另加
+  一条「每个菜单项写的必须还是它 Tag 那一段时长」，第 10 腿把这个缺陷重新注入回去，红在
+  `preset reads "30 s" but its Tag 30 min is "30 min"`。顺带去掉一处老脆弱：预设原本是「本地化文案当字典键」
+  的 `[ordered]@{}`，两个文案一旦撞车就静悄悄少一项，现在是数组，实测 `durations=5 intervals=4`。
+  过程里被自己的 harness 咬到两次（记下来因为它还是「绿了也不作数」那一类）：① 子进程用 `2>&1` 收，红腿的
+  stderr 在 `$ErrorActionPreference='Stop'` 下变成**本进程**的终止错误，harness 死在第一条它本该量化的红上；
+  ② 打点用 `Write-Output` 的函数同时返回哈希表，统计行被 `$results +=` 一起收进数组，那些字符串既没露面也
+  不会自己喊——本轮第一次跑只出到第 2 腿，看着像修复崩了，其实是量具崩了。现在打点走 `Write-Host`，
+  子进程调用外面单独降级 `$ErrorActionPreference`。
+  **本轮在本地跑了什么**：十腿两遍一致（`_tmp/langfix-out.txt`）；`tests/ka-ci.ps1 -Gates -Probes` 22 跑
+  1 红，红的还是那条 `probe-mutex-identity`——本机保护正在跑（`state.json` `pid=21688`、`Test-KaWorkerMutex`
+  实测 `True`、`Local\KA-Worker-DCA86D0FFFB8` 实测 `created=False got=False`，而 `Global\` 同名拿得到），
+  C 段要做默认数据根 mutex 的第一个持有者，前提不成立；与 2026-09-25/26 那两轮的记录同一条红，不是回归，
+  也不去动那个 worker（CI 的 runner 上没有活 worker）。`tray -SelfTest` 这次是第一次在本机 FullLanguage 下
+  真跑通全绿。全量套件按惯例不在本机跑，新加的第 84 条 `It` 要等下一次 CI 才有自己的执行结果。
+
 - **那三条"别把句子送上线路"的规则，自己的文件清单是写死的**（2026-09-26，接上一条）。上一条修完，顺手
   回头审规则本身，量出来的第一件事就是**覆盖不全**：三条规则各自硬编码一份文件清单，而 `ka-lid.ps1`
   有 3 个 `Add-KaLog` 调用点（实测 46 个点里它占 3），却不在日志规则那份六文件清单里——也就是说

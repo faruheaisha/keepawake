@@ -523,6 +523,38 @@ try {
         }
     }
 
+    It 'config.json 换了语言，活着的进程要能知道（面板写文件，托盘是那个长命的读者）' {
+        # Measured here on 2026-09-26: a process resolved its catalog language once and never
+        # looked at the file again, so switching to English in the dashboard left the running
+        # tray offering Chinese menu items under an English header. Two halves, so two
+        # assertions - whoever writes the file must fix its own process, and a process that only
+        # ever reads it needs a way to push the new value in.
+        if ($env:KA_LANG) { Skip -Why 'KA_LANG 压过 config，这两条量的正是 config 那一路' }
+        $orig = Read-KaJson $paths.config
+        $origCache = $script:KaUiLang
+        try {
+            $r = Set-KaConfig -Patch @{ language = 'en' }
+            Assert ($r -is [bool]) ("Set-KaConfig 的返回值不再是布尔，而是 [" + ($r -join ' ') + "]：加进成功流的任何东西都会把调用方的 if (-not (Set-KaConfig ...)) 变成跟数组比")
+            Assert-Eq (Get-KaUiLanguage) 'en' '本进程刚写下的语言，下一个词典查询还在用旧语言'
+            [void](Set-KaConfig -Patch @{ language = 'zh' })
+            Assert-Eq (Get-KaUiLanguage) 'zh' '连着改两次语言，第二次没跟上'
+
+            # The other half is the point: another process wrote the file, and this one must not
+            # notice by itself - that is what the per-process cache *is*. Written down so nobody
+            # "fixes" the cache into a disk read per sentence and loses the reason it exists.
+            Set-Content -LiteralPath $paths.config -Encoding UTF8 -Value '{ "version": 3, "language": "en" }'
+            Assert-Eq (Get-KaUiLanguage) 'zh' '没有谁推它，缓存却自己变了——那上面两条就白写了'
+            Assert-Eq (Set-KaUiLanguage -Configured (Get-KaConfig)['language']) 'en' 'Set-KaUiLanguage 没把文件里的语言解析出来'
+            Assert-Eq (Get-KaUiLanguage) 'en' '推进去之后 Get-KaText 还在用旧语言'
+        } finally {
+            # Restore the file and the cache: the tests after this one run in the same process,
+            # and a leftover 'en' here would silently re-speak every later assertion.
+            if ($orig) { [void](Write-KaJson $paths.config $orig -Depth 4) }
+            else { [void](Write-KaJson $paths.config @{ version = 3 } -Depth 4) }
+            $script:KaUiLang = $origCache
+        }
+    }
+
     It 'worker 能发出的每个 note/error 标记，三本词典里都有措辞' {
         # Tokens are invented in ka-worker.ps1 and rendered in three other places. Only a
         # check that reads the emitter can tell that the wording for a new token is missing.

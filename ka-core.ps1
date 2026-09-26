@@ -775,7 +775,15 @@ function Set-KaConfig {
         if ($k -eq 'version') { continue }
         if ($clean.ContainsKey($k) -or ("$($effective[$k])" -ne "$($defaults[$k])")) { $out[$k] = $effective[$k] }
     }
-    return (Write-KaJson (Get-KaPath).config ([hashtable]$out) -Pretty)
+    $wrote = Write-KaJson (Get-KaPath).config ([hashtable]$out) -Pretty
+    if ($wrote -and $clean.ContainsKey('language')) {
+        # This process just replaced the language every other surface will read off the file.
+        # [void] is load-bearing: Set-KaUiLanguage returns the language it resolved, and a string
+        # in the success stream here would turn every `if (-not (Set-KaConfig ...))` caller into a
+        # comparison against an array.
+        [void](Set-KaUiLanguage -Configured $clean['language'])
+    }
+    return $wrote
 }
 
 function Get-KaOsUiLanguages {
@@ -1607,14 +1615,31 @@ $script:KaUiLang = ''
 $script:KaReqLang = ''
 
 function Set-KaUiLanguage {
-    param([string]$Lang)
-    $script:KaUiLang = Resolve-KaLanguage -Explicit $Lang
+    <#
+        Pushes a config.json `language` value into this process and says what it resolved to.
+
+        Get-KaUiLanguage caches per process (below), and nothing else clears that cache - so this
+        is the only way a surface that outlives the write can learn that somebody changed the
+        file. The dashboard is the writer and the tray is the long-lived reader, which makes the
+        tray's tick the caller that needs it most.
+
+        -Configured, not -Explicit, on purpose: KA_LANG has to keep outranking the file, or
+        pointing the language at a config key would quietly disarm the documented escape hatch.
+    #>
+    param([string]$Configured)
+    $script:KaUiLang = Resolve-KaLanguage -Configured $Configured
+    return $script:KaUiLang
 }
 
 function Get-KaUiLanguage {
     param([string]$Explicit)
     # -Explicit first, then the per-request override: a long-running panel server must not
     # cache a language the visitor just changed in the dashboard.
+    #
+    # The cache below is not watched: nothing here re-reads config.json, so a process that is
+    # still running when *another* process changes the language keeps the one it resolved first
+    # until somebody pushes the new value through Set-KaUiLanguage. The tray does that from its
+    # tick (it already reads the config there), and Set-KaConfig does it for the writer.
     if ($Explicit) { return Resolve-KaLanguage -Explicit $Explicit }
     if ($script:KaReqLang) { return Resolve-KaLanguage -Explicit $script:KaReqLang }
     if (-not $script:KaUiLang) {

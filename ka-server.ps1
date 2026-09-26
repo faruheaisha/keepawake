@@ -433,6 +433,12 @@ try {
         try {
             $path = $ctx.Request.Url.AbsolutePath
             $script:KaReqLang = Get-KaRequestLang -Ctx $ctx
+            if (-not $script:KaReqLang) {
+                # The dashboard names its language on every request; the CLI and the probes do not.
+                # For those the file decides - this process may have started before the language in
+                # it did, and Get-KaUiLanguage would otherwise answer in its own stale default.
+                [void](Set-KaUiLanguage -Configured (Get-KaConfig)['language'])
+            }
             $deny = Test-KaAllowed -Ctx $ctx -Path $path
             if ($deny) {
                 # The log is machine vocabulary: a code, not the localized sentence, so an
