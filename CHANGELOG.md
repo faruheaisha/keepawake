@@ -164,6 +164,65 @@
 
 ## 未发布 / 下一步
 
+- **五个 `.bat` 里那一行命令，从来没有一条被真的执行过**（2026-09-26，接上一条）。同一句问句第五次问出去，
+  这回不问清单、不问字节形状，问**内容**：`on.bat` 写的是 `start -Minutes %~1` 还是 `start -Minute %~1`？
+  上一轮那道闸门钉的是"cmd 会不会读错这份文件"，而它读得懂一个 `serve` 拼成 `serveX`。改之前的原话是
+  `git grep -n 'ka\.bat' HEAD -- tests/ka-tests.ps1 packaging/` 只命中一处，还是 `build.ps1:141` 里的一句散文
+  ——**五个 `.bat` 一个也没被任何检查执行过**（上一条那句"仍然拦不住的"当时还少算了一个 `ka.bat`，它以为
+  `ka.bat` 是跑过的）。补的是 `tests/probe-bat-entry.ps1`：按发布清单复制一整棵一次性树到
+  `_tmp/bat-entry/tree`，把 `$env:KA_DATA` 指到一次性数据根——**这一行必须在任何进程起来之前**，`ka-core.ps1:354`
+  读的就是它，指错了 `off.bat` 会按数据根找到本机那个活着的 worker、判定"这是我们自己的"、然后把用户的防休眠
+  关掉。然后拿 `cmd.exe` 把每个入口真跑一遍，断言的是**产物**：`ka.bat` 无参数与 `ka.bat status` 逐行同形，
+  `status -Json` 里的 `dataRoot`/`root` 就是这两棵一次性树的路径；`panel.bat` 起的那个端口上**清单里每一个
+  `dashboard/**` 文件都要 200，且服务端吐出的字节数等于文件本身的字节数**，`index.html` 里 `src=`/`href=`
+  要到的每个名字也要 200，一个不存在的名字必须 404；`ka.bat stop-server` 之后端口要下来、`.server-*.json`
+  句柄要清零。后两条是 favicon 那个洞的**另一半**：上一轮补的是"文件没进 zip"，这一轮补的是"进了 zip 却没有
+  一条路由能把它送出去"——`$staticMap`（`ka-server.ps1:49-55`）至今是一张手写的六行表，而清单已经从树推导了，
+  两者完全可以各说各话而一切照旧全绿。
+
+  **harness 在这一轮里被实测推翻四次**（`_tmp/exit-semantics-rerun.log`，八行都是刚跑的）：① `pause` 把判定
+  归零——一个只 `exit 5` 的子脚本，包它的 `.bat` 以 `exit /b %ERRORLEVEL%` 收尾时 cmd 给 **5**（E1），以 `pause`
+  收尾时给 **0**（E2），什么都不加也是 **5**（E3）；`on/off/panel/tray` 四个恰恰全以 `pause` 收尾，所以它们的
+  断言根本不能是退出码。② `Start-Process -PassThru` 之后自己 `WaitForExit()` 或 `WaitForExit(30000)`，对
+  `cmd /c exit 3` 一律报 **0**（B、C 两行），`Refresh()` 也救不回来（C2）；同一个调用加 `-Wait` 报 3（A），
+  `[Diagnostics.Process]::Start` + `WaitForExit(ms)` 报 3（D）——探针取后者。③ cmd 的 `/c "..."` 要**引号数成对**：
+  少一个闭引号，cmd 只印一句 `The filename, directory name, or volume label syntax is incorrect.` 然后**退出 0**，
+  于是第一次 `-SelfTest` 的五个子进程一个都没跑成而 harness 全绿；判据从此不吃退出码，吃子脚本自己写的
+  `PROBE OK` / `PROBE FAILED` 标记。④ `Invoke-WebRequest` 在 5.1 上会把服务端明明白白返回的 404 吞成
+  `Status 0`（`.Response` 不可达），"不存在的名字要 404"这条断言因此在**真面板**上是红的；换
+  `[System.Net.HttpWebRequest]` + `WebException.Response` 才拿到那个 404 和 body
+  `{"ok":false,"reason":"没有这个文件"}`——这条是本轮唯一一条"探针先把产品测试判错、再去量被测物"的记录。
+
+  两条断言的**形状**也是被实测改掉的，不是设计出来的。**`tray.bat` 跑第二次会真的多起一个进程再自己退出**
+  （本机量到 `20000` → `20000 + 16564` → 约一秒后又是 `20000`），所以"托盘进程数不变"是错判据；改法等它 settle，
+  再断言活着的那个 pid 还是原来那个。**单位边界会自己造 flake**：干净树第一次跑，`ka.bat`（无参数）与
+  `ka.bat status` 之间隔了几秒，本机那个活着的 worker 的空闲读数正好跨过 60，一边印 `62 秒`、一边印 `1.0 分钟`，
+  整串折叠的比较把它读成"两条输出不同"；于是判据改成**逐行**比较加单位容错（数字折成 `#`，紧跟的数字单位词
+  一起折掉）。同一条规则顺手作了第二次证：同一个原因在 `badentry` 变异体上以**外来腿**的形式又红了一次
+  （只该红 `[panel]` 的那棵树上冒出 `[ka]`），"不许牵到别的腿"当场抓住它，说明那条规则不是装饰。
+
+  本机结果（`_tmp/bat-entry-run4.log`、`_tmp/bat-entry-selftest3.log` 逐行可重读）：干净那条印
+  `PROBE OK: every double-click entry that can run here ran for real, and every dashboard file the release ships
+  answered over HTTP - ka/off/panel/tray executed; on.bat runs only with -Power or on a runner (anti-lock pulse
+  on the first tick)`；`-SelfTest` 四个注入缺陷各自红在自己的腿上、没坏的那棵全绿，末行
+  `PROBE OK: 4 injected defects each turn their own leg red and the intact run stays green`。四句红话都是量出来的：
+  `serve` 拼错 → `[panel] panel.bat never brought a panel up on port 53019`，后面跟着 ValidateSet 的报错原文；
+  `ka.bat` 指向不存在的脚本 → 7 条，含 `ka.bat exited -196608` 与 `status -Json is not JSON: Invalid JSON
+  primitive: The.`；往 `dashboard/` 放一个没有路由的文件 → `[panel] selftest-extra.svg ships in the release but
+  the panel answers it with 404 - a name no route list holds is a file nobody can load`；删掉 `dashboard/i18n.js`
+  → `[panel] index.html asks for /i18n.js and the panel answers 404`。`tests/ka-ci.ps1` 是按 `probe-*.ps1` 认领
+  的，所以这条探针不用改 workflow 就进了每一轮：CI 那一步跑的是 `-Gates -Probes`（5 道门禁 + 19 个探针 =
+  **`----- 24 run, 0 red`**，上一轮 runner 上就是这个数），加上这一条之后下一轮应该是 **`----- 25 run, 0 red`**
+  （run `36237945409`；本机只跑门禁是 `----- 5 run, 0 red`，两个数不是一回事）。
+  **仍然拦不住的 / 这轮的代价，写在这里而不是藏起来**：`on.bat`、`off.bat`（和 `-Minutes` 那个拼错变异体
+  `badminutes`）在有人正在用的机器上不跑——worker 第一拍就发防锁合成键（`ka-worker.ps1:152`，读出来的），
+  在这里跑等于往别人的会话里打字，所以本机那两条印的是 SKIP 加理由，只有 runner 上或显式 `-Power` 才真跑；
+  每条面板腿会在桌面上**开一个浏览器标签页**（`ka.ps1:594` 的 `Start-Process $r.Url` 无条件执行、没看
+  `$r.Newly`；这轮只记下，没改），一次 `-SelfTest` 约四个；断言的是"这一行 cmd 读得懂、指向真实脚本、产物到位"，
+  钉不了"worker 真的动了鼠标"；`.cmd` 家族依旧没有真实对象。跑完 `_tmp/bat-entry` 树根下的进程 `count=0` 是查过的，
+  机器上原来那台 worker 与面板（pid 21688 / 28208）全程没被碰过——**这轮也没有为了让任何一条腿变绿而停过正在
+  防休眠的进程**。
+
 - **`.gitattributes` 里那两句关于字节形状的话，磁盘上一次都没人执行过**（2026-09-26，接上一条）。
   同一句问句第四次问出去：上三轮问的是"闸门在找哪些名字""清单里有什么"，这回问的是**发出去的那些字节
   长什么样**。起点是一句 grep：`grep '\.bat' tests/ka-encoding.ps1` 空的——那道闸门只扫三个目录里的
@@ -224,9 +283,25 @@
   那个活着的 worker），**没有为了让它绿而停掉正在防休眠的进程**。文档计数又自己抓自己一次：README 那句
   "外加六个『自检』"在 `077bbfd` 上对着 `git ls-tree HEAD tests/` 回答 **5**，手抄的第三个数说谎；这一轮
   补上的正是缺的那一个，现在 19 个探针、六个自检，`ls tests/probe-*selftest* | wc -l` 当场对得上。
+  runner 的数字回来了（run `36237945409`，sha `3d826c8`，`_tmp/ci63.log` 逐行可重读）：CI 那一步跑的是
+  `-Gates -Probes`，印 `----- 24 run, 0 red`（5 道门禁 + 19 个探针），门禁末行仍是
+  `every shipped text file carries the byte shape its family requires`；**本机那条唯一红的
+  `probe-mutex-identity` 在那里是 `ok   probe-mutex-identity.ps1       8s`**——这条差异正是上一条"环境红"
+  诊断的反证：握着那个互斥体的是**本机**活着的 worker，一次性 runner 上没有 worker，所以它真的跑完了，
+  而不是被跳过。套件那一步 `----- 1 run, 0 red` + `通过 86，失败 0，跳过 5`。"清单从树推导"在 runner 上被
+  三个独立数字同时钉住：`staging: 24 files in D:\a\keepawake\keepawake\dist\staging`、
+  `ok   KeepAwake-1.0.0-portable.zip : 24 entries, all present with matching byte lengths, 0.28 MB`，
+  以及安装腿红的时候自己吐出的那道算术（`got 26 files`，26 减掉 Inno 自己的 `unins000.dat` 与
+  `unins000.exe` 正好 24）；`Successful compile (0.813 sec)` 和 `SHA256SUMS <- 2 file(s)` 照旧。三条安装腿
+  `run mutate='          ' exit=0 fails=0`、`precreate exit=1 fails=1`、`expectfiles exit=1 fails=1`，
+  后者那句红字 `install directory: expected the 25 manifest files + Inno's own 2, got 26 files, missing [],
+  unexpected [unins000.dat, unins000.exe]` 里那个 25 是**注入本身**（`$want = $manifest.Count + 1`，
+  `packaging/ka-test-install.ps1:276`）——它证明的是"多要一个文件的检查真的会拦"，不是产品少发了一个文件；
+  这句话之所以要写，是因为那条红字单独抄出来看，长得和一条真缺陷一模一样。
   **仍然拦不住的写在这里而不是藏起来**：`on.bat`/`off.bat`/`panel.bat`/`tray.bat` 到现在没有任何检查
   真的执行过一次（跑一次就真起保护，落在谁的机器上都不该），字节形状钉的是"cmd 会不会读错这份文件"，
-  钉不了"这一行命令对不对"；`.cmd` 家族规则已经就位，而仓库今天**一个 `.cmd` 都没有**，所以那条臂
+  钉不了"这一行命令对不对"——**这一条在本轮收尾时关掉了，见上方 `probe-bat-entry` 那一条；而且当时那句
+  还少算了一个：`ka.bat` 同样从来没被执行过**；`.cmd` 家族规则已经就位，而仓库今天**一个 `.cmd` 都没有**，所以那条臂
   目前没有真实对象，替"没被认领"作证的是 `strayfile` 那条腿；认领检查走的是工作树，`git` 不在或不是
   仓库时（`_tmp` 里探针拼的副本）不-ignore 任何东西，那时"未认领"直接 throw——这是刻意的方向选择；
   `.gitattributes` 自己不在任何家族里（它 `w/lf` 是量出来的，不是断言的）。这一轮**没有**动已发布的
