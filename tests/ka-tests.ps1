@@ -529,10 +529,18 @@ try {
         # tray offering Chinese menu items under an English header. Two halves, so two
         # assertions - whoever writes the file must fix its own process, and a process that only
         # ever reads it needs a way to push the new value in.
-        if ($env:KA_LANG) { Skip -Why 'KA_LANG 压过 config，这两条量的正是 config 那一路' }
+        #
+        # The first version of this test opened with `if ($env:KA_LANG) { Skip -Why ... }`, and
+        # this file pins $env:KA_LANG = 'zh' five lines above the suite body - so that guard
+        # skipped the test on *every* machine that ever ran it, CI included (run 36223375699,
+        # 2026-09-26, it appears in the skip list and never executed). A test that cannot run is
+        # not a cautious test, it is an absent one. The body now clears the override for its own
+        # duration and puts it back afterwards.
         $orig = Read-KaJson $paths.config
         $origCache = $script:KaUiLang
+        $origEnv = $env:KA_LANG
         try {
+            Remove-Item Env:KA_LANG -ErrorAction SilentlyContinue
             $r = Set-KaConfig -Patch @{ language = 'en' }
             Assert ($r -is [bool]) ("Set-KaConfig 的返回值不再是布尔，而是 [" + ($r -join ' ') + "]：加进成功流的任何东西都会把调用方的 if (-not (Set-KaConfig ...)) 变成跟数组比")
             Assert-Eq (Get-KaUiLanguage) 'en' '本进程刚写下的语言，下一个词典查询还在用旧语言'
@@ -546,12 +554,24 @@ try {
             Assert-Eq (Get-KaUiLanguage) 'zh' '没有谁推它，缓存却自己变了——那上面两条就白写了'
             Assert-Eq (Set-KaUiLanguage -Configured (Get-KaConfig)['language']) 'en' 'Set-KaUiLanguage 没把文件里的语言解析出来'
             Assert-Eq (Get-KaUiLanguage) 'en' '推进去之后 Get-KaText 还在用旧语言'
+
+            # The override has to survive the push, which is the whole reason Set-KaConfig calls
+            # Set-KaUiLanguage -Configured rather than -Explicit: with KA_LANG back in play, a
+            # config write resolves *through* it instead of overwriting it. Change that one word
+            # and the last assertion below is 'zh' - a documented escape hatch, killed by an
+            # ordinary dashboard click.
+            $env:KA_LANG = 'en'
+            [void](Set-KaConfig -Patch @{ language = 'zh' })
+            Assert-Eq (Get-KaConfig).language 'zh' '文件里没真的写成 zh，下面那条就没有任何东西被推过'
+            Assert-Eq (Get-KaUiLanguage) 'en' '一次 config 写入盖掉了 KA_LANG：Set-KaUiLanguage 被当成了 -Explicit 调用'
         } finally {
             # Restore the file and the cache: the tests after this one run in the same process,
             # and a leftover 'en' here would silently re-speak every later assertion.
             if ($orig) { [void](Write-KaJson $paths.config $orig -Depth 4) }
             else { [void](Write-KaJson $paths.config @{ version = 3 } -Depth 4) }
             $script:KaUiLang = $origCache
+            if ($null -eq $origEnv) { Remove-Item Env:KA_LANG -ErrorAction SilentlyContinue }
+            else { $env:KA_LANG = $origEnv }
         }
     }
 
