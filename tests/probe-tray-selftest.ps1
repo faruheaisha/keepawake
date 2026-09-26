@@ -21,8 +21,11 @@
          starts a worker and registers a scheduled task), so the one place a preset's number
          leaves the menu and enters the engine is read off the syntax tree instead: exactly one
          duration handler passing $this.Tag to -Minutes, exactly one interval handler writing
-         $this.Tag into antiLockIntervalSec, and no arithmetic anywhere near either. Three
-         in-memory sabotages must each be named; none of them starts a process.
+         $this.Tag into antiLockIntervalSec, and no arithmetic anywhere near either. Which
+         handlers read $this.Tag is *discovered* from the tree rather than taken from that list,
+         so a third handoff to some sink nobody thought of is named instead of skipped - the
+         way ka-lid once sat outside a hardcoded inventory. Five in-memory sabotages must each be
+         named, and the clean tree must name none; none of them starts a process.
       4. mut-frozen  - Refresh-State resolves the new language but never relabels. The pre-fix
          tray (English items under a header that just switched), and it is caught by the per-item
          fidelity check, which is the stricter of the two guards: the stale Chinese label no
@@ -163,7 +166,7 @@ if ($r.text -notlike '*SELFTEST OK*') { $p += 'no SELFTEST OK' }
 foreach ($need in @('SELFTEST lang=en', 'SELFTEST lang=zh', 'durations=5 intervals=4')) {
     if ($r.text -notlike ('*' + $need + '*')) { $p += ('missing "' + $need + '"') }
 }
-if ($r.text -like '*lang=skip*') { $p += 'the language half skipped, so legs 3 and 4 would have nothing to catch' }
+if ($r.text -like '*lang=skip*') { $p += 'the language half skipped, so the mutation legs would have nothing to catch' }
 $en = PresetOf $r.text 'en'; $zh = PresetOf $r.text 'zh'
 if (-not $en -or -not $zh) { $p += 'could not read the 30-minute preset label back out of both language lines' }
 elseif ($en -eq $zh) { $p += ('the 30-minute preset reads "' + $en + '" in both languages') }
@@ -199,11 +202,27 @@ function Get-HandoffProblem([string]$Text) {
     # An empty collection here would make every count assertion below true over nothing.
     if (-not $blocks.Count) { return @('ka-tray.ps1 has not one script block - this is not the tray source') }
     $problems = @()
+    $claims = @{}
     foreach ($h in $handoffs) {
         $mine = @($blocks | Where-Object { & $h.Pick $_ })
+        foreach ($m in $mine) { $claims[$m] = 1 + [int]$claims[$m] }
         if ($mine.Count -ne 1) { $problems += ($h.Name + ': ' + $mine.Count + ' click handlers, want exactly 1'); continue }
         foreach ($m in $h.Must) { if ($mine[0] -notlike ('*' + $m + '*')) { $problems += ($h.Name + ' handler no longer contains ' + $m) } }
-        if ($mine[0] -match '[*/]') { $problems += ($h.Name + ' handler does arithmetic on the Tag: ' + $mine[0].Trim('{ }')) }
+    }
+    # The set above is a claim about what the menu can hand to the engine. Discovering every
+    # handler that reads $this.Tag is what keeps a *third* one from being quietly unchecked -
+    # that is how ka-lid got missed, so the list is not allowed to be the only source here.
+    foreach ($t in @($blocks | Where-Object { $_ -like '*$this.Tag*' } | Select-Object -Unique)) {
+        if (-not $claims.ContainsKey($t)) { $problems += ('$this.Tag read by a click handler no sink rule here claims: ' + $t.Trim('{ }')) }
+        if ($claims.ContainsKey($t) -and $claims[$t] -gt 1) {
+            $problems += ('one click handler claimed by ' + $claims[$t] + ' sink rules: ' + $t.Trim('{ }'))
+        }
+    }
+    foreach ($h in $handoffs) {
+        $mine = @($blocks | Where-Object { & $h.Pick $_ })
+        if ($mine.Count -eq 1 -and $mine[0] -match '[*/]') {
+            $problems += ($h.Name + ' handler does arithmetic on the Tag: ' + $mine[0].Trim('{ }'))
+        }
     }
     return $problems
 }
@@ -217,6 +236,16 @@ $handoffCases = @(
        Sabotage = @('antiLockIntervalSec = [int]$this.Tag', 'antiLockIntervalSec = [int]$this.Tag * 60') }
     @{ Tag = 'duration no-Tag'; Want = 1; Expect = 'duration handler no longer contains $this.Tag'
        Sabotage = @('Start-Protect -Minutes ([double]$this.Tag)', 'Start-Protect -Minutes 30') }
+    # A new handoff the sink list does not know about must be named, not skipped over. It also
+    # un-claims the duration rule, so two problems is the honest expectation, not one.
+    @{ Tag = 'unknown sink'; Want = 2; Expect = 'no sink rule here claims'
+       Sabotage = @('Start-Protect -Minutes ([double]$this.Tag)', 'Set-KaSomething -Seconds ([double]$this.Tag)') }
+    # And the "exactly one" in the rule is an assertion, not a description: duplicate the handler
+    # and the second one has to be reported. Two identical lines are indistinguishable to the
+    # claim counter too, so the collision message is expected alongside it.
+    @{ Tag = 'duplicate'; Want = 2; Expect = 'duration: 2 click handlers'
+       Sabotage = @('    $item.Add_Click({ Start-Protect -Minutes ([double]$this.Tag) })',
+                    "    `$item.Add_Click({ Start-Protect -Minutes ([double]`$this.Tag) })`n    `$item.Add_Click({ Start-Protect -Minutes ([double]`$this.Tag) })") }
 )
 Write-Output '--- 3. the Tag -> engine handoff inside each click handler (AST; nothing is started)'
 foreach ($c in $handoffCases) {

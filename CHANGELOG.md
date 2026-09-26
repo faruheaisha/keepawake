@@ -164,6 +164,31 @@
 
 ## 未发布 / 下一步
 
+- **上一条那条腿自己也带着一份写死的清单——这是 `ka-lid` 那个错的第三种犯法**（2026-09-26，接上一条）。
+  上一条留下的点击交接判据点名了两处出口（duration 走 `-Minutes`、interval 走 `antiLockIntervalSec`），可
+  "菜单还能把数字交给谁"这件事如果是手写的，那第三个交接冒出来时没有任何东西会拦——跟当年 `ka-lid` 漏在
+  写死清单外是同一件事。改成先问语法树"**哪些**处理器读了 `$this.Tag`"，每一条都必须被某条 sink 规则认领，
+  认领不上就点名整段文字；再补两条破坏：把时长处理器改成 `Set-KaSomething -Seconds ([double]$this.Tag)`（陌生
+  出口）、把那一行原样复制一遍（重复出口）。
+  第一次跑出来红的是我自己的 harness，三处：
+  ① 复制出来的两行文本一模一样，发现循环遍历 `$blocks` 全体，于是同一句碰撞消息印了两遍——
+  `FAIL duplicate  problems=3 want 2`。**计数集合和点名集合不能互相污染**，发现集合要 `Select-Object -Unique`。
+  ② 拿线检去单独关掉 discovery 那根电线时，删掉一行之后子进程直接炸在
+  `elseif : The term 'elseif' is not recognized as the name of a cmdlet` 上——`if/elseif` 是一条链，
+  没法只拆一半。**判据要写成各自独立的 `if`**，否则"只关掉其中一条"这个实验根本不存在。
+  ③ 线检的驱动脚本又把已知那条教训犯了一遍：父进程 `$ErrorActionPreference='Stop'` 遇上子进程 `2>&1` 的
+  stderr 就当场终止，driver 死在第一个**本该红**的翻转上、后面几次全看不到（`NativeCommandError`）。把子调用
+  包成 `Continue` 之后才拿到全部六次翻转。
+  六次翻转实测（`_tmp/wire-check-t3.ps1`：只抠出这条腿和末尾的 exit-code 判断，跳过所有起进程的腿）：
+  `none exit=0 FAILlines=0`（干净树不报警）、把 `Expect` 改错 `exit=1`、把 `Want` 从 0 改成 5 `exit=1`、
+  把破坏锚点改成对不上的串 `exit=1` 并印 `sabotage anchor matched 0 times, want 1`、
+  **删掉 discovery 那行 → `FAIL unknown sink  problems=1 want 2`**、
+  **把"恰好一个"的判断关掉 → `FAIL duplicate  problems=1 want 2`**。后两条是这两根电线能红的证据，
+  前四条是它们没在搭便车的证据。
+  整条探针 `----- 1 run, 0 red`、`ok   probe-tray-selftest.ps1       62s`（本机，`-Probes -Only tray-selftest`），
+  五条破坏各点名自己、干净那棵树一条都点不出来。**仍然没覆盖的部分照旧说实话**：没有任何自动检查真的按过一次
+  托盘菜单，这条腿证明的是语法，不是"点一下能起 worker"。
+
 - **上一条那句"CI 一次也没跑过"从这一轮起是旧账；顺手审自己刚写的那条腿，审出两个 harness 骗我**
   （2026-09-26，接上一条）。先闭环：run `36227348476`（sha `74db958`，就是把探针接上去的那个提交）
   `conclusion=success`，`ok   probe-tray-selftest.ps1       25s`，整轮 `----- 23 run, 0 red`，runner 上
