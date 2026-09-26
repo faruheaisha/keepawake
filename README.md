@@ -246,9 +246,9 @@ tests/ka-ci.ps1     一条命令跑完上面五个门禁 + 全部探针（CI 和
 tests/ka-release-files.ps1
                     装了什么，只有一份清单——便携 zip、Inno 的暂存目录、探针拼的"刚下载的目录"、
                     CI 发布的三件套，全都从这一个函数取，不再各自抄一份
-tests/probe-*.ps1   17 个实测探针：迁移、互斥体标识、CLM、下载标记(MOTW)、32 位 PowerShell、
-                    区域文化、布尔配置、保存默认值、原生编译、全新解压时的数据根、面板句柄按端口分离，
-                    外加六个"自检"
+tests/probe-*.ps1   18 个实测探针：迁移、互斥体标识、CLM、下载标记(MOTW)、32 位 PowerShell、
+                    区域文化、布尔配置、保存默认值、原生编译、全新解压时的数据根、面板句柄按端口分离、
+                    托盘的 -SelfTest 到底有没有被谁执行过，外加六个"自检"
                     逐个跑法和本机判定见下方《独立门禁与实测探针》
 packaging/build.ps1
                     真正跑过的打包逻辑：按清单出 zip、校验 zip 里每个文件的字节数、
@@ -465,8 +465,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\ka-tests.ps1
 
 套件会先把 `config.json`、`intent.json`、`state.json`、`ka.log`、`.server.json` 备份，跑完在 `finally` 里还原，并停掉自己启动的 worker —— 中途崩了也不会让这台机器处于"意外被保护/意外没保护"的状态。同一段 `finally` 还会把**进程已经不在了**的面板句柄扫掉（含被强杀的测试面板留下的 `.server-<端口>.json`），但**pid 还活着的句柄一个都不碰**，所以你开着的面板不会因为这些测试而失联。已安装的看门狗计划任务也在同一段 `finally` 里停用并按捕获到的状态还原：看门狗每 10 分钟对账的就是这些测试正在改写的 `intent.json`/`state.json`，实测它会把自己启动的 worker 按 `reason=stopped` 收割掉，让两个测试看起来像产品 bug。
 
-当前状态：**静态 84 个 `It` 用例（部分内含用例表），最后一次全量实机运行是 2026-09-26 的 CI（run 36224674886，sha `f5b7960`）——套件自己印出 91 条判定行：通过 86，失败 0，跳过 5**。那次跑在 GitHub 的一次性 Windows runner 上（这就是本套件的既定跑法：不动任何人的真机器），5 条跳过全部署名机器形态：这台机器没有登记看门狗任务（`detail` 在两种语言下都只能为空，缓存文案无从比较）、虚机固件能力位与 `powercfg /a` 文本各说各话、近 14 天没有 506 低功耗会话事件（两条：真实日志无从验证、`Max=5` 撞不到预算）、全新数据根的 `ka.log` 里没有 `STARTED` 行。**每一条"跳过"都说得出"为什么这台机器验不了"，验得了的机器上牙齿原样保留**；换台真笔记本跑，它们会重新变红或变绿，而不是永远绿。
-第 6 条跳过不在这份名单里，它是当天查出来的另一个东西：**它排在跳过明细的第一行，用例名就是那第 84 条 `It`（"面板切了语言，活着的那个进程要能知道"），理由是 `KA_LANG` 压过 config——而 `KA_LANG` 正是这个套件在自己文件顶上钉死的**（`tests/ka-tests.ps1:57`，为了让那些比对中文原文的断言在英文机器上也不误红）。也就是说那条 `if ($env:KA_LANG) { Skip }` 在任何一台机器上都恒真，这条用例从来没执行过一次，CI 绿的是"它跳过了"这件事。一条长得和其他机器形态跳过一模一样的红字，就是洞藏身的地方。已改成**用例体内临时清掉再放回**（`try`/`finally` 各自复原文件、缓存与那个环境变量），并补三条断言钉住反面：`KA_LANG` 设着的时候一次 config 写入**不得**盖过它——这正是 `Set-KaConfig` 里那句 push 用 `-Configured` 而不是 `-Explicit` 的理由。改完量了六条腿（`_tmp/check-language-it.ps1`，只抽取 `It` 正文在独立子进程里跑，从不执行 `tests/ka-tests.ps1`；连跑两遍逐字节一致）：新正文在干净代码上**真的求值了 8 条断言**（不是"绿了"，是数出来的），旧正文在同一份代码上**求值 0 条并喊 skip**（把洞量化成一行数字），三个突变体各自点名不同的那一条——去掉写方的 push 死在第 2 条、把 push 改成 `-Explicit` 只死在最后一条（前面 7 条全绿，说明这条新断言是唯一防线）、让缓存自己失效死在第 4 条，另外 `1992a64^` 那份 ka-core 必须红。`grep -c "It '"` 的 84 是静态用例数，与判定行数不是一回事——这条规矩对它自己同样成立：引用哪次运行，就说哪次运行的数。上面那 86 属于 `f5b7960` 那一轮，也就是**修完之后**的那次 CI：这一条在那台 runner 上第一次印出 `PASS`（`gh run view 36224674886 --log` 里搜用例名，那行就在那 5 条 SKIP 之前），跳过名单回到剩下那 5 条机器形态。
+当前状态：**静态 84 个 `It` 用例（部分内含用例表），最后一次全量实机运行是 2026-09-26 的 CI（run 36225438637，sha `90438c3`）——套件自己印出 91 条判定行：通过 86，失败 0，跳过 5**。那次跑在 GitHub 的一次性 Windows runner 上（这就是本套件的既定跑法：不动任何人的真机器），5 条跳过全部署名机器形态：这台机器没有登记看门狗任务（`detail` 在两种语言下都只能为空，缓存文案无从比较）、虚机固件能力位与 `powercfg /a` 文本各说各话、近 14 天没有 506 低功耗会话事件（两条：真实日志无从验证、`Max=5` 撞不到预算）、全新数据根的 `ka.log` 里没有 `STARTED` 行。**每一条"跳过"都说得出"为什么这台机器验不了"，验得了的机器上牙齿原样保留**；换台真笔记本跑，它们会重新变红或变绿，而不是永远绿。
+第 6 条跳过不在这份名单里，它是当天查出来的另一个东西：**它排在跳过明细的第一行，用例名就是那第 84 条 `It`（"面板切了语言，活着的那个进程要能知道"），理由是 `KA_LANG` 压过 config——而 `KA_LANG` 正是这个套件在自己文件顶上钉死的**（`tests/ka-tests.ps1:57`，为了让那些比对中文原文的断言在英文机器上也不误红）。也就是说那条 `if ($env:KA_LANG) { Skip }` 在任何一台机器上都恒真，这条用例从来没执行过一次，CI 绿的是"它跳过了"这件事。一条长得和其他机器形态跳过一模一样的红字，就是洞藏身的地方。已改成**用例体内临时清掉再放回**（`try`/`finally` 各自复原文件、缓存与那个环境变量），并补三条断言钉住反面：`KA_LANG` 设着的时候一次 config 写入**不得**盖过它——这正是 `Set-KaConfig` 里那句 push 用 `-Configured` 而不是 `-Explicit` 的理由。改完量了六条腿（`_tmp/check-language-it.ps1`，只抽取 `It` 正文在独立子进程里跑，从不执行 `tests/ka-tests.ps1`；连跑两遍逐字节一致）：新正文在干净代码上**真的求值了 8 条断言**（不是"绿了"，是数出来的），旧正文在同一份代码上**求值 0 条并喊 skip**（把洞量化成一行数字），三个突变体各自点名不同的那一条——去掉写方的 push 死在第 2 条、把 push 改成 `-Explicit` 只死在最后一条（前面 7 条全绿，说明这条新断言是唯一防线）、让缓存自己失效死在第 4 条，另外 `1992a64^` 那份 ka-core 必须红。`grep -c "It '"` 的 84 是静态用例数，与判定行数不是一回事——这条规矩对它自己同样成立：引用哪次运行，就说哪次运行的数。上面那 86 属于 `90438c3` 那一轮（run 36225438637），也就是**修完之后**连续两次 CI 的第二次：`f5b7960` 与 `90438c3` 各印一次 86 / 5 / 0，判定行数没动过——第二次的全部改动是把一条躲在 `if ($running)` 里的断言挪到守卫外面，所以它只可能改变"红不红"，改变不了"跑了几条"。这一条在那台 runner 上第一次印出 `PASS`（`gh run view 36224674886 --log` 里搜用例名，那行就在那 5 条 SKIP 之前），跳过名单回到剩下那 5 条机器形态。
 
 ### 独立门禁与实测探针
 
@@ -480,7 +480,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\ka-ci.ps1 -Gates -Prob
                                                                              # （-Suite 是另一个入口，见上）
 ```
 
-| 文件 | 钉住什么 | 最近一次本机实跑末行（2026-09-04，`probe-iss` 为 09-05） |
+| 文件 | 钉住什么 | 最近一次本机实跑末行（多为 2026-09-04；`probe-iss` 09-05；`probe-tray-selftest` 09-26） |
 | --- | --- | --- |
 | `ka-encoding.ps1` | 每个 `.ps1` 都是 UTF-8 **带 BOM** 且 **纯 LF**（`.gitattributes` 锁了 `*.ps1 eol=lf`） | `all scripts carry a UTF-8 BOM and are LF-only` |
 | `ka-syntax.ps1` | 递归解析每个 `.ps1`，只解析不执行；能看见自己 | `all files parse clean` |
@@ -491,6 +491,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\ka-ci.ps1 -Gates -Prob
 | `probe-native.ps1` | 从 `ka-core.ps1` 里按 AST 抠出内嵌 C#，用同一个 csc 真编译，并核对产品调用的 15 个成员都在 | `... compiles, exposes all 15 members the product calls, and answers when run` |
 | `probe-culture.ps1` / `-mutation.ps1` | 7 种区域设置下机器可读通道不变味（小数点、佛历、数字替换）；再把三处修复改回旧写法要求它变红 | `machine-readable output holds across 7 cultures` / `all 4 assertions are red on the reverted code and green on the shipped one` |
 | `probe-clm-gate.ps1` | CLM 闸门的三条腿：静态接线、真降级后按代码 2 干净拒绝、去掉闸门必须炸在 `Add-Type` 上 | `9 cases green now, 7 red without the gate, 6 entry points gated before ka-core` |
+| `probe-tray-selftest.ps1` | **`ka-tray.ps1 -SelfTest` 那个主体有没有人真的跑过**（2026-09-26 查出来：CI 上唯一调它的是 `probe-clm-gate` 的 `tray/clm` 那条腿，而那条腿断的是闸门拒绝——`exit 2` 发生在 `-SelfTest` 主体（`ka-tray.ps1:411`）之前，所以主体一次也没执行过；同位置的 `ka-server.ps1 -SelfTest` 有套件那条 `It` 接着，托盘什么都没有）。八条腿、本机约 58 秒：先把"退出 0 却什么都没验"的形状钉成一条腿——`KA_LANG` 设着跑同一个入口，主体印 `SELFTEST lang=skip`、再印 `SELFTEST OK`、**照样 exit 0**（实测，不是设想），所以干净那条腿断的不是"OK 与退出码"而是两种语言各自真的渲染过（`presetDur en="30 min" zh="30 分钟"`）且菜单结构在（`durations=5 intervals=4`）；再三个突变体各红在自己的那条守卫上，同一棵树把注入关掉必须回绿。**谁红在哪条上是量出来的不是推的**：`frozen`（解析出新语言却不改菜单）原本按"该红在语言同文那条"写判据，harness 直接回 `died somewhere else`——文案保真更强，先把它抓走了；于是 `frozen`（菜单停在旧语言）与 `unit`（拿秒格式器去贴分单位的 Tag，就是当年那个 `30 分钟` 显示成 `30 秒`）同归文案保真管，就额外要求**这两条红字不许相同**（相同就说明其中一个在搭另一个的便车）；`nolang`（根本不重新读 config.json，标签和期望一起漂，文案保真看不见它）才归"两种语言不许同文"那条后备管 | `the tray self test body runs here for real - 1 skip shape pinned, 3 mutations each red on their own guard and green with the injection switched off` |
 | `probe-motw.ps1` / `-selftest.ps1` | 带 Zone.Identifier 的下载与不带的那份**输出逐行同形**，内嵌 C# 照样编译；`Expand-Archive` 实测不传播标记；自测用 CLM 注入一次真实阻塞证明它会红 | `a Zone-3 download of 23 files behaves exactly like an unmarked one...` / `catches a blocked native build on the marked leg and stays green when nothing is blocked` |
 | `probe-wow64.ps1` / `-selftest.ps1` | 32 位与 64 位 PowerShell 的逐项差分（37 项）；自测注入一个假的 32 位分歧，要求差分点名它、注入关掉必须回到绿。**2026-09-05 记录一次没查清的红**：整套扫描里 32 位那腿的 `ka.ps1 check` 回了 2、64 位回 0，而它前面和后面各跑一次都是绿的——当时**没法知道它为什么红**，因为子进程说的话只存在于两行之后就被删掉的临时文件里。所以现在失败的那一行会把子进程的原话带出来（`KA_DIAG_*`，刻意不参与差分，内容里全是路径和时间）。这条红的原因仍然未知，下次再出现就有证据了 | `32-bit and 64-bit PowerShell give 37 identical answers...` |
 | `probe-migrate.ps1` | 首次迁移：只填空缺、**永不覆盖**数据目录已有的文件 | `migration brings an old install forward without ever replacing a file the data root already has` |

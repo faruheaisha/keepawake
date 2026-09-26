@@ -164,6 +164,49 @@
 
 ## 未发布 / 下一步
 
+- **`ka-tray.ps1 -SelfTest` 那个主体，CI 一次也没跑过**（2026-09-26，接上两条）。先记账：上一条推上去之后
+  run `36225438637`（sha `90438c3`）全绿——门禁+探针 `----- 22 run, 0 red`，套件 `通过 86，失败 0，跳过 5`，
+  被挪出 `if ($running)` 的那半条在 runner 上印 `PASS`（用例名"英文界面上不会有中文：ka.ps1 status 的真实输出"）。
+  然后回头查上一条自己在托盘里加的那条"预设文字必须等于 Tag 真值"的检查到底由谁执行：`grep -rn ka-tray tests/`
+  当时只有四处——两份文件清单（`ka-release-files.ps1:16`、`probe-migrate.ps1:14`）、`probe-clm-gate.ps1` 的
+  `$entries` 数组、和 case `tray/clm`。其中**只有最后一处会真的启动一个托盘进程**，而那条腿断的是**闸门拒绝**
+  （`ok tray/clm exit=2 lines=4`），`exit 2` 发生在 `ka-gate.ps1` 调用处、远在 `-SelfTest` 主体（`ka-tray.ps1:411`）
+  之前。也就是说：**CI 上唯一会启动托盘自检的那条腿，恰恰是永远走不进自检主体的那条**。同一个位置上的
+  `ka-server.ps1 -SelfTest` 有套件那条 `It 'ka-server.ps1 -SelfTest 通过'` 接着，托盘什么都没有。上一条把
+  "第 84 条从来没执行过"当教训，两天后自己在另一个面上犯了同一件错——**"我改了一段能跑的检查"和"那段检查被跑过"
+  是两件事，后者要有进程证据。**
+  补了一条 `tests/probe-tray-selftest.ps1`（八条腿，本机约 58 秒）：
+  ① 先把"exit 0 不等于验过"这个形状钉成一条腿——`KA_LANG` 设着跑同一个入口，主体印
+  `SELFTEST lang=skip(KA_LANG outranks config by design)`、再印 `SELFTEST OK`、**照样 exit 0**（实测，不是设想）。
+  所以干净那条腿断的不是"OK 与退出码"，而是两种语言各自真的渲染过（`presetDur en="30 min" zh="30 分钟"`）、
+  菜单结构在（`durations=5 intervals=4`）。② 三个突变体各红在自己那条守卫上，且同一棵树把注入关掉必须回绿：
+  `frozen`（解析出新语言却不调 `Update-TrayLabels`）死在文案保真——`preset reads "30 分钟" but its Tag 30 min is
+  "30 min"`；`nolang`（根本不重新读 config.json）文案保真看不见它（标签和期望一起漂），只有"两种语言不许同文"
+  那条后备拦得住；`unit`（拿秒格式器去贴分单位的 Tag）就是当年那个 `30 分钟` 显示成 `30 秒`。
+  **这条腿的顺序是量出来的，不是推出来的**：`frozen` 一开始我按"它该红在语言同文那条上"写判据，harness 直接回
+  `died somewhere else, not on "kept their text across a language change"`——文案保真更强，先把它抓走了。于是
+  两条判据分开：`frozen`/`unit` 同归文案保真管，就额外要求**这两条红字不许相同**（相同就说明其中一个在搭另一个的
+  便车），`nolang` 才归后备管。顺带把"每棵突变树都要有注错关闭的对照"用满：八份 `ka*.ps1` 全量拷贝逐字节 sha256
+  核对，只有被注入的 `ka-tray.ps1` 允许不同，而且必须只差在被点上那几行——差多了就抛，不等结果出来再说"可能是副本的问题"。
+
+- **两条"红"都不是产品红，但各值一次记录**（2026-09-26，接上一条）。
+  ① 上一条的探针写完之后我起了**两条同时跑的** `tests/ka-ci.ps1 -Gates -Probes`：第一条在后台，我看它的输出文件是
+  空的就以为它停了，于是又开一条。两条都红，红得毫无道理：`ka-syntax.ps1` 在 `Get-Content` 一个
+  `_tmp\motw-run-<guid>\web\ka-core.ps1` 时报 `PathNotFound`（它递归扫全仓 `.ps1`，扫到一半被另一条的 `probe-motw`
+  把脚手架删了），`ka-privacy.ps1` 报 `ka-core.ps1:305 non-loopback URL literal:
+  https://telemetry.example.com/v1/event`——**而工作树里的 ka-core.ps1:305 是一行注释**，那条 URL 是
+  `ka-privacy-mutation.ps1` 注入进副本的诱饵，被另一条同时扫盘的门禁读了去。先钉"是不是产品真的坏了"：
+  `git status --porcelain` 只有我在改的那三个文件，`git diff HEAD -- ka-core.ps1 ka-lid.ps1 ka.ps1` 空——
+  **没有一个就地突变体没被还原**。教训落在流程上：门禁与探针**不可重入**，`_tmp/` 是共享的，而
+  `probe-culture-mutation` / `ka-privacy-mutation` 还会就地改真文件再还原，所以一台机器上同一时刻只允许一条 `ka-ci`；
+  后台任务"没有输出"不等于"已经结束"。
+  ② 单条重跑之后 `----- 23 run, 1 red`，唯一那条红是 `probe-mutex-identity.ps1` 自己拒绝下结论：
+  `FAIL control failed: the holder never got the mutex, so contention proves nothing (got=False) - 若这台机器正在防休眠，
+  先停掉再跑本探针`。原因在它自己的 B 段：那条腿拿**默认数据根**算互斥体名（为的就是证明"两个安装目录共用一个数据根
+  = 同一个互斥体"），算出来正是这台机器**正在跑的那份保护**占着的那个名字，对照组抢不到，于是它按设计拒绝——
+  不是回归，也不会偶发。**正在跑的保护是这台机器的用途本身，不会因为一条探针想绿就把它停掉**；这条在 CI 的一次性
+  runner 上每轮都是绿的（那里没有人在防休眠）。新增的 `probe-tray-selftest.ps1` 在这一轮里印 `ok 64s`。
+
 - **同一条规矩用到断言身上：躲在一个 `if ($running)` 里的那半条牙齿**（2026-09-26，接上一条）。上一条
   推上去之后 run `36224674886` 全绿，那条用例第一次印出 `PASS`（套件 `通过 86，失败 0，跳过 5`，跳过名单
   回到剩下 5 条机器形态；门禁+探针 `----- 22 run, 0 red`）。顺手把同一类洞在**整个套件与 17 条探针**里扫了
