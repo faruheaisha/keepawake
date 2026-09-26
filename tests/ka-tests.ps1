@@ -1270,10 +1270,15 @@ some-driver.sys   SYSTEM
         Assert ($out -notmatch 'Cannot convert|RuntimeException|FullyQualifiedErrorId|InvalidArgument:|ParentContainsErrorRecord') "status 输出里混进了 PowerShell 报错：$(($out -split "`n" | Where-Object { $_ -match 'Cannot convert|RuntimeException|FullyQualifiedErrorId|InvalidArgument:|ParentContainsErrorRecord' } | Select-Object -First 2) -join ' | ')"
         Assert ($out -match 'State\s+running|State\s+not running') "英文 status 没有跑起来：$(($out -split "`n" | Select-Object -First 3) -join ' / ')"
         $running = $out -match 'State\s+running'
+        # The bottom row is asserted on *both* branches, measured here on 2026-09-26: with an
+        # empty data root status still prints the Watchdog line (flags=0x… is the only part
+        # that genuinely needs a live worker). Behind an `if ($running)` guard it was a check
+        # that vanished exactly when the machine was not protecting - which is the half of the
+        # screen a user reads most often.
+        Assert ($out -match 'Watchdog\s') 'status 没渲染到底部（Watchdog 行缺失，中途抛异常？）'
         if ($running) {
             # 从 flags=0x… 一路到底部的 Watchdog 行，少一行就是中途崩了。
             Assert ($out -match 'flags=0x[0-9a-f]{8}') "状态行没画出标志位：$(($out -split "`n" | Select-Object -First 3) -join ' | ')"
-            Assert ($out -match 'Watchdog\s') 'status 没渲染到底部（Watchdog 行缺失，中途抛异常？）'
         }
         $pp = Get-KaPath
         $roots = @($pp.root, $pp.data, $pp.machineRoot) | Where-Object { $_ }
