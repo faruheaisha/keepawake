@@ -7,8 +7,8 @@
 > (your Windows user name is in it) or a timestamp — recorded locally, for you to read.
 
 **这个工具不收集任何东西。**没有遥测、没有统计、没有崩溃上报、没有"检查更新"、没有服务器、没有账号。
-产品代码里出现的**每一个 URL 字面量都是 `http://127.0.0.1:*`**（本地面板），这一点由 `tests/ka-privacy.ps1`
-在 CI 与本地把守，不是靠人承诺。
+产品代码里出现的**每一个 URL 都是 `http://127.0.0.1:*`**（本地面板）——包括由片段拼出来的那些，见下文；
+这一点由 `tests/ka-privacy.ps1` 在 CI 与本地把守，不是靠人承诺。
 
 下面把"写在磁盘上的每一个文件、每一个字段"列全。这是本机 `%LOCALAPPDATA%\KeepAwake` 与
 `%ProgramData%\KeepAwake` 在 2026-09-04 的实测内容，不是设计意图。
@@ -58,7 +58,7 @@
 
 ## 数据会不会离开这台机器
 
-不会，而且有三重结构性原因，不是"我们承诺不会"：
+不会，而且是结构性的原因，不是"我们承诺不会"：
 
 - **没有上报代码可跑。**整个产品里唯一的网络客户端调用是面板进程访问 `http://127.0.0.1:<port>` 的
   `stop` 握手。没有 `Invoke-WebRequest`/`WebClient`/`HttpClient` 指向任何非回环地址——由
@@ -68,6 +68,16 @@
   （`System.Net`、`Sockets`、`Net.Dns`、`WebRequest`、`certutil`/`bitsadmin`/`curl` 这类外部下载器、
   `winhttp`/`wininet`/`ws2_32` 这类 DLL 名），不是"想得出来的 API 清单"：用没见过的写法出网，也得先
   在那份闸门文件里登记过才行。
+- **不假设"URL 一定写得完整"。**`'http://' + 'collector.example' + '.com/submit'`、`'https:/'` 拼
+  `'/keystore.example.org/ping'` 这类由片段组成的目的地，会被先把相邻字面量接回去再读一遍；只写到
+  `://` 就断开的（`'http://' + $host`）直接按"读不出它要去哪儿"报。这些洞是 2026-09-26 用注入实测出来
+  的，旧那份闸门对同一份副本 `exit=0`。
+- **还有一条不需要联网 API 的通道：把地址交给 Windows shell。**`Start-Process 'telemetry.example.com/collect'`
+  里没有 scheme（浏览器自己补上 `http://`）、没有任何 `System.Net` 名字，规则 1~4 都够不着。所以规则 5
+  把成品里**每一处"交给 shell"的写法按文件数着登记**：实测 6 个文件 10 处，多一处就得在闸门里说清它开的是
+  什么。仍然拦不住的那种情况也写在闸门注释里而不是藏起来——已经在册的 10 处如果只把**参数**换成一个不带
+  scheme 的裸主机，行数不变、也没有 scheme 可读，这一层只能靠"面板 URL 是 `ka-core.ps1` 里唯一一个回环
+  字面量拼出来的"间接兜住。
 - **没有需要上传的东西。**不激活、不验授权、不比对版本号。
 - **离线可用。**断网、防火墙全拒、无网卡的情况下，起停、面板、看门狗、`evidence` 全部照常工作
   （面板只监听回环，本来就不需要网络出口）。

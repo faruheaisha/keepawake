@@ -164,6 +164,34 @@
 
 ## 未发布 / 下一步
 
+- **同一个病根第三次量出来：内容被拆开写、或者压根不需要内容可读**（2026-09-26，接上一条）。
+  上三条把"找什么名字"改成"管哪种通道"之后，剩下的问句是：**通道里的内容如果拼开来写呢？如果这条通道
+  根本不看内容呢？**实测（`_tmp/shell-open-check.ps1`：往暂存副本注 5 种写法，`git show HEAD:tests/ka-privacy.ps1`
+  那份旧闸门与改后的各跑一遍）——① 规则 1 的正则要求 `://` 后面**至少还有一个字符**，于是
+  `'http://' + 'collector.example' + '.com/submit'` 与 `'https:/'+'/keystore.example.org/ping'` 两种拼法
+  旧闸门**一个字都不报**（同一个副本 旧 `exit=0` / 新 `exit=1`），跟规则 4 那个 `'Access-' + 'Control-Allow-Origin'`
+  是同一个病：清单认得整词，认不得碎片；② 更空的一条是**把地址交给 Windows shell**：
+  `Start-Process 'telemetry.example.com/collect'` 没有 scheme（浏览器自己会补 `http://`）、没有任何
+  `System.Net` 名字，规则 1~4 全都够不着，旧闸门对着同一份副本 `exit=0`。这条不是虚构出来的假想敌——产品
+  自己就有两处这样打开面板（`ka.ps1`、`ka-tray.ps1` 的 `Start-Process $r.Url`）。
+  修法还是那一路：**①规则 1 每行读两遍**，第二遍先把相邻字面量之间的 `' + '` 接回去再接着读主机名，读出来的
+  主机照样必须回环；干净树实测 `rule 1: 12 URL literal(s), 0 only visible once adjacent literals are joined,
+  0 dangling scheme(s), hosts = 127.0.0.1 x11, localhost x1`——数字与改之前逐字相同，也就是**零误伤**（这条
+  要是不量，"加一遍归一化"完全可能悄悄把 `xmlns` 那两处豁免算成新洞）。只写到 `://` 就断开的
+  （`'http://' + $env:KA_COLLECT`，拼接帮不上忙）按"读不出它要去哪儿"直接报。**②新增规则 5**：能交给 shell
+  的写法是封闭集（`Start-Process`/`Invoke-Item`/`UseShellExecute`/`WScript.Shell`/`Shell.Application`/
+  `cmd /c start`/`explorer.exe`，加安装器的 `openurl`/`shellexec`），所以**不猜字符串长什么样，只按文件数行**：
+  实测 6 个文件 10 处，多一处就得在闸门里点名它开的是什么。弯路也记着：第一版把 `ka-test-install.ps1` 数成
+  3 处、干净树直接跑红，差的那一处是它自己的 docstring 写着"never with Start-Process -Wait"——注释不是代码
+  路径，于是补了 `<# #>` 状态机，10/10 才对上。
+  变异腿从 10 条加到 **14 条**，末尾四条**各只出 1 条 finding**：前三条注在 `ka-worker.ps1` 的普通赋值行
+  （那里没有任何 shell 写法，规则 5 全程沉默），最后一条反过来只有规则 5 开口——"这条腿量的就是这条规则"仍旧
+  是数出来的，不是我在注释里推的。本机 `----- 5 run, 0 red`、14 条腿全红、`MUTATION CHECK OK: all 14 defects
+  each red on their own rule, and the clean copy green`。**仍然拦不住的照旧写明白**（README/PRIVACY/闸门注释
+  三处都写了）：已经在册那 10 处如果只把**参数**换成一个不带 scheme 的裸主机，行数不变、也没有 scheme 可读，
+  这一层只能靠"面板 URL 是 `ka-core.ps1` 里唯一一个回环字面量拼出来的"间接兜。runner 上这一版的数字要等下次
+  push 之后才知道，在那之前上面这些是本机的。
+
 - **"扫的是哪些文件"也是同一份问句，只是升了一级：安装器从来没被扫过**（2026-09-26，接上一条）。
   上两条把"找什么名字"改成"管哪种通道"，改完立刻用同一个问句问自己：这条闸门的 `$files` 是怎么来的？
   答案是"顶层 `*.ps1` + `*.bat` + `dashboard/**`"——**`packaging/` 不在里面**，而 `KeepAwake.iss` 是下载者
@@ -182,9 +210,15 @@
   文件里），而规则 3 一言不发——**"别人会管"这件事现在也有腿替它作证**，不再是我在注释里推的。
   十条腿全红在各自规则上：`MUTATION CHECK OK: all 10 defects each red on their own rule, and the clean copy green`
   （上一条那句 `all 8 defects` 从这一轮起是旧账）。
-  **CI 的账也如实记**：`cc2a23f`（规则 2 那一版）那一轮被 workflow 并发**取消**了（我推 `4669f3c` 时它还在跑），
-  它验的文件集是 `4669f3c` 的子集，所以覆盖没丢、但那一版的 runner 数字拿不到；`4669f3c`（run `36231033681`）
-  的结果出来之前，上面这些数字都只是本机的。
+  **CI 的账也如实记，而且要记对**：`cc2a23f`（规则 2 那一版）那一轮被 workflow 并发**取消**了（我推 `4669f3c`
+  时它还在跑），它验的文件集是 `4669f3c` 的子集，所以覆盖没丢、但那一版的 runner 数字拿不到。而
+  `4669f3c`（run `36231033681`，`success`）在 runner 上打的是 `scanning 18 shipped files`、
+  `ok rule 4: 1 response header write(s), 0 CORS grant(s), names allowed = Cache-Control`、
+  `MUTATION CHECK OK: all 8 defects ...`——**那一版还没有安装器扫描**，所以它只能替规则 4 那一条作证，
+  上面"22 个文件 / 第九条腿"的数字不在它的账上（这句先前写得含糊，现在改准）。真正覆盖 `f6c1af6`+`82990e3`
+  的是 head `3d81f22`（run `36231766517`，`success`）：runner 上 `scanning 22 shipped files`、
+  `----- 23 run, 0 red`、`MUTATION CHECK OK: all 10 defects each red on their own rule, and the clean copy green`、
+  `通过 86，失败 0，跳过 5`。上面这些数字到这儿才不只是本机的。
 
 - **同一个洞在隔壁那条规则上又量出来一次：规则 4 只认 `Access-Control` 这一个字串**（2026-09-26，接上一条）。
   上一条讲的是规则 2 的"要去找的 API 名字"清单；改完之后顺手用同一个问法去问规则 4——"如果出网/发头
