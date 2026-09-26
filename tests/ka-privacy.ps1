@@ -12,8 +12,9 @@
          a new HTTP/socket/DNS helper - or a downloader named in an argument list - is a
          deliberate edit to this file, not an accident;
       3. the dashboard listener binds loopback prefixes only (no "+", "*", 0.0.0.0);
-      4. no response ever carries Access-Control-Allow-*, which is what makes the X-Ka-Client
-         header a real cross-origin boundary rather than a suggestion.
+      4. every response header the panel sets is named on an allow-list, and no Access-Control-*
+         is ever among them - that is what makes the X-Ka-Client header a real cross-origin
+         boundary rather than a suggestion;
 
     A comment mentioning a URL counts: this scans literals, and the honest reading of rule 1 is
     "no non-loopback URL appears in the shipped text at all". Loopback examples in prose are
@@ -200,25 +201,57 @@ if (-not (Test-Path -LiteralPath $srv)) {
     else { $ok += ("rule 3: {0} listener prefix(es), {1} non-loopback" -f $prefixes, $badPrefix) }
 }
 
-# ---- 4. CORS is never granted ----------------------------------------------------------
+# ---- 4. every response header that gets set is a known one ----------------------------
+# This rule used to look for one string being set: "Access-Control". Same flaw rule 2 shipped with,
+# found the same way - a header named in pieces ('Access-' + 'Control-Allow-Origin') and a header
+# nobody thought of (an X-Ka-Machine carrying %COMPUTERNAME%) both leave it silent. So the rule is
+# now about the *channel*: HttpListener has exactly three ways to set a response header
+# (Headers.Add, Headers.Set / Headers['Name'] =, AddHeader), which is a closed set, so enumerating
+# the writes is discovery rather than a list of things to look for. Every name written has to be
+# allow-listed here, and a name this gate cannot read is a finding instead of a skip - the same
+# choice rule 3 makes for an unparsable Prefixes.Add.
+# Measured 2026-09-26: shipped code writes exactly one header, ka-server.ps1:346 Cache-Control.
+# The typed properties (ContentType, ContentLength64, StatusCode) are not this channel and are not
+# policed here; reading a REQUEST header ($req.Headers['Host']) is not writing a response header.
+$hdrAllow = @('Cache-Control')
 $corsLines = 0
-# One pattern, three call shapes. Written double-quoted on purpose: inside a double-quoted
-# PowerShell string a single quote is literal and only the double quote needs escaping, which
-# is the one way to get both quote styles into a character class without ending the string.
-$corsPat = "(Headers\.Add\s*\(\s*|AddHeader\s*\(\s*|Headers\[\s*)['`"]Access-Control"
+$hdrSeen = 0
+$hdrAddPat = "(Headers\.(?:Add|Set)\s*\(\s*|AddHeader\s*\(\s*)"
 foreach ($f in $files) {
     $i = 0
     foreach ($line in (Get-Content -LiteralPath $f -Encoding UTF8)) {
         $i++
-        # A response header being *set*. Prose about Access-Control-Allow-* is allowed; an
-        # assignment is not, because that is what would open the /api/* surface to any origin.
-        if ($line -match $corsPat) {
+        $name = $null
+        $m = [regex]::Match($line, ($hdrAddPat + "(?<q>['`"])(?<n>[^'`"]+)\k<q>"))
+        if ($m.Success) { $name = $m.Groups['n'].Value }
+        else {
+            $m = [regex]::Match($line, "Headers\[\s*(?<q>['`"])(?<n>[^'`"]+)\k<q>\s*\]\s*=")
+            if ($m.Success) { $name = $m.Groups['n'].Value }
+        }
+        if ($null -eq $name) {
+            if (-not [regex]::IsMatch($line, $hdrAddPat) -and
+                -not [regex]::IsMatch($line, "Headers\[\s*[^'\]]+\]\s*=")) { continue }
+            $hdrSeen++
+            $fail += ("{0}:{1} sets a response header whose name this gate cannot read: {2}" -f `
+                      (Split-Path -Leaf $f), $i, $line.Trim())
+            continue
+        }
+        $hdrSeen++
+        if ($name -like 'Access-Control*') {
             $corsLines++
             $fail += ("{0}:{1} sets a CORS response header: {2}" -f (Split-Path -Leaf $f), $i, $line.Trim())
         }
+        elseif ($name -notin $hdrAllow) {
+            $fail += ("{0}:{1} sets response header '{2}'; the allow-list says {3}" -f `
+                      (Split-Path -Leaf $f), $i, $name, ($hdrAllow -join ', '))
+        }
     }
 }
-if (-not $corsLines) { $ok += 'rule 4: no Access-Control-Allow-* header is ever set' }
+if (-not $hdrSeen) {
+    $fail += 'rule 4: no response header write anywhere - either the panel sets none, or the pattern stopped matching'
+}
+$ok += ("rule 4: {0} response header write(s), {1} CORS grant(s), names allowed = {2}" -f `
+        $hdrSeen, $corsLines, ($hdrAllow -join ', '))
 
 foreach ($s in $ok) { Write-Host ("  ok   {0}" -f $s) }
 if ($fail.Count) {

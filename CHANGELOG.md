@@ -164,6 +164,28 @@
 
 ## 未发布 / 下一步
 
+- **同一个洞在隔壁那条规则上又量出来一次：规则 4 只认 `Access-Control` 这一个字串**（2026-09-26，接上一条）。
+  上一条讲的是规则 2 的"要去找的 API 名字"清单；改完之后顺手用同一个问法去问规则 4——"如果出网/发头
+  用的名字不在你的清单里呢？"。答案当场量出来（`_tmp/privacy-hole-check.ps1`，副本注两行进 `ka-server.ps1`）：
+  `$KaCors = 'Access-' + 'Control-Allow-Origin'; Headers.Add($KaCors, '*')` 与
+  `Headers.Add('X-Ka-Machine', $env:COMPUTERNAME)` 两种写法，**闸门都 exit=0**、一条 finding 都没有：
+  旧规则 4 是"三条调用形状 + 一个字串 `Access-Control`"，拼起来的头名不叫这个名字，陌生的头名它压根不关心。
+  前一个是 CSRF 边界被一句话换掉（面板是本机唯一对任意网页敞开的口，`X-Ka-Client` 那条防线整个失效而门禁全绿），
+  后一个是把机器名塞进响应头——`PRIVACY.md` 说"不发任何标识符"，而这条规则看不见任何非 `Access-Control` 的头。
+  改成管**通道**：`HttpListener` 能设响应头的写法只有 `Headers.Add` / `Headers.Set` / `Headers['…'] =` /
+  `AddHeader`，写法是封闭集，所以把每一处写入都枚举出来、每个头名都必须在册（今天在册的就一个
+  `Cache-Control`，实测 `ka-server.ps1:346`），`Access-Control*` 永远不许在册，**名字读不出来的写法按最坏情况报**
+  （跟规则 3 对读不懂的 `Prefixes.Add` 的处理一模一样：宁可红，不许静默跳过）。读请求头不算设响应头
+  （`$req.Headers['Host']` 那四处是这个产品的正经防线，不能被这条规则误伤）。
+  量出来的两面：干净树 `rule 4: 1 response header write(s), 0 CORS grant(s), names allowed = Cache-Control`
+  照旧 exit=0；两份注入副本分别
+  `ka-server.ps1:346 sets a response header whose name this gate cannot read: ...` 与
+  `ka-server.ps1:346 sets response header 'X-Ka-Machine'; the allow-list says Cache-Control`，`exit=1`。
+  变异腿加到八条（一次一个缺陷、每个缺陷只准点名自己改过的文件），上一条那句 `all 6 defects` 从这一轮起是旧账：
+  `MUTATION CHECK OK: all 8 defects each red on their own rule, and the clean copy green`，门禁
+  `----- 5 run, 0 red`。**这条规则的边界**：管的是响应头通道，不管 `ContentType` / `StatusCode` 这些强类型属性
+  （那里塞不进任意头名）；至于 `HttpListener` 自己默认带出去的 `Server:` 头，那是内核的行为，不在源码文本里。
+
 - **隐私闸门 rule 2 的 fail-open：这次不是"清单会过期"，是"清单本来就漏"**（2026-09-26，接上一条）。
   前三条讲的是检查内部的手写清单——风险在"将来"。这一条是**今天就摸得到的洞**，而且摸它的是产品对用户
   的头号承诺（`PRIVACY.md`：数据不会离开这台机器）。`tests/ka-privacy.ps1` 规则 2 原来拿一份**要去找的

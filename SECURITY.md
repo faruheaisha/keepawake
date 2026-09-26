@@ -17,7 +17,11 @@
 - **只绑回环**：`ka-server.ps1` 的 `Prefixes.Add` 只有 `http://127.0.0.1:<port>/` 与 `http://localhost:<port>/`
   两种，**没有** `+`、`*` 或 `0.0.0.0`。局域网与互联网不可达，不需要防火墙规则。
   这条由 `tests/ka-privacy.ps1` 规则 3 把守，配 `tests/ka-privacy-mutation.ps1` 证明它真会红。
-- **不发出 `Access-Control-Allow-*`**：服务端代码里没有任何一处设置 CORS 响应头（规则 4 扫描三种写法）。
+- **不发出 `Access-Control-Allow-*`**：服务端代码里没有任何一处设置 CORS 响应头。规则 4 盯的不是
+  "Access-Control 这个字串有没有出现"，而是**响应头通道本身**：`Headers.Add` / `Headers.Set` /
+  `Headers['…'] =` / `AddHeader` 四种写法每一处都要被点名，头名必须在那份闸门文件的在册清单里
+  （今天只有一个 `Cache-Control`），头名是拼出来、读不出来的同样报——把 `'Access-' + 'Control-Allow-Origin'`
+  这种写法挡在册外，靠的是"它必须得经过这四个口子之一"。
 - **任意网页能不能替你改电源设置？** 这是本地端口最现实的威胁：浏览器里打开的一个恶意页面完全可以
   `fetch('http://127.0.0.1:8791/api/start')`。挡它的是两条请求头规则：
   1. `/api/*` 必须带自定义头 `X-Ka-Client: ka-dashboard`。跨源页面发不出这个头——浏览器会先发 CORS

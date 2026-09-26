@@ -64,6 +64,15 @@ $defects = @(
     @{ Name = 'the CSRF boundary traded away'; File = $srv; Anchor = '$res.StatusCode = $Status'
        Line = '$res.Headers.Add("Access-Control-Allow-Origin", "*")'
        Want = @('sets a CORS response header') }
+    # The two legs below are what rule 4 used to miss (measured 2026-09-26, same shape as the two
+    # composed-host legs above): a header name assembled out of pieces, and a header name that was
+    # never imagined because the rule only ever looked for one string.
+    @{ Name = 'a CORS header built out of pieces'; File = $srv; Anchor = "`$Ctx.Response.Headers.Add('Cache-Control', 'no-store')"
+       Line = "`$KaCors = 'Access-' + 'Control-Allow-Origin'; `$Ctx.Response.Headers.Add(`$KaCors, '*')"
+       Want = @('sets a response header whose name this gate cannot read') }
+    @{ Name = 'an unknown header carrying the machine name'; File = $srv; Anchor = "`$Ctx.Response.Headers.Add('Cache-Control', 'no-store')"
+       Line = "`$Ctx.Response.Headers.Add('X-Ka-Machine', `$env:COMPUTERNAME)"
+       Want = @("sets response header 'X-Ka-Machine'") }
 )
 
 $fail = @()
