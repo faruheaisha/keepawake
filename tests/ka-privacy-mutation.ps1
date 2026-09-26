@@ -85,6 +85,13 @@ $defects = @(
     @{ Name = 'an update check in the installer'; File = 'packaging\KeepAwake.iss'; Anchor = 'OutputDir={#OutDir}'
        Line = 'Filename: "https://update.example.com/v1/check"; Description: "Check for updates"; Flags: shellopen nowait'
        Want = @('non-loopback URL literal: https://update.example.com/v1/check') }
+    # Rule 3 reads one file: ka-server.ps1. The claim that a listener appearing somewhere else still
+    # gets caught is measured here rather than reasoned about - rule 2 names the type in the new file
+    # and rule 1 reads the prefix literal, and rule 3 says nothing, which the wants below encode.
+    @{ Name = 'a second listener, in another file'; File = $worker; Anchor = 'while ($true) {'
+       Line = '    $KaStray = New-Object System.Net.HttpListener; $KaStray.Prefixes.Add("http://+:$Port/"); $KaStray.Start()'
+       Want = @('non-loopback URL literal: http://+:$Port/',
+                "rule 2: network API 'HttpListener' used by ka-worker.ps1") }
 )
 
 $fail = @()

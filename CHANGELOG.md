@@ -175,8 +175,13 @@
   A/B 拿旧那份闸门对照（`git show 4669f3c:tests/ka-privacy.ps1`）：同一个注入副本 **旧 exit=0、新 exit=1**，
   `rule 1: 13 URL literal(s), hosts = 127.0.0.1 x11, localhost x1, update.example.com x1`，
   finding 原话 `KeepAwake.iss:66 non-loopback URL literal: https://update.example.com/v1/check (host=update.example.com)`；
-  扫描面从 18 个文件变成 22 个，干净树照旧 `PRIVACY GATE OK`。九条腿全红在各自规则上：
-  `MUTATION CHECK OK: all 9 defects each red on their own rule, and the clean copy green`。
+  扫描面从 18 个文件变成 22 个，干净树照旧 `PRIVACY GATE OK`。再补第十条腿，量的是**规则之间的接力**而不
+  是单条规则：规则 3 按文件名只读 `ka-server.ps1`，那么"监听器出现在别的文件里"到底谁来拦？往
+  `ka-worker.ps1` 的副本里塞一个 `New-Object System.Net.HttpListener` + `Prefixes.Add("http://+:$Port/")`，
+  实测三条 finding（规则 1 读出 `http://+`、规则 2 两次点名 `HttpListener`/`System.Net` 出现在不该出现的
+  文件里），而规则 3 一言不发——**"别人会管"这件事现在也有腿替它作证**，不再是我在注释里推的。
+  十条腿全红在各自规则上：`MUTATION CHECK OK: all 10 defects each red on their own rule, and the clean copy green`
+  （上一条那句 `all 8 defects` 从这一轮起是旧账）。
   **CI 的账也如实记**：`cc2a23f`（规则 2 那一版）那一轮被 workflow 并发**取消**了（我推 `4669f3c` 时它还在跑），
   它验的文件集是 `4669f3c` 的子集，所以覆盖没丢、但那一版的 runner 数字拿不到；`4669f3c`（run `36231033681`）
   的结果出来之前，上面这些数字都只是本机的。

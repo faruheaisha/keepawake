@@ -182,6 +182,10 @@ foreach ($must in @('Invoke-WebRequest', 'System.Net')) {
 $ok += ("rule 2: network APIs in shipped code = {0}" -f (($hits.Keys | Sort-Object) -join ', '))
 
 # ---- 3. the listener binds loopback only ----------------------------------------------
+# This rule reads one file by name. A listener that appeared somewhere else is not invisible:
+# rule 2 catches the type in a file that never had it, and rule 1 reads the prefix literal -
+# measured, not reasoned, by the 'a second listener, in another file' leg of
+# tests/ka-privacy-mutation.ps1.
 $srv = Join-Path $Root 'ka-server.ps1'
 if (-not (Test-Path -LiteralPath $srv)) {
     $fail += 'rule 3: ka-server.ps1 is missing, so the bind surface cannot be checked'
