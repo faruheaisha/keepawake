@@ -87,10 +87,11 @@ $taskkill = Join-Path $env:windir 'System32\taskkill.exe'
 $selected = @()
 if (-not ($Gates -or $Probes -or $Suite)) { $Gates = $true; $Probes = $true }
 if ($Gates) {
-    # ka-release-files.ps1 is a manifest (it prints a list), ka-tests.ps1 is the suite and
-    # ka-ci.ps1 is this script - none of them is a gate, and globbing them would be a loop.
+    # ka-release-files.ps1 is a manifest (it prints a list), ka-procwalk.ps1 is the library of
+    # functions for the leftover walk (dot-sourced below, never run on its own), ka-tests.ps1 is the
+    # suite and ka-ci.ps1 is this script - none of them is a gate, and globbing them would be a loop.
     $selected += @(Get-ChildItem -LiteralPath $here -Filter 'ka-*.ps1' -File |
-        Where-Object { $_.Name -notmatch '^(ka-release-files|ka-tests|ka-ci)\.ps1$' } |
+        Where-Object { $_.Name -notmatch '^(ka-procwalk|ka-release-files|ka-tests|ka-ci)\.ps1$' } |
         Sort-Object Name)
 }
 if ($Probes) { $selected += @(Get-ChildItem -LiteralPath $here -Filter 'probe-*.ps1' -File | Sort-Object Name) }
@@ -98,93 +99,15 @@ if ($Suite) { $selected += @(Get-Item -LiteralPath (Join-Path $here 'ka-tests.ps
 if ($Only) { $selected = @($selected | Where-Object { $_.Name -match $Only }) }
 if (-not $selected.Count) { Write-Host 'nothing selected - check the -Only pattern'; exit 1 }
 
-function Get-ProcessRows {
-    # 155 ms median measured on this host with the three properties below, against 278 ms for the
-    # same query without Name and 192 ms for the unprojected table (6 samples each, 402 rows).
-    # Name is in the projection because the walk below needs to recognise a console host.
-    @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, Name -ErrorAction SilentlyContinue)
-}
-
-# conhost.exe (23 of the 402 rows on this host at rest) and OpenConsole.exe are pseudo-console
-# hosts Windows starts for a process that gets its own window station. They die with the session
-# they were made for, hold no port, no power request and no file handle, and in the one fixture
-# that leaks on purpose they showed up next to the leftover that caused them. Asserting on them
-# would only add a way for a clean run to go red by accident. The blind spot this opens is small
-# and named: a console host orphaned by a parent that died between two samples is dropped unseen.
-$consoleHosts = @('conhost.exe', 'OpenConsole.exe')
-
-function Get-LeakedDescendants([int]$RootId, [hashtable]$History, [hashtable]$Names) {
-    # Walk UP from everything alive now, through a pid->ppid history, instead of down from the
-    # child that is already gone. Down is blind here: the leftover that hung CI was a browser whose
-    # whole ancestry - cmd, ka.ps1, the panel's powershell - had exited before anyone looked, and
-    # Windows keeps no record of a dead process's parent. Up through the history reaches it.
-    # Blind spot, stated rather than hidden: a process born and buried between two samples leaves
-    # no entry, so its own child is invisible to this walk.
-    $out = @()
-    foreach ($r in @(Get-ProcessRows)) {
-        $pidNow = [int]$r.ProcessId
-        if ($consoleHosts -contains [string]$r.Name) { continue }
-        $up = $pidNow
-        for ($i = 0; $i -lt 40; $i++) {
-            if (-not $History.ContainsKey($up)) { break }
-            $up = [int]$History[$up]
-            if ($up -eq $RootId) { $out += $pidNow; break }
-            if ($up -eq 0) { break }
-        }
-    }
-    return @($out | Sort-Object -Unique)
-}
-
-function Get-OwnLeftovers([int[]]$ProcIds, [datetime]$BornNoEarlierThan, [datetime]$BornNoLaterThan) {
-    # A pid is a recycled number, and this walk was fooled from both directions.
-    #  - tests/probe-ci-harness.ps1 caught it naming wps.exe and wpscloudsvr.exe - the user's office
-    #    suite - as a test script's descendants: their parent pid was one of ours from before ours
-    #    died, and the history still had that mapping. Nothing born after this leg's child was seen
-    #    to exit can be its descendant, so $BornNoLaterThan drops them.
-    #  - a local -Gates -Probes run (_tmp/ci-gates-probes-run1.log) named pid 21688, the machine's
-    #    own running worker, as a leftover of probe-server-hint.ps1. Same hazard, other direction: a
-    #    process older than the leg whose parent slot was reused by the cmd this leg started. The
-    #    upper bound alone cannot see that, because a long-lived process satisfies 'born no later
-    #    than the exit' by definition, so a descendant needs a lower bound as well - nothing that
-    #    predates the leg can have been left behind by it.
-    # $BornNoLaterThan is the moment the poll noticed the exit, not the exit itself: measured here,
-    # a non-waited Start-Process object answers $null (without throwing) for ExitTime and ExitCode
-    # once the child is gone, so there is nothing better to use. The gap is the poll's own 200 ms.
-    # The window is deliberately generous at the edges: a process whose start time cannot be read
-    # (access denied, or a protected service) is kept, because losing a real leftover is worse than
-    # a red that names something for a human to go look at.
-    $keep = @()
-    foreach ($id in $ProcIds) {
-        $proc = Get-Process -Id $id -ErrorAction SilentlyContinue
-        if (-not $proc) { continue }
-        try {
-            if ($proc.StartTime -gt $BornNoLaterThan) { continue }
-            if ($proc.StartTime -lt $BornNoEarlierThan) { continue }
-            $keep += [int]$proc.Id
-        } catch {
-            $keep += [int]$proc.Id
-        }
-    }
-    return @($keep)
-}
-
-function Format-Leftovers([int[]]$ProcIds, [hashtable]$Names) {
-    # Nothing to name returns an empty array, not '': an empty string inside @() is one element,
-    # and 'left 1 descendant(s) alive: ' with nothing after the colon is exactly what it printed
-    # on the first fixture run. Only a pid present in $History can be reported, and both maps are
-    # filled from the same rows, so $Names has a name for everything printed.
-    if (-not $ProcIds.Count) { return @() }
-    return @(foreach ($id in $ProcIds) { ('{0}:{1}' -f $id, $Names[$id]) })
-}
-
-function Update-ProcessHistory([hashtable]$History, [hashtable]$Names) {
-    # One query fills both maps: pid->ppid is what the walk crosses, pid->name is what it prints.
-    foreach ($r in @(Get-ProcessRows)) {
-        $History[[int]$r.ProcessId] = [int]$r.ParentProcessId
-        $Names[[int]$r.ProcessId] = [string]$r.Name
-    }
-}
-
+# The process walk lives in its own file so tests/probe-procwalk.ps1 can drive it directly: it is
+# the subtlest logic in this runner and it has been fooled three times - the last one by a pid that
+# had been handed to a Windows telemetry process (svchost.exe / CompatTelRunner.exe named as a
+# probe's descendants, runs 36440936247 and 36443663108). It defines functions, it is not a gate,
+# which is also why it is excluded from the gate glob above.
+# $PSScriptRoot, not $here: -Dir points the *selection* at one-off fixtures (that is how
+# tests/probe-ci-harness.ps1 drives the shipped runner), and the library is not there. Measured:
+# 'The term ...\_tmp\ci-harness-fixtures\ka-procwalk.ps1 is not recognized'.
+. (Join-Path $PSScriptRoot 'ka-procwalk.ps1')
 $bad = @()
 
 function Invoke-Leg([object]$f) {
@@ -208,25 +131,26 @@ function Invoke-Leg([object]$f) {
     $exited = $false
     $hist = @{ }
     $names = @{ }
+    $born = @{ }
     $nextSample = 0.0
     $seenAt = $null
     while ($sw.Elapsed.TotalSeconds -lt $TimeoutSec) {
         if ($child.HasExited) { $exited = $true; $seenAt = Get-Date; break }
         if ($sw.Elapsed.TotalMilliseconds -ge $nextSample) {
-            Update-ProcessHistory $hist $names
+            Update-ProcessHistory $hist $names $born
             $nextSample = $sw.Elapsed.TotalMilliseconds + 2000
         }
         Start-Sleep -Milliseconds 200
     }
-    Update-ProcessHistory $hist $names
+    Update-ProcessHistory $hist $names $born
     if (-not $seenAt) { $seenAt = Get-Date }
-    $leftIds = @(Get-OwnLeftovers @(Get-LeakedDescendants $childPid $hist $names) $legBorn $seenAt)
+    $leftIds = @(Get-OwnLeftovers @(Get-LeakedDescendants $childPid $hist $names $born) $legBorn $seenAt)
     if (-not $exited) {
         & $taskkill '/T' '/F' '/PID' $childPid 2>&1 | Out-Null
         Start-Sleep -Milliseconds 400
         $seenAt = Get-Date
-        Update-ProcessHistory $hist $names
-        $leftIds = @(Get-OwnLeftovers @(Get-LeakedDescendants $childPid $hist $names) $legBorn $seenAt)
+        Update-ProcessHistory $hist $names $born
+        $leftIds = @(Get-OwnLeftovers @(Get-LeakedDescendants $childPid $hist $names $born) $legBorn $seenAt)
     }
     $sw.Stop()
     $tag = '{0,-26} {1,5:0}s' -f $f.Name, $sw.Elapsed.TotalSeconds

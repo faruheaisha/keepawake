@@ -42,7 +42,13 @@ $root = Split-Path -Parent $here
 $ps = Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $probe = Join-Path $here 'probe-ci-harness.ps1'
 $src = Join-Path $here 'ka-ci.ps1'
-$mut = Join-Path $root ('_tmp/ka-ci-mutant-' + $PID + '.ps1')
+# The mutant lives in its own directory with a copy of the walk library beside it. ka-ci.ps1
+# dot-sources tests/ka-procwalk.ps1 from $PSScriptRoot, so a copy sitting alone in _tmp dies on that
+# line (measured: 'The term ...\_tmp\ka-procwalk.ps1 is not recognized') and the control leg would go
+# red for a reason that has nothing to do with the sabotage. A per-pid directory rather than a shared
+# filename, so two sweeps on one machine cannot delete each other's subject mid-leg.
+$mutDir = Join-Path $root ('_tmp/ci-harness-mutant-' + $PID)
+$mut = Join-Path $mutDir 'ka-ci-mutant.ps1'
 
 # Arm 1: the leftover report, blind.
 $anchorBlind = '    if ($left.Count -gt 0) {'
@@ -60,7 +66,8 @@ $body = $text.Replace($anchorBlind, $injectBlind).Replace($anchorOld, $injectOld
 if ($body -eq $text) { throw 'no sabotage was applied' }
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $mut) | Out-Null
 [IO.File]::WriteAllText($mut, $body.Replace("`r`n", "`n"), (New-Object Text.UTF8Encoding($true)))
-Write-Output ('mutant written: ' + (Split-Path -Leaf $mut) + ' (+' + (([IO.File]::ReadAllLines($mut)).Count - ([IO.File]::ReadAllLines($src)).Count) + ' lines, 2 arms)')
+Copy-Item -LiteralPath (Join-Path $here 'ka-procwalk.ps1') -Destination (Join-Path $mutDir 'ka-procwalk.ps1') -Force
+Write-Output ('mutant written: ' + (Split-Path -Leaf $mut) + ' (+' + (([IO.File]::ReadAllLines($mut)).Count - ([IO.File]::ReadAllLines($src)).Count) + ' lines, 2 arms), with the walk library copied beside it')
 
 function Run-Probe([hashtable]$Env, [string]$Sub) {
     # The whole probe, as its own process, against the sabotaged copy. -Wait is safe here: every
@@ -104,7 +111,7 @@ $intact = Run-Probe @{ SABOTAGE = ''; OLDPID = '' } 'control-intact'
 Write-Output ('--- the same copy with both arms switched off: exit=' + $intact.Exit +
     $(if ($intact.Text -match 'PROBE OK') { ', PROBE OK' } else { ', no verdict' }))
 
-Remove-Item -LiteralPath $mut -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $mutDir -Recurse -Force -ErrorAction SilentlyContinue
 
 # ---- arm 1: the two leaking legs must be the only things that move. Naming them matters: a probe
 # that goes red for a reason unrelated to the weakening would leave the leftover check untested.
