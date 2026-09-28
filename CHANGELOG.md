@@ -167,7 +167,10 @@
 - **面板归属按数据根认，不再按程序目录认**（2026-09-28，#69）。这条是拿一次真实事故换来的：一个只把
   `KA_DATA` 指到 `_tmp` 的临时脚本，仍旧按**程序目录**把用户自己的面板认成了"我们的"，从它的命令行
   读出端口，POST 了 `/api/server/stop`，面板礼貌地照办——`ka.log` 里那行是
-  `2026-09-27 01:12:47  SERVER EXIT pid=28208`（现在跑的是恢复后的 pid 724 / 8791，`/api/ping` 200）。
+  `2026-09-27 01:12:47  SERVER EXIT pid=28208`（当时恢复成 pid 724；那台机器 2026-09-28 16:58 重启后
+  又换成 pid 2044，都在 8791、`/api/ping` 200。**那次重启与本修复无关**：`LastBootUpTime` 就是那个时刻，
+  ka.log 最后一行的 `2026-09-27 02:48:26` 是重启之前的，而两个看门狗任务处于禁用状态，所以重启之后没有
+  任何东西把保护拉回来——本机现在是我在验证通过之后手动 `ka.bat start` / `serve` 拉起来的）。
   改法三处：`Get-KaServer` 的 `Ours` = 我们数据根里的句柄 **或** 命令行 `-DataDir` 等于我们的数据根
   （`ka-core.ps1:2562`）；`Stop-KaServer` 与 `Start-KaServer` 只吃 `.Ours`（`ka-core.ps1:2590`、`2645`）；
   停机请求只发给**有凭据的端口**——句柄写了端口，或那个进程的命令行带 `-Port`，不再退回"我本来会用的
@@ -183,7 +186,12 @@
   而**CI 的裸跑形状（六臂 + 对照，七次）本机实测 435 秒**，就在整轮 `-Gates -Probes` 的 transcript 里
   （`_tmp/ci-gates-probes-run3.log` 的 `ok probe-server-hint-selftest.ps1 435s`；同一轮 `ok
   probe-server-hint.ps1 76s`、`----- 27 run, 0 red`、26m38s）——比每臂 74 秒的算术更小，与已在 CI 的
-  `probe-bat-entry-selftest.ps1`（README 记的 8m35s = 515 秒）同级、都在 `ka-ci.ps1` 每脚本 600 秒的线下；
+  `probe-bat-entry-selftest.ps1`（README 记的 8m35s = 515 秒）同级、都在 `ka-ci.ps1` 每脚本 600 秒的线下。
+  **runner 上的真数字**（run `36437907563`，job `108980501614`，整 job **21m42s 全绿**）：
+  `ok probe-server-hint.ps1 50s`、`ok probe-server-hint-selftest.ps1 392s`——比本机还快一点，600 秒那条线
+  上留了 200 秒余量。同一轮顺带把另一件事结掉了：上一版（`ef62ad1`）的 CI 红在
+  `left 8 descendant(s) alive: 1052:msedge.exe, …`，这一版的 job 日志里 `msedge` 出现 **0 次**，
+  `KA_NO_BROWSER` 那条修复由 runner 的留口检查本身证明。
 - **这条探针自己挂死过一回，成因与 #65 同一个**（2026-09-28）。`Invoke-Child` 原先用
   `Start-Process -Wait`，而 .NET 的 `WaitForExit()` 等的是被重定向的 stdout 管道到 EOF：`claim` 臂下
   第 7 条腿的 `serve` 会真的起一个面板，那个孙进程继承了写端，EOF 永远不来。实测卡住九分钟
