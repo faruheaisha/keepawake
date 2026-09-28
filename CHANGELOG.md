@@ -164,6 +164,39 @@
 
 ## 未发布 / 下一步
 
+- **一次假红：`ka-ci` 的留口归属把一个系统进程算成了探针的后代**（2026-09-28，观测，未修）。run
+  `36440936247`（只改文档的 `71b5b4d`）以 `----- 27 run, 1 red` 结束，那一红是
+  `RED probe-encoding-selftest.ps1 returned but left 1 process(es) alive: 4344:CompatTelRunner.exe`——
+  而那个探针自己印的是 `PROBE OK`。`CompatTelRunner.exe` 是 Windows 的兼容性遥测进程（由系统计划任务
+  拉起），与探针没有任何关系。年龄窗排不掉它（它确实出生在这一腿的窗口内），所以错判只能来自那段
+  "从每个活进程往上爬 pid→ppid 历史"的走法：`$History` 每 2 秒按当时的值重填、从不做代际校验，一个
+  在一次 ~20 分钟运行里被回收的 pid 可以让链条凭巧合落到这一腿的 cmd pid 上。`ka-ci.ps1` 那两处注释
+  已经记着同一类的两次加固（wps/office 套件、本机自己的 worker），conhost/OpenConsole 是明着跳过的。
+  **代价是一个完整的 CI 周期**——这一步红的语义就是"产品或测试错了"，而这次两者都对。已在
+  `gh run rerun --failed` 重跑确认是否可复现；修法（只用**活着的**父链归属、死的尾巴才回落到历史，
+  并且要给 `probe-ci-harness.ps1` 加一条"窗口内出生的系统进程**不许**被点名"的对照腿）写在任务清单里，
+  因为它必须先证明"不会开始漏掉真的留口"才许落地。
+
+- **`probe-native` 的突变腿不再藏在开关后面**（2026-09-28，#68）。`ka-ci.ps1 -Probes` 按 glob 跑
+  `tests/probe-*.ps1` 且**每个都不带参数**，所以凡是把自检藏在 `[switch]$SelfTest` 后面的探针，那部分
+  代码在自动化里从来没执行过——上一行那个"内嵌 C# 与产品调用成员对得上"的绿，因此没有证明它**会不会红**。
+  `probe-native` 这条改成普通运行在绿完之后**自己带 `-SelfTest` 起一个子进程**，要求那个孩子印出
+  `PROBE OK (self-test):`；孩子只改内存里编译出来的副本、把产品调用的某个 public 成员改名，覆盖检查必须
+  **点名**它（本机实测：`renaming GetPowerCapabilitiesRaw is caught: [Ka.Native]::GetPowerCapabilitiesRaw
+  is called by the product but does not exist on the compiled type`）。代价近乎为零：本机整条 5.2 秒
+  （原 5 秒），CI 上 `ok probe-native.ps1 5s`。期间被两件小事咬到，都记下来因为它正是"绿了也不作数"那类：
+  ① 判据原先吃 `$c.ExitCode`，而**非等待式 `Start-Process` 对象在子进程结束后 `ExitCode` 回 `$null`**
+  （本机实测，`ka-ci.ps1` 里早写过这条），`$null -ne 0` 把一个正常结束的孩子判成了红——改成吃孩子自己
+  印的标记，与 `probe-bat-entry` 的判据同一个形状；② `[IO.File]::ReadAllText` **读不到父进程自己那条
+  重定向句柄还开着的文件**（实测 `being used by another process`，而子进程已经退出），`Get-Content`
+  是按共享打开的，所以照旧能读。
+- **`probe-bat-entry` 的 5 缺陷 sweep 保持不进 CI，这条现在是决定而不是悬着**（2026-09-28）。量到了
+  决策需要的那两个数：那条 sweep 本机 8m35s，而 CI 上 `Gates and probes` 已经是整段 job（21m42s，
+  run `36437907563`）里最重的一节，加进去等于每次 push 多约 8.5 分钟；收益只是让那 5 个注入缺陷每轮各红
+  一次。所以决定：**不进**，但要接随时有两条现成的路——加一个带开关的 CI step（与安装器那步
+  `-WithWorker -SelfTest` 同一个形状），或把它改造成不带开关的 `probe-bat-entry-selftest.ps1` 让 glob
+  自己捡到；两条的墙钟代价一样。README 那两行与《独立门禁与实测探针》里原来那句"接不接还没定"已按此改写。
+
 - **面板归属按数据根认，不再按程序目录认**（2026-09-28，#69）。这条是拿一次真实事故换来的：一个只把
   `KA_DATA` 指到 `_tmp` 的临时脚本，仍旧按**程序目录**把用户自己的面板认成了"我们的"，从它的命令行
   读出端口，POST 了 `/api/server/stop`，面板礼貌地照办——`ka.log` 里那行是
