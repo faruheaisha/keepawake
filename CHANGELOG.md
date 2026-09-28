@@ -164,6 +164,45 @@
 
 ## 未发布 / 下一步
 
+- **面板归属按数据根认，不再按程序目录认**（2026-09-28，#69）。这条是拿一次真实事故换来的：一个只把
+  `KA_DATA` 指到 `_tmp` 的临时脚本，仍旧按**程序目录**把用户自己的面板认成了"我们的"，从它的命令行
+  读出端口，POST 了 `/api/server/stop`，面板礼貌地照办——`ka.log` 里那行是
+  `2026-09-27 01:12:47  SERVER EXIT pid=28208`（现在跑的是恢复后的 pid 724 / 8791，`/api/ping` 200）。
+  改法三处：`Get-KaServer` 的 `Ours` = 我们数据根里的句柄 **或** 命令行 `-DataDir` 等于我们的数据根
+  （`ka-core.ps1:2562`）；`Stop-KaServer` 与 `Start-KaServer` 只吃 `.Ours`（`ka-core.ps1:2590`、`2645`）；
+  停机请求只发给**有凭据的端口**——句柄写了端口，或那个进程的命令行带 `-Port`，不再退回"我本来会用的
+  端口"（`ka-core.ps1:2653`）。端口被别人占着时 `serve` 不再接管也不再驱逐，直接说
+  `cli.panelAnswering`："没有找到我们能停下的面板，但端口 X 仍在应答——它属于另一个数据根、另一个用户，
+  或者不是本工具启动的进程。"全仓只有这两个动作点用 `Get-KaServer`，都已过滤；三个界面（CLI / 托盘 /
+  `serve`）共用 `Get-KaStopServerText` 一句判决。
+  `tests/probe-server-hint.ps1` 从五条腿扩到九条（⑥看得见但拒收、⑦`serve` 只报告不接管、⑧对照、
+  ⑨端口无从得知时不许猜），`tests/probe-server-hint-selftest.ps1` 从两条臂扩到六条（新增 `claim` /
+  `stopfilter` / `startfilter` / `portfallback`），六条各自红在自己的断言上、未注入的对照绿。实测两批
+  四条各约 74 秒（`-Only shared,blind,claim` 296.5 秒 = `_tmp/hint-sweep-batch1b.log`，
+  `-Only stopfilter,startfilter,portfallback` 293.4 秒 = `_tmp/hint-sweep-batch2.log`，两次都 `exit=0`），
+  而**CI 的裸跑形状（六臂 + 对照，七次）本机实测 435 秒**，就在整轮 `-Gates -Probes` 的 transcript 里
+  （`_tmp/ci-gates-probes-run3.log` 的 `ok probe-server-hint-selftest.ps1 435s`；同一轮 `ok
+  probe-server-hint.ps1 76s`、`----- 27 run, 0 red`、26m38s）——比每臂 74 秒的算术更小，与已在 CI 的
+  `probe-bat-entry-selftest.ps1`（README 记的 8m35s = 515 秒）同级、都在 `ka-ci.ps1` 每脚本 600 秒的线下；
+- **这条探针自己挂死过一回，成因与 #65 同一个**（2026-09-28）。`Invoke-Child` 原先用
+  `Start-Process -Wait`，而 .NET 的 `WaitForExit()` 等的是被重定向的 stdout 管道到 EOF：`claim` 臂下
+  第 7 条腿的 `serve` 会真的起一个面板，那个孙进程继承了写端，EOF 永远不来。实测卡住九分钟
+  （`_tmp/probe-server-hint-mutant.ps1` pid 6944，它起的暂存面板 55196 / 55141 仍活着，`ps` 与日志
+  mtime 都对得上），而且第一版是在**后台**跑的，被当成"跑得慢"放过去了——是第二次单跑才看清它根本没在跑。
+  现在改成 `HasExited` 轮询到 90 秒，超时写成 `CHILD_TIMEOUT after 90s: <args>` 进输出，让调用方的断言
+  自己变红，绝不静默卡住。教训写进文件里的注释：**任何被重定向 stdout 的 `-Wait`，只要孩子会留下继承
+  了写端的孙进程，就是一个没有截止点的等待**——这正是 `ka-ci.ps1` 那次 CI 被人工取消两次的原因，
+  这次是同一个病落在自己的探针里。
+- **每个临时数据根都必须写自己的 `config.json`**（2026-09-28）。`Stop-KaServer` 无论如何都会把
+  `[int]$cfg.port` 放进它要问的端口里（`ka-core.ps1:2699`），所以没写配置的临时数据根会退回内置 8791 ——
+  **那正好是这台机器上真面板的端口**。第一次跑就抓到了：第 8 条腿印出 `answering=8791`，也就是一个临时
+  数据根的 `stop-server` 刚 ping 过用户的面板。轻的那半是只读 ping；重的那半藏在 `portfallback` 突变的
+  臂里——那一臂把关停请求重新瞄准 `$cfg.port`，于是同一个动作会变成一次真 POST。现在四个临时数据根
+  （dataA/B/C，加上按腿改写的端口）各自点名自己分配的端口，重跑后 `answering=` 干净。
+- **`serve` 不再说一句它不打算做的事**（2026-09-28）。`KA_NO_BROWSER=1` 时原先仍会打印
+  「首次启动，正在打开浏览器…」，紧跟着「请手动打开：…」——两句话并排出现（`_tmp/nobrowser-measure.ps1`
+  第二次跑抓到）。现在 `panelOpening` 归到 `else` 分支里，设了就不再出现；README 那一条的措辞跟着改。
+
 - **CI 那一步为什么被人工取消过两次，答案在 runner 自己的等待逻辑里**（2026-09-26/27，#65 #66）。
   两次取消（run `36242306473` 停在 31 分、`36243977634` 停在 60 分）都不是产品红，是 `tests/ka-ci.ps1`
   用 `Start-Process -Wait` 等每个子脚本：`.NET` 的 `WaitForExit()` 等的是 stdout 管道到 EOF，

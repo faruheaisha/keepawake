@@ -126,6 +126,17 @@ $ps51 = Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe'
 # box is running. ka-core.ps1:354 is the read this line feeds.
 $env:KA_DATA = $data
 
+# Also set before anything starts, for the same inheritance reason. `serve` ends with
+# Start-Process $url (ka.ps1:606) because a person double-clicking panel.bat wants a tab; on a
+# runner with no browser already running that tab is a fresh descendant of this probe's own tree,
+# and the leftover check below is correct to name it (CI run 36256845636:
+# "left 8 descendant(s) alive: 1052:msedge.exe, 1276:msedge.exe, ..."). Locally msedge was already
+# open, so the same line was absorbed by an existing process and stayed invisible for every run
+# before that one. What this switch gives up: no leg any longer executes the shell-execute itself.
+# The URL it would open is still covered - Wait-Port and the route loop below hit that exact
+# host:port and require 200s - so the untested part is only "does the OS hand it to a browser".
+$env:KA_NO_BROWSER = '1'
+
 . (Join-Path $root 'tests/ka-release-files.ps1')
 
 $onCi = ("$($env:GITHUB_ACTIONS)".ToLowerInvariant() -eq 'true')

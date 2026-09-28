@@ -590,8 +590,21 @@ switch ($Action) {
         $r = Start-KaServer
         if (-not $r.Ok) { Write-Host (Get-KaText 'cli.serveFail' @{ reason = $r.Reason }) -ForegroundColor Red; exit 1 }
         Write-Host (Get-KaText 'cli.panelUrl' @{ url = $r.Url }) -ForegroundColor Green
-        if ($r.Newly) { Write-Host (Get-KaText 'cli.panelOpening') -ForegroundColor DarkGray }
-        try { Start-Process $r.Url } catch { Write-Host (Get-KaText 'cli.panelManual' @{ url = $r.Url }) -ForegroundColor DarkYellow }
+        # KA_NO_BROWSER=1 skips the browser and changes nothing else - the server still binds,
+        # still serves, and the URL is still printed. tests/probe-bat-entry.ps1 sets it: on a runner
+        # with no browser already open the tab this line launches is a genuine descendant of the
+        # probe's tree, and its leftover check is right to name it
+        # (CI run 36256845636: "left 8 descendant(s) alive: 1052:msedge.exe, ...").
+        # "正在打开浏览器" moves inside the else for the same reason: run 2 of
+        # _tmp/nobrowser-measure.ps1 caught the two branches printing it side by side with
+        # "please open by hand", and a line announcing an action this process then declines to take
+        # is the kind of sentence this tool has no business saying.
+        if (Get-KaBool $env:KA_NO_BROWSER $false) {
+            Write-Host (Get-KaText 'cli.panelManual' @{ url = $r.Url }) -ForegroundColor DarkGray
+        } else {
+            if ($r.Newly) { Write-Host (Get-KaText 'cli.panelOpening') -ForegroundColor DarkGray }
+            try { Start-Process $r.Url } catch { Write-Host (Get-KaText 'cli.panelManual' @{ url = $r.Url }) -ForegroundColor DarkYellow }
+        }
     }
 
     'stop-server' {

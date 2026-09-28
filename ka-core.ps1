@@ -2544,8 +2544,25 @@ function Get-KaServer {
                 [math]::Abs($startEpoch - $hint.StartedEpoch) -gt 900) { $hint = $null }
             if (-not ($byPath -or $hint)) { continue }
             if ([int]$proc.ProcessId -eq $PID) { continue }
+            # Which data root does this panel answer to? Start-KaServer always passes -DataDir,
+            # so for anything this tool started the command line says so; a panel launched by hand
+            # carries nothing and is only attributable through its handle file, which
+            # Get-KaServerHints already restricts to our own data root.
+            #
+            # Ours = a handle in our data root names this pid, or its -DataDir is our data root.
+            # Anything else is a panel belonging to somebody else who happens to share this program
+            # folder - and sharing it is exactly what pointing KA_DATA somewhere else asks a person
+            # to do. Measured cost of not having this line: a `stop-server` run with KA_DATA at a
+            # scratch directory matched this machine's own panel by program path, read its own
+            # configured port off that panel's command line, POSTed /api/server/stop to it, and the
+            # real panel shut down politely (ka.log 2026-09-27 01:12:47 `SERVER EXIT pid=28208`).
+            $clData = ''
+            if ($cl -match '-DataDir\s+"([^"]+)"') { $clData = $Matches[1] }
+              elseif ($cl -match '-DataDir\s+([^\s"]+)') { $clData = $Matches[1] }
+            $ours = [bool]($hint -or ($clData -and ($clData.TrimEnd('\') -ieq "$($p.data)".TrimEnd('\'))))
             $found += [PSCustomObject]@{ Pid = [int]$proc.ProcessId; StartEpoch = $startEpoch
-                                         CommandLine = $cl; Port = $(if ($hint) { [int]$hint.Port } else { 0 }) }
+                                         CommandLine = $cl; Port = $(if ($hint) { [int]$hint.Port } else { 0 })
+                                         DataDir = $clData; Ours = $ours }
         }
     } catch { }
     return $found
@@ -2568,7 +2585,9 @@ function Start-KaServer {
     $url = "http://127.0.0.1:$($cfg.port)/"
     $ping = $url + 'api/ping'
 
-    $existing = @(Get-KaServer)
+    # Only the panels of THIS data root. A panel another data root started from the same program
+    # folder is neither ours to reuse (its /api/state reads that other root) nor ours to replace.
+    $existing = @(Get-KaServer | Where-Object { $_.Ours })
     if ($existing.Count -gt 0) {
         $healthy = Test-KaUrl $ping
         if ($healthy) {
@@ -2577,6 +2596,13 @@ function Start-KaServer {
         # A process that is up but not serving is worse than no process: it squats the
         # port and the browser shows a dead tab. Replace it.
         [void](Stop-KaServer)
+    }
+    elseif (Test-KaUrl $ping) {
+        # Somebody's panel answers on our port and it is not ours. Starting one anyway buys a
+        # 30 s wait and a bind failure nobody can act on; the existing sentence already names
+        # the three possibilities, and the port is what the person has to change.
+        return @{ Ok = $false; Url = $url
+                  Reason = (Get-KaText 'cli.panelAnswering' @{ ports = [int]$cfg.port }) }
     }
     if (-not (Test-Path -LiteralPath $p.server)) {
         return @{ Ok = $false; Reason = (Get-KaText 'proc.noScript' @{ file = 'ka-server.ps1'; path = $p.server }) }
@@ -2616,19 +2642,25 @@ function Stop-KaServer {
     # which deregisters the prefix cleanly. Measured: a gracefully stopped panel lets
     # its successor answer the first request in under a second.
     $cfg = Get-KaConfig
-    $servers = @(Get-KaServer)
+    $servers = @(Get-KaServer | Where-Object { $_.Ours })
     $graceful = 0
     $killed = 0
     foreach ($s in $servers) {
-        $port = if ([int]$s.Port -gt 0) { [int]$s.Port } else { [int]$cfg.port }
-        if ($s.CommandLine -match '-Port\s+(\d+)') { $port = [int]$Matches[1] }
+        # The port must come from evidence about THIS process - its handle file, or the -Port it
+        # was started with. Falling back to "the port we would have used" is what let a
+        # stop-server aimed at one data root hand a working shutdown request to another root's
+        # panel: /api/server/stop cannot tell the two callers apart, and the panel obeyed.
+        $port = [int]$s.Port
+        if ($port -le 0 -and $s.CommandLine -match '-Port\s+(\d+)') { $port = [int]$Matches[1] }
         $asked = $false
-        try {
-            $uri = "http://127.0.0.1:$port/api/server/stop"
-            $r = Invoke-WebRequest -Uri $uri -Method POST -UseBasicParsing -TimeoutSec 3 `
-                -Headers @{ 'X-Ka-Client' = 'ka-dashboard' } -ErrorAction Stop
-            $asked = ($r.StatusCode -eq 200)
-        } catch { }
+        if ($port -gt 0) {
+            try {
+                $uri = "http://127.0.0.1:$port/api/server/stop"
+                $r = Invoke-WebRequest -Uri $uri -Method POST -UseBasicParsing -TimeoutSec 3 `
+                    -Headers @{ 'X-Ka-Client' = 'ka-dashboard' } -ErrorAction Stop
+                $asked = ($r.StatusCode -eq 200)
+            } catch { }
+        }
         if ($asked) {
             $deadline = (Get-Date).AddSeconds(4)
             $exited = $false
