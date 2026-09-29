@@ -52,10 +52,13 @@
     all the way down), and which writes the script's own ERRORLEVEL into a verdict file (what a
     non-waiting Start-Process object reports for a child that exited 5 is $null - rows 1 and 2 above,
     and `[int]$null` is the 0 that would have been printed as a pass).
-    The loop then polls HasExited with a deadline; on the deadline it kills the whole tree by
-    taskkill /T, so a hanging script names itself instead of eating the step and cannot drag its
-    leftovers into the next one. No verdict file is never treated as a zero: it is a red that says
-    so, which is the same rule tests/probe-bat-entry.ps1 fact 4 runs on.
+    The loop then polls HasExited with a deadline; on the deadline it kills the whole tree with
+    TerminateJobObject, so a hanging script names itself instead of eating the step and cannot drag its
+    leftovers into the next one. That, and the answer to "which processes did this leg leave behind?",
+    both come from the same Windows Job object every leg is started inside - see tests/ka-procwalk.ps1
+    for the four false results that retired the pid->ppid reconstruction this replaced. No verdict file
+    is never treated as a zero: it is a red that says so, which is the same rule
+    tests/probe-bat-entry.ps1 fact 4 runs on.
 
     Usage:
         powershell -NoProfile -ExecutionPolicy Bypass -File tests\ka-ci.ps1 -Gates
@@ -82,8 +85,6 @@ $ErrorActionPreference = 'Stop'
 $here = if ($Dir) { (Resolve-Path -LiteralPath $Dir).Path } else { $PSScriptRoot }
 $ps = Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $cmd = Join-Path $env:windir 'System32\cmd.exe'
-$taskkill = Join-Path $env:windir 'System32\taskkill.exe'
-
 $selected = @()
 if (-not ($Gates -or $Probes -or $Suite)) { $Gates = $true; $Probes = $true }
 if ($Gates) {
@@ -99,11 +100,10 @@ if ($Suite) { $selected += @(Get-Item -LiteralPath (Join-Path $here 'ka-tests.ps
 if ($Only) { $selected = @($selected | Where-Object { $_.Name -match $Only }) }
 if (-not $selected.Count) { Write-Host 'nothing selected - check the -Only pattern'; exit 1 }
 
-# The process walk lives in its own file so tests/probe-procwalk.ps1 can drive it directly: it is
-# the subtlest logic in this runner and it has been fooled three times - the last one by a pid that
-# had been handed to a Windows telemetry process (svchost.exe / CompatTelRunner.exe named as a
-# probe's descendants, runs 36440936247 and 36443663108). It defines functions, it is not a gate,
-# which is also why it is excluded from the gate glob above.
+# The leg's process bookkeeping lives in its own file so tests/probe-procwalk.ps1 can drive it
+# directly: it is the subtlest logic in this runner, and the pid->ppid reconstruction it replaced had
+# been fooled four times (see that file's header). It defines functions, it is not a gate, which is
+# also why it is excluded from the gate glob above.
 # $PSScriptRoot, not $here: -Dir points the *selection* at one-off fixtures (that is how
 # tests/probe-ci-harness.ps1 drives the shipped runner), and the library is not there. Measured:
 # 'The term ...\_tmp\ci-harness-fixtures\ka-procwalk.ps1 is not recognized'.
@@ -120,41 +120,66 @@ function Invoke-Leg([object]$f) {
     # early on purpose - a bound a few ms too generous cannot drop a real leftover, while one a few
     # ms too tight can.
     $legBorn = Get-Date
+    # The leg's tree is marked by construction: a job object holds the cmd and everything it creates,
+    # so "which processes are this leg's" is a query instead of an archaeology of pids. See
+    # tests/ka-procwalk.ps1 for the four false results that retired the reconstruction.
+    $job = [Ka.LegJob]::Create()
+    if ($job -eq [IntPtr]::Zero) { throw 'CreateJobObject failed - the leftover check has no meaning without it' }
     $child = Start-Process -FilePath $cmd -NoNewWindow -PassThru -ArgumentList $line
     $childPid = [int]$child.Id
+    $assignErr = [Ka.LegJob]::Assign($job, $childPid)
+    if ($assignErr) {
+        # Fatal rather than a red leg: without the assignment every later answer would be a guess, and
+        # a guess that silently passes is the failure mode this file has spent four rounds removing.
+        [Ka.LegJob]::Close($job)
+        throw ("could not put the leg (pid $childPid) into its job: $assignErr")
+    }
 
     # HasExited on the cmd we started: truthful (2.5 s for a child that lived 2 s) and blind to
-    # descendants (0.5 s while a 6 s grandchild was still alive). The deadline is what turns a
-    # silent 30-minute hang into one named line. The pid->ppid history is sampled in the same loop,
-    # one query every 2 s: at the 155 ms measured above per query that is under a tenth of a core,
-    # and it is what makes the walk below able to cross a parent that already died.
+    # descendants (0.5 s while a 6 s grandchild was still alive). The deadline is what turns a silent
+    # 30-minute hang into one named line. There is no sampling loop any more: the job is asked once,
+    # when the answer is needed, which also removes the CIM query the old 2 s history spent.
     $exited = $false
-    $hist = @{ }
-    $names = @{ }
-    $born = @{ }
-    $nextSample = 0.0
     $seenAt = $null
     while ($sw.Elapsed.TotalSeconds -lt $TimeoutSec) {
         if ($child.HasExited) { $exited = $true; $seenAt = Get-Date; break }
-        if ($sw.Elapsed.TotalMilliseconds -ge $nextSample) {
-            Update-ProcessHistory $hist $names $born
-            $nextSample = $sw.Elapsed.TotalMilliseconds + 2000
-        }
         Start-Sleep -Milliseconds 200
     }
-    Update-ProcessHistory $hist $names $born
     if (-not $seenAt) { $seenAt = Get-Date }
-    $leftIds = @(Get-OwnLeftovers @(Get-LeakedDescendants $childPid $hist $names $born) $legBorn $seenAt)
+
+    $answer = Get-KaLegPids $job
+    if (-not $answer.Ok) {
+        [Ka.LegJob]::Close($job)
+        throw ("QueryInformationJobObject failed for the leg (pid $childPid, Win32 $($answer.Err)) - the leftover check cannot answer")
+    }
+    $members = @($answer.Pids)
+    # One query, after the alive check, supplies the names for whatever survives. The job identifies
+    # the tree; the age window is belt-and-braces around a pid recycled *within* the leg.
+    $names = @{ }
+    foreach ($r in @(Get-ProcessRows)) { $names[[int]$r.ProcessId] = [string]$r.Name }
+    $consoleHosts = @('conhost.exe', 'OpenConsole.exe')
+    # conhost.exe and OpenConsole.exe are pseudo-console hosts Windows starts for a process that gets
+    # its own window station: a member of the leg's job, but not a leftover anybody can act on - they
+    # die with the session, hold no port, no power request and no file handle. Skipping them is a
+    # deliberate, named blind spot (a console host orphaned by its exited parent goes unseen), the same
+    # one the pid-walk version carried.
+    $leftIds = @(Get-OwnLeftovers $members $legBorn $seenAt | Where-Object { $consoleHosts -notcontains $names[[int]$_] })
     if (-not $exited) {
-        & $taskkill '/T' '/F' '/PID' $childPid 2>&1 | Out-Null
+        # taskkill /T walks a tree that may already be gone; the job knows its members regardless.
+        [void][Ka.LegJob]::Kill($job)
         Start-Sleep -Milliseconds 400
         $seenAt = Get-Date
-        Update-ProcessHistory $hist $names $born
-        $leftIds = @(Get-OwnLeftovers @(Get-LeakedDescendants $childPid $hist $names $born) $legBorn $seenAt)
+        $answer = Get-KaLegPids $job
+        if ($answer.Ok) {
+            $leftIds = @(Get-OwnLeftovers @($answer.Pids) $legBorn $seenAt | Where-Object { $consoleHosts -notcontains $names[[int]$_] })
+        }
     }
     $sw.Stop()
     $tag = '{0,-26} {1,5:0}s' -f $f.Name, $sw.Elapsed.TotalSeconds
     $left = @(Format-Leftovers $leftIds $names)
+    # After the check, and closing does not kill anything: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE is
+    # deliberately not set, because the leftover is the finding and has to outlive this handle.
+    [Ka.LegJob]::Close($job)
 
     $code = $null
     if (Test-Path -LiteralPath $codeFile) {

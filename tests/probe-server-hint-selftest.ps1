@@ -28,7 +28,11 @@ $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 $root = Split-Path -Parent $here
 $src = Join-Path $here 'probe-server-hint.ps1'
-$mut = Join-Path $root '_tmp/probe-server-hint-mutant.ps1'   # the mutant never lives beside the shipped tests
+# Per-pid, because this file writes the mutant, runs it six times and then deletes it: two sweeps on one
+# machine sharing one filename had one of them delete the other's subject mid-run, and the symptom was
+# three arms failing with "The argument ...\probe-server-hint-mutant.ps1 to the -File parameter does not
+# exist" - a real trap from the day's list, paid for once. # the mutant never lives beside the shipped tests
+$mut = Join-Path $root ('_tmp/probe-server-hint-mutant-' + $PID + '.ps1')
 
 # The injections are line replacements, so every anchor has to match exactly one line in the real
 # source. The -like patterns are kept free of [ ] on purpose - those are character classes there,
