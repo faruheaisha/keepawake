@@ -164,6 +164,16 @@
 
 ## 未发布 / 下一步
 
+- **`probe-mutex-identity` 的 C 段栽在"固定等待 + 只看一次"上**（2026-09-29）。run `36545465699` 唯一一红就是它：
+  C 段用 `Start-Job` 当名字的持有者，先 `Start-Sleep -Seconds 2` 再看一眼是否被别人拿着。冷 runner 上 `Start-Job`
+  两秒内还没把名字建出来，`OpenExisting` 抛异常，而那个 `catch` 只报**包装**类型——PowerShell 把 .NET 异常包成
+  `MethodInvocationException`，真正的原因埋在 InnerException 里——于是红字写成"观察坏了"，读起来像产品的毛病，
+  实际是 harness 的时序。改法：在持有者**真实的持有窗口**里轮询（最多 20 秒、每 250ms 一次），
+  `WaitHandleCannotBeOpenedException`（名字还没建出来）与其它异常分开处理，失败文本带上真正的原因；
+  `AbandonedMutexException`（有人持有过又死了）本来就该算"有争用"，现在显式认下。本机平时走"活的 worker"那条路
+  （保护正在跑），所以用 scratch 数据根复现了 runner 的那条 holder-job 路，三次全绿
+  （`holder job said: got=True ; last observation: none` → `ok OpenExisting ... sees the name as taken`）。
+
 - **留口归属定案：两个源取并集（Job 对象 ∪ 带守卫的重建）**（2026-09-29，#70 收口）。四次假红每次都烧掉一个
   CI 周期，被点名的进程都与被点名的探针无关（而那些探针自己都印着 `PROBE OK`）：`wps.exe`/`wpscloudsvr.exe`
   （office 套件，一条过期的父条目把它算成某一腿的后代）、本机自己的 worker pid 21688、`CompatTelRunner.exe`、

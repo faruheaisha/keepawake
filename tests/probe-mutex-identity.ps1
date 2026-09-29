@@ -125,20 +125,38 @@ $hold = Start-Job -ArgumentList $a.name -ScriptBlock {
         "got=$got"
     } catch { "ERR=$($_.Exception.GetType().Name)" }
 }
-Start-Sleep -Seconds 2
+Start-Sleep -Milliseconds 500
+# Observe inside the holder's *actual* holding window, not after a fixed guess. The first version
+# waited a flat 2 s and then looked once: on a cold CI runner Start-Job had not created the name yet,
+# OpenExisting threw, the catch reported only the wrapper type (PowerShell surfaces .NET exceptions as
+# MethodInvocationException, so the reason read as a generic "observation is broken"), and the leg went
+# red as if the product were broken (run 36545465699). It is a harness timing bug: poll until the name
+# answers, and name the real cause when it does not.
 $contended = $false
 $why = ''
-try {
-    $mm = [System.Threading.Mutex]::OpenExisting($a.name)
-    $mine = $mm.WaitOne(0)
-    if ($mine) { $mm.ReleaseMutex() }
-    $mm.Close()
-    $contended = -not $mine
-} catch { $why = $_.Exception.GetType().Name }
+$deadline = (Get-Date).AddSeconds(20)
+while ((Get-Date) -lt $deadline -and -not $contended) {
+    $mine = $false
+    try {
+        $mm = [System.Threading.Mutex]::OpenExisting($a.name)
+        try {
+            $mine = $mm.WaitOne(0)
+            if ($mine) { $mm.ReleaseMutex() }      # free, or abandoned: we got it, hand it straight back
+        } finally { $mm.Close() }
+        if ($mine) { $why = 'read-as-free' } else { $contended = $true }
+    } catch [System.Threading.WaitHandleCannotBeOpenedException] {
+        $why = 'not-created-yet'                   # the holder job has not got there; keep polling
+    } catch {
+        $inner = if ($_.Exception.InnerException) { $_.Exception.InnerException.GetType().Name } else { 'none' }
+        $why = $_.Exception.GetType().Name + '/' + $inner
+        break
+    }
+    if (-not $contended) { Start-Sleep -Milliseconds 250 }
+}
 $null = Wait-Job -Job $hold -Timeout 15
 $gotLine = (Receive-Job -Job $hold *>&1 | Out-String).Trim()
 Remove-Job -Job $hold -Force
-Write-Output "  holder job said: $gotLine ; OpenExisting error: $(if ($why) { $why } else { 'none' })"
+Write-Output "  holder job said: $gotLine ; last observation: $(if ($why) { $why } else { 'none' })"
 # This control takes the *default* root's name, so it needs to be the first taker. On a machine
 # where protection is live right now it cannot be: the running worker already owns
 # Local\KA-Worker-<default suffix>, and the job prints got=False. Measured 2026-09-25 on a box
@@ -146,7 +164,7 @@ Write-Output "  holder job said: $gotLine ; OpenExisting error: $(if ($why) { $w
 # it is the machine, not the code under test. CI runs this where nothing is protecting.
 if ($gotLine -notmatch 'got=True') { Bad "control failed: the holder never got the mutex, so contention proves nothing ($gotLine) - 若这台机器正在防休眠，先停掉再跑本探针" }
 elseif ($contended) { Ok 'OpenExisting from a second process sees the name as taken - the collision is real, not theoretical' }
-else { Bad 'the name read as free while another process held it - the observation is broken' }
+else { Bad ("the name read as free while another process held it - the observation is broken (last observation: $why)") }
 }
 
 Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue

@@ -507,7 +507,26 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\ka-ci.ps1 -Gates -Prob
                                                                              # （-Suite 是另一个入口，见上）
 ```
 
-| 文件 | 钉住什么 | 最近一次本机实跑末行（多为 2026-09-04；`probe-iss`、`ka-encoding.ps1` 与其自检、`probe-bat-entry.ps1` 09-26；`probe-ci-harness.ps1` 与其自检、`probe-mutex-identity.ps1` 09-27；本机那一整步 27 行 0 红，23m14s） |
+#### 一条腿的"留口"该怎么认（CI runner 的判定规则，2026-09-29 定案）
+
+`ka-ci.ps1` 每跑完一个脚本都要回答"它留下了哪些进程"。这个问题答错的代价是**一整个 CI 周期**——那一步红了
+就意味"产品或测试错了"，而 2026-09-28/29 的四次红里两者都是对的。规则现在是：
+
+1. **每腿一个 Windows Job 对象**（`CreateJobObject` + `AssignProcessToJobObject`），事后一次
+   `QueryInformationJobObject` 读成员表。精确、与 pid 回收无关、不需要采样；超时路径用 `TerminateJobObject`。
+   它**看不见**壳（shell/浏览器交接）起的进程。
+2. **重建**（`tests/ka-procwalk.ps1` 的 `Get-LeakedDescendants`）：每 2 秒采一次 `pid→ppid`，从活进程往上爬。
+   它**看得见**第 1 条看不见的那类（历史里记着当时那个脚本是它的父亲），但一条条目只对"写下它时持有该 pid
+   的那个进程"成立，所以带两条守卫：**跟着走的每一跳都必须在采样里留下过创建时间**（没采样过就停，不猜），
+   且**pid 现在活着的话必须还是那个进程**（创建时间对得上）。
+3. 两者**取并集**，再过滤年龄窗与 `conhost.exe`/`OpenConsole.exe`。并集是刻意的：任一源缺失只会让报告比真相
+   小，不会把无关进程平白算进来。`Assign`/`Query` 失败**抛错**，不当红腿。
+
+夹住它的是两条探针：`tests/probe-procwalk.ps1`（两个源各有判定，两条规则各有一条注入腿能把自己那条判红）
+与 `tests/probe-ci-harness.ps1`（集成那一半：两个**故意**漏进程的夹具必须照样被点名）。上面表里那两行写着
+它们各自的历史与实测数字。
+
+| 文件 | 钉住什么 | 最近一次本机实跑末行（多为 2026-09-04；`probe-iss`、`ka-encoding.ps1` 与其自检、`probe-bat-entry.ps1` 09-26；`probe-ci-harness.ps1` 与其自检、`probe-mutex-identity.ps1` 09-27；`probe-procwalk.ps1` 09-29；本机那一整步 27 行 0 红，23m14s） |
 | --- | --- | --- |
 | `ka-encoding.ps1` | 按**家族**钉住发出去的每个文本文件的字节形状（2026-09-26 从"只扫三个目录里的 `*.ps1`"改过来）：`.ps1` 要 UTF-8 **带 BOM + 纯 LF**；`.bat`/`.cmd`/`.iss` 要**纯 CRLF、不带 BOM、一个非 ASCII 字节都不许有**——`cmd.exe` 和 ISCC 用系统 ANSI 代码页解码它们，这台机器 ACP 65001 把问题藏住，默认 zh-CN 安装是 936，那里一个 BOM 会让首行打印成 `ÿþ`、一个汉字到达时已经是乱码；`dashboard/**` 和 `*.md` 只报不断（浏览器和人读它们，形状不是它们的契约）；**落不进任何家族却出现在清单里的扩展名直接判失败**。扫的文件集合也是查出来的：发布清单 ∪ `tests/*.ps1` ∪ `packaging/*.ps1` ∪ `packaging/*.iss`。**写这条规则的当天它就不绿**：`git ls-files --eol` 对着 `.gitattributes` 那句"给 .iss 一定吃得下的 CRLF"回答 `i/lf w/lf attr=text eol=crlf packaging/KeepAwake.iss`——磁盘上是 154 个裸 LF，而 `git status` 看着干净（`eol=crlf` 只在检出时改写，事后由工具写入的字节没人管，而 `git diff --numstat` 对这一处一个字都不吐） | `every shipped text file carries the byte shape its family requires` |
 | `ka-syntax.ps1` | 递归解析每个 `.ps1`，只解析不执行；能看见自己 | `all files parse clean` |
