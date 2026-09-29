@@ -27,11 +27,11 @@ Windows 判断"没人用"的依据只有你多久没动键盘鼠标，它对"后
 | 系统要求 | Windows 10 / 11 + 系统自带的 PowerShell 5.1。没有运行库、没有 .NET 安装、没有后台服务。**实测参照机只有一台**（Windows 11 build 26200，S0 现代待机），Windows 10 与 S3 传统待机机型没测过 —— 差在哪一行一行写在《换一台 Windows 会怎样（适配矩阵）》 |
 | 权限 | 普通账户就够。需要管理员的只有两处：可选的改合盖动作 `lid apply`，和 `requests`（`powercfg /requests` 这条命令本身要求） |
 | 联网 | 不联网、不上传、不检查更新。下载它不需要账号，用它也不需要登录 |
-| 手上有什么 | 两条分发路径：便携 zip（24 个文件，解压双击就跑；这个数由清单从仓库树推导，不是文档里手抄的）或每用户 `setup.exe` + `SHA256SUMS`。CI 每轮把两个都真构建出来：zip 那条由 `-Smoke` 当场解开、从临时数据根真跑一遍；`setup.exe` 那条更严——装上、用装好的那份起一次真保护、再真卸载（见《拿到 release 之后》《独立门禁与实测探针》） |
+| 手上有什么 | 两条分发路径：便携 zip（25 个文件，解压双击就跑；这个数由清单从仓库树推导，不是文档里手抄的）或每用户 `setup.exe` + `SHA256SUMS`。CI 每轮把两个都真构建出来：zip 那条由 `-Smoke` 当场解开、从临时数据根真跑一遍；`setup.exe` 那条更严——装上、用装好的那份起一次真保护、再真卸载（见《拿到 release 之后》《独立门禁与实测探针》） |
 | 怎么控制 | 五个 `.bat` 入口：`on.bat`、`off.bat`、`panel.bat`、`tray.bat`、`ka.bat`（命令行全功能）；面板 `http://127.0.0.1:8791/` 只监听回环地址，不想开浏览器就用托盘图标 |
 | 有没有效 | 不猜。读内核电源日志数出最近 N 小时真待机过几次：`ka.bat evidence`（见《有效性是实测的》） |
 | 卸载 | 便携包删掉目录就没了；安装版走"已安装的应用"或 `unins000.exe`。配置和日志在 `%LOCALAPPDATA%\KeepAwake`，不跟着程序目录一起消失 |
-| 摊开写的地方 | 磁盘上每一个文件、每一个字段：[PRIVACY.md](PRIVACY.md)。面板端口、提权、合成输入、没有代码签名这四件事的威胁模型：[SECURITY.md](SECURITY.md)。每个版本改了什么：[CHANGELOG.md](CHANGELOG.md) |
+| 摊开写的地方 | 磁盘上每一个文件、每一个字段：[PRIVACY.md](PRIVACY.md)。面板端口、提权、合成输入、没有代码签名这四件事的威胁模型：[SECURITY.md](SECURITY.md)。每个版本改了什么：[CHANGELOG.md](CHANGELOG.md) |。**踩过的坑与调研结论**（平台事实、PowerShell 陷阱、门禁经验，逐条标了怎么得来的）：[PITFALLS.md](PITFALLS.md)
 | 许可 | Apache-2.0。可商用、可修改、可闭源集成，自带专利授权；不授予任何商标或本项目名称的使用权（见下文《许可》） |
 
 版本号只有一个真源：`ka-core.ps1` 里的 `$script:KaVersion`（面板页脚、托盘提示、`/api/state` 读的都是它）。本文标题**不带**版本号，因为两份版本号写在一起迟早会互相打脸。
@@ -82,7 +82,7 @@ ka.bat requests      # powercfg /requests（这条需要管理员，能直接看
 
 | 文件 | 是什么 | 什么时候选它 |
 | --- | --- | --- |
-| `KeepAwake-<ver>-portable.zip` | 24 个文件，解压到任意目录就能用 | 拷 U 盘、只给一台机器、不想让任何东西"安装"进系统 |
+| `KeepAwake-<ver>-portable.zip` | 25 个文件，解压到任意目录就能用 | 拷 U 盘、只给一台机器、不想让任何东西"安装"进系统 |
 | `KeepAwake-<ver>-setup.exe` | 同一份清单编出来的**每用户**安装器（Inno Setup 6） | 想要开始菜单项、想在"已安装的应用"里能看到并卸载 |
 | `SHA256SUMS` | 上面两个的 SHA-256，`sha256sum` 的文本格式 | 两个都下完之后**先跑它** |
 
@@ -292,7 +292,7 @@ packaging/KeepAwake.iss
                     packaging/ka-test-install.ps1 一轮 20 条断言）。见《安装版：setup.exe》
 .github/workflows/  ci.yml（push/PR）→ build-test.yml（装 Inno + 门禁 + 探针 + 套件 + 打包冒烟 + 真装真卸，可复用）
                     release.yml（打 tag 即出三件套并发布；它 needs: build-test，所以安装那一步也是发布的前置）
-README.md / SECURITY.md / PRIVACY.md / CHANGELOG.md / LICENSE (Apache-2.0) / NOTICE
+README.md / SECURITY.md / PRIVACY.md / CHANGELOG.md / PITFALLS.md / LICENSE (Apache-2.0) / NOTICE
 ```
 
 进程之间不靠 PID 文件通信：
@@ -538,7 +538,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\ka-ci.ps1 -Gates -Prob
 | `probe-culture.ps1` / `-mutation.ps1` | 7 种区域设置下机器可读通道不变味（小数点、佛历、数字替换）；再把三处修复改回旧写法要求它变红 | `machine-readable output holds across 7 cultures` / `all 4 assertions are red on the reverted code and green on the shipped one` |
 | `probe-clm-gate.ps1` | CLM 闸门的三条腿：静态接线、真降级后按代码 2 干净拒绝、去掉闸门必须炸在 `Add-Type` 上。**"有几个入口"不再由探针手写**（2026-09-26）：入口集合 = 发布清单 ∩ "可执行行上真的 dot-source `ka-core.ps1`"（`ka-gate.ps1` 只在注释里提到那个名字，自己就落在集合外），清单空了会大声失败而不是回报"0 个入口都接好了"；发现出来 yet 没有对应 CLM 用例的入口同样算红。四条翻转实测：`baseline exit=0`（发现 6 个、6 个有用例）、塞一个没接闸门的 `ka-extra.ps1`→`FAIL ka-extra.ps1 ... no gate dot-source, no exit-2 call, reaches ka-core but no CLM case runs it`、塞一个接了闸门但没用例的→只报后一条、把清单缩到只剩两个库文件→`PROBE FAILED - no shipped script dot-sources ka-core.ps1` | `9 cases green now, 7 red without the gate, 6 entry points gated before ka-core` |
 | `probe-tray-selftest.ps1` | **`ka-tray.ps1 -SelfTest` 那个主体有没有人真的跑过**（2026-09-26 查出来：CI 上唯一调它的是 `probe-clm-gate` 的 `tray/clm` 那条腿，而那条腿断的是闸门拒绝——`exit 2` 发生在 `-SelfTest` 主体（`ka-tray.ps1:411`）之前，所以主体一次也没执行过；同位置的 `ka-server.ps1 -SelfTest` 有套件那条 `It` 接着，托盘什么都没有）。**这条声明现在过时了**：run `36227348476`（sha `74db958`）在 runner 上真起了托盘进程，印 `ok   clean        exit=0 lines=7 (3.3s) presetDur en="30 min" zh="30 分钟"`、整轮 `----- 23 run, 0 red`——无头的 GitHub runner 上 `NotifyIcon` 照样建得起来。本机六条腿、约 70 秒（runner 上 25 秒）：先把"退出 0 却什么都没验"的形状钉成一条腿——`KA_LANG` 设着跑同一个入口，主体印 `SELFTEST lang=skip`、再印 `SELFTEST OK`、**照样 exit 0**（实测，不是设想），所以干净那条腿断的不是"OK 与退出码"而是两种语言各自真的渲染过（`presetDur en="30 min" zh="30 分钟"`）且菜单结构在（`durations=5 intervals=4`）；③ **点击交接**（AST，一条进程都不起）——这个仓库里没有任何自动检查真的按过一次托盘菜单：真点一下会起 worker、注册计划任务，落在谁的机器上都不该，而"预设的分钟数离开菜单、进引擎"恰好是本探针要防的单位串线那一类，所以规则写在语法层：恰好一个时长处理器把 `$this.Tag` 交给 `-Minutes`、恰好一个间隔处理器把它写进 `antiLockIntervalSec`，且 `$this.Tag` 与引擎调用之间**不许出现任何算术**（`* 60` 与 `/ 60` 是同一个病换了个符号），五条只在内存里做的破坏各要红在点名自己那一条上、干净那棵树必须一条都点不出来（哪些处理器读了 `$this.Tag` 是从语法树上**发现**的、不是照这份清单点名的：多出一个没人认识的第三个交接会被点名，重复一个也会——`ka-lid` 当年就是漏在写死的清单外）；④-⑥ 三个突变体各红在自己的那条守卫上，同一棵树把注入关掉必须回绿。**谁红在哪条上是量出来的不是推的**：`frozen`（解析出新语言却不改菜单）原本按"该红在语言同文那条"写判据，harness 直接回 `died somewhere else`——文案保真更强，先把它抓走了；于是 `frozen`（菜单停在旧语言）与 `unit`（拿秒格式器去贴分单位的 Tag，就是当年那个 `30 分钟` 显示成 `30 秒`）同归文案保真管，就额外要求**这两条红字不许相同**（相同就说明其中一个在搭另一个的便车）；`nolang`（根本不重新读 config.json，标签和期望一起漂，文案保真看不见它）才归"两种语言不许同文"那条后备管 | `the tray self test body runs here for real - 1 skip shape pinned, 3 mutations each red on their own guard and green with the injection switched off` |
-| `probe-motw.ps1` / `-selftest.ps1` | 带 Zone.Identifier 的下载与不带的那份**输出逐行同形**，内嵌 C# 照样编译；`Expand-Archive` 实测不传播标记；自测用 CLM 注入一次真实阻塞证明它会红。那句 `24 files` 是从清单数出来的，清单从 23 变 24 的那一轮本机原话跟着变成 `a Zone-3 download of 24 files behaves exactly like an unmarked one, native layer compiles either way (exit=0)` | `a Zone-3 download of 24 files behaves exactly like an unmarked one...` / `catches a blocked native build on the marked leg and stays green when nothing is blocked` |
+| `probe-motw.ps1` / `-selftest.ps1` | 带 Zone.Identifier 的下载与不带的那份**输出逐行同形**，内嵌 C# 照样编译；`Expand-Archive` 实测不传播标记；自测用 CLM 注入一次真实阻塞证明它会红。那句 `24 files` 是从清单数出来的，清单从 23 变 24 的那一轮本机原话跟着变成 `a Zone-3 download of 24 files behaves exactly like an unmarked one, native layer compiles either way (exit=0)` | `a Zone-3 download of 25 files behaves exactly like an unmarked one, native layer compiles either way (exit=0)` / `catches a blocked native build on the marked leg and stays green when nothing is blocked`（末行随 `PITFALLS.md` 进清单从 24 变 25，2026-09-29 本机重跑 53s 实得） |
 | `probe-wow64.ps1` / `-selftest.ps1` | 32 位与 64 位 PowerShell 的逐项差分（37 项）；自测注入一个假的 32 位分歧，要求差分点名它、注入关掉必须回到绿。**2026-09-05 记录一次没查清的红**：整套扫描里 32 位那腿的 `ka.ps1 check` 回了 2、64 位回 0，而它前面和后面各跑一次都是绿的——当时**没法知道它为什么红**，因为子进程说的话只存在于两行之后就被删掉的临时文件里。所以现在失败的那一行会把子进程的原话带出来（`KA_DIAG_*`，刻意不参与差分，内容里全是路径和时间）。这条红的原因仍然未知，下次再出现就有证据了 | `32-bit and 64-bit PowerShell give 37 identical answers...` |
 | `probe-migrate.ps1` | 首次迁移：只填空缺、**永不覆盖**数据目录已有的文件。搬进临时程序目录的那份文件清单现在是**推导**出来的（2026-09-26）：`tests/ka-release-files.ps1` 里所有 `*.ps1` 加 `dashboard\*`——`tests/` 里最后一份手写文件清单就是这里，而它抄的那份清单自己记过两次"两份同一个东西的清单漂移过"。清单为空/只剩库文件会大声失败（`the derived program list is not a program directory`），清单指到仓库里没有的文件也会失败（`source tree is missing ... lists a file the repository does not have`）。四次翻转实测：给清单加一个仓库里存在的文件→`DERIVED 13 ... COPIED 13` 仍绿，加一个不存在的→非零退出并点名它，把清单缩到只剩文档→非零退出报"这不是一个程序目录" | `migration brings an old install forward without ever replacing a file the data root already has` |
 | `probe-config-value.ps1` | 布尔词表：`"false"`/`"off"`/`"否"` 是假，词表外的值被拒绝且不落盘 | `a hand-edited config.json means what the person who edited it wrote` |

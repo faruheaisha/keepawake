@@ -164,6 +164,16 @@
 
 ## 未发布 / 下一步
 
+- **`PITFALLS.md`：把踩过的坑与调研结论收进仓库**（2026-09-29）。这份文件只放别处没有的东西——平台事实（S0/无 S3、
+  `MuiCached` 与 `$PSUICulture` 不一致、受保护镜像不给 `CreationDate`、`pid` 会被回收、Job 管不住"壳起的进程"、
+  runner 的 8.3 短路径…）、PowerShell 5.1 与 cmd 的 20 条陷阱（`-Wait` 等的是管道 EOF、空数组返回变 `$null`、
+  `$Args` 参数绑不上、`-like` 把 `[ ]` 当字符类…）、CI/门禁的经验（600 秒每脚本、glob 跑探针不带参数、
+  `gh` 只认 `GH_TOKEN`、`push` 与 API 通不是一回事），以及产品侧的调研结论（同类工具对比、away-mode 为何默认关、
+  锁屏管不住策略锁、不做代码签名）。每条都标注了 `[实测]/[调研]/[推理]` 与可复跑入口。
+  它进了发布清单，于是便携包从 **24 变 25 个文件**：本机 `packaging/build.ps1 -Stage -Smoke` 实测 
+  `KeepAwake-1.0.0-portable.zip : 25 entries, all present with matching byte lengths, 0.31 MB`、
+  `staging: 25 files`，`SMOKE exit=0`；README 里两处**当前**数字跟着改，探针表里引用的历史末行保持原样。
+
 - **`probe-mutex-identity` 的 C 段栽在"固定等待 + 只看一次"上**（2026-09-29）。run `36545465699` 唯一一红就是它：
   C 段用 `Start-Job` 当名字的持有者，先 `Start-Sleep -Seconds 2` 再看一眼是否被别人拿着。冷 runner 上 `Start-Job`
   两秒内还没把名字建出来，`OpenExisting` 抛异常，而那个 `catch` 只报**包装**类型——PowerShell 把 .NET 异常包成

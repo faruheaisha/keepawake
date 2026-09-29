@@ -70,7 +70,7 @@ function Get-KaReleaseFile {
     $code += @(Get-ChildItem -LiteralPath $dash -File -Recurse |
         ForEach-Object { 'dashboard\' + $_.FullName.Substring($dash.Length + 1) })
 
-    $docs = @('README.md', 'PRIVACY.md', 'SECURITY.md', 'CHANGELOG.md', 'LICENSE', 'NOTICE')
+    $docs = @('README.md', 'PRIVACY.md', 'SECURITY.md', 'CHANGELOG.md', 'PITFALLS.md', 'LICENSE', 'NOTICE')
     # Read by git and by nobody who downloaded a zip.
     $plumbing = @('.gitignore', '.gitattributes')
 
