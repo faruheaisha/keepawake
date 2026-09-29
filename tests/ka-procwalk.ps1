@@ -82,8 +82,16 @@ function Get-LeakedDescendants([int]$RootId, [hashtable]$History, [hashtable]$Na
             # walk stops instead of following it. A pid that is gone now keeps its recorded parent -
             # that dead tail is the whole reason this history exists (and it is also the class this
             # guard cannot close: see the header).
-            if ($Born.ContainsKey($up) -and $nowBorn.ContainsKey($up) -and $nowBorn[$up] -ne [long]$Born[$up]) {
-                break
+            if ($nowBorn.ContainsKey($up)) {
+                # No recorded creation time for a pid that is alive now = no evidence at all that this
+                # entry is about the process holding it, so stop. That case is real and it is what CI
+                # caught on 2026-09-28 after the first version of this guard: a Windows servicing burst
+                # (TiWorker.exe, TrustedInstaller.exe, MoUsoCoreWorker.exe, three svchost.exe,
+                # CompatTelRunner.exe) was named as a 435 s leg's leftovers, because CIM answers no
+                # CreationDate for those images and a guard that only compares *available* times was
+                # skipped for them. When we do have the recorded time, it must still match.
+                if (-not $Born.ContainsKey($up)) { break }
+                if ($nowBorn[$up] -ne [long]$Born[$up]) { break }
             }
             $up = [int]$History[$up]
             if ($up -eq $RootId) { $out += $pidNow; break }

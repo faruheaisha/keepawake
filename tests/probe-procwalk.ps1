@@ -79,6 +79,12 @@ try {
     if ($inWindow -contains [int]$child.Id) { Ok 'a process born inside the window is kept' } else { Bad 'a live child born just now was dropped by the window' }
     $outWindow = @(Get-OwnLeftovers @([int]$child.Id) (Get-Date).AddMinutes(10) (Get-Date).AddMinutes(20))
     if ($outWindow.Count -eq 0) { Ok 'a process born outside the window is dropped' } else { Bad 'the window let a process born later through' }
+    Write-Output '--- 5. an alive pid with no recorded creation time stops the walk'
+    $bornNoEntry = @{}
+    $got5 = @(Get-LeakedDescendants $sentinelRoot $hist $names $bornNoEntry)
+    if ($got5.Contains([int]$child.Id) -or $got5.Count -gt 0) {
+        Bad 'a pid that is alive with no recorded creation time was followed anyway - that is how CI named a servicing burst'
+    } else { Ok 'with no record of that pid, the chain is not followed' }
 } finally {
     try { Stop-Process -Id $child.Id -Force -ErrorAction Stop } catch { }
 }
@@ -95,13 +101,13 @@ if ($asChild) {
 # Delete the guard from a copy of the library and require the copy to fail case 2. Anchored on the
 # exact text and counted first: a silent miss would make this half vacuous, which is the failure mode
 # this file exists to avoid.
-Write-Output '--- 5. the injection: the same library with the recycling guard deleted'
-$anchor = 'if ($Born.ContainsKey($up) -and $nowBorn.ContainsKey($up) -and $nowBorn[$up] -ne [long]$Born[$up]) {'
+Write-Output '--- 6. the injection: the same library with the recycling guard deleted'
+$anchor = 'if ($nowBorn.ContainsKey($up)) {'
 $libText = [IO.File]::ReadAllText($lib)
 $hits = ([regex]::Matches($libText, [regex]::Escape($anchor))).Count
 if ($hits -ne 1) { Write-Output ("PROBE FAILED: the guard anchor matches $hits time(s), expected 1 - the injection would not test what we think"); exit 1 }
 $mutant = Join-Path $root ('_tmp/procwalk-noguard-' + [guid]::NewGuid().ToString('N') + '.ps1')
-$mutText = $libText.Replace($anchor, 'if ($false -and $nowBorn[$up] -ne [long]$Born[$up]) {')
+$mutText = $libText.Replace($anchor, 'if ($false) {')
 $enc = New-Object Text.UTF8Encoding($true)
 [IO.File]::WriteAllText($mutant, $mutText, $enc)
 $out = Join-Path $env:TEMP ('ka-procwalk-child-' + [guid]::NewGuid().ToString('N') + '.out')
@@ -135,4 +141,4 @@ try {
 
 foreach ($m in $bad) { Write-Output ('  problem: ' + $m) }
 if ($bad) { Write-Output ('PROBE FAILED: ' + $bad.Count + ' problem(s)'); exit 1 }
-Write-Output 'PROBE OK: the walk follows a chain that reaches the leg root, refuses a pid that was rehanded since the entry was written, still crosses a dead ancestor, keeps the age window, and loses case 2 the moment the guard is deleted'
+Write-Output 'PROBE OK: the walk follows a chain that reaches the leg root, stops at a pid that was rehanded since the entry was written and at one it has no creation time for, still crosses a dead ancestor, keeps the age window, and loses case 2 the moment the guard is deleted'
