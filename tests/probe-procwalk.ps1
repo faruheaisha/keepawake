@@ -28,6 +28,9 @@ $bad = @()
 function Bad([string]$m) { $script:bad += $m; Write-Output ('  FAIL ' + $m) }
 function Ok([string]$m)  { Write-Output ('  ok   ' + $m) }
 
+$sentinelRoot = 999999   # the leg's cmd pid in the hand-made maps below; a number, not a process
+$deadHop = 999998        # a pid no live process holds - the dead middle hop in the walk cases
+
 $ps = Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe'
 function Start-Sleeper { param([int]$Seconds = 90)
     Start-Process -FilePath $ps -ArgumentList @('-NoProfile', '-Command', ("Start-Sleep -Seconds $Seconds")) -WindowStyle Hidden -PassThru
@@ -97,10 +100,26 @@ try {
         $got = @(Get-LeakedDescendants $sentinelRoot $hist $nm $born)
         if ($got -contains [int]$walk.Id) { Ok ("the reconstruction names it: $($walk.Id)") }
         else { Bad 'the reconstruction did not name a chain that reaches the root - the union would lose the shell-launched shape' }
+
+        Write-Output '   - the same entry once that pid has changed hands'
         $bornRecycled = @{ [int]$walk.Id = $real[[int]$walk.Id] - 36000000000 }
         $got2 = @(Get-LeakedDescendants $sentinelRoot $hist $nm $bornRecycled)
         if ($got2 -contains [int]$walk.Id) { Bad 'a pid rehanded since the entry was written was followed anyway' }
-        else { Ok 'and it still refuses the same entry once that pid has changed hands' }
+        else { Ok 'refused: the pid alive now is not the process the entry was written about' }
+
+        Write-Output '   - a dead hop WITH a recorded creation time (the shell-launched shape)'
+        $deadWithRecord = @{ [int]$walk.Id = $deadHop; $deadHop = $sentinelRoot }
+        $bornDead = @{ [int]$walk.Id = $real[[int]$walk.Id]; $deadHop = 1 }
+        $got3 = @(Get-LeakedDescendants $sentinelRoot $deadWithRecord $nm $bornDead)
+        if ($got3 -contains [int]$walk.Id) { Ok 'crossed: the middle process is gone but was sampled while it lived' }
+        else { Bad 'a dead hop with a recorded creation time broke the chain - the shell-launched leftover would be lost' }
+
+        Write-Output '   - a dead hop with NO record (the class the first guard left open)'
+        $bornNoHop = @{ [int]$walk.Id = $real[[int]$walk.Id] }
+        $got4 = @(Get-LeakedDescendants $sentinelRoot $deadWithRecord $nm $bornNoHop)
+        if ($got4 -contains [int]$walk.Id) {
+            Bad 'a hop whose pid has no record at all was followed - that is the dead-and-recycled bridge that named an unrelated process'
+        } else { Ok 'refused: nothing was ever recorded about who held that pid' }
     }
     try { Stop-Process -Id $walk.Id -Force -ErrorAction Stop } catch { }
 } finally {
@@ -158,6 +177,36 @@ try {
     Remove-Item -LiteralPath $mutant -Force -ErrorAction SilentlyContinue
 }
 
+Write-Output '--- 8. the injection: the walk''s record rule deleted'
+$anchor2 = '            if (-not $Born.ContainsKey($up)) { break }'
+$libText2 = [IO.File]::ReadAllText($lib)
+$hits2 = ([regex]::Matches($libText2, [regex]::Escape($anchor2))).Count
+if ($hits2 -ne 1) { Write-Output ("PROBE FAILED: the walk anchor matches $hits2 time(s), expected 1 - the injection would not test what we think"); exit 1 }
+$mutant2 = Join-Path $root ('_tmp/procwalk-norecord-' + [guid]::NewGuid().ToString('N') + '.ps1')
+$out2 = Join-Path $env:TEMP ('ka-procwalk-child-' + [guid]::NewGuid().ToString('N') + '.out')
+try {
+    [IO.File]::WriteAllText($mutant2, $libText2.Replace($anchor2, '            if ($false) { break }'), $enc)
+    $prevLib2 = $env:KA_PROCWALK_LIB; $prevChild2 = $env:KA_PROCWALK_CHILD
+    $env:KA_PROCWALK_LIB = $mutant2; $env:KA_PROCWALK_CHILD = '1'
+    $p2 = Start-Process -FilePath $ps -NoNewWindow -PassThru -RedirectStandardOutput $out2 `
+        -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "' + $selfPath + '"')
+    $deadline2 = (Get-Date).AddSeconds(180)
+    while (-not $p2.HasExited -and (Get-Date) -lt $deadline2) { Start-Sleep -Milliseconds 100; $p2.Refresh() }
+    $timedOut2 = -not $p2.HasExited
+    if ($timedOut2) { try { Stop-Process -Id $p2.Id -Force -ErrorAction Stop } catch { } }
+    $text2 = (@(Get-Content -LiteralPath $out2 -Raw -ErrorAction SilentlyContinue) -join "`n")
+    if ($prevLib2) { $env:KA_PROCWALK_LIB = $prevLib2 } else { Remove-Item Env:KA_PROCWALK_LIB -ErrorAction SilentlyContinue }
+    if ($prevChild2) { $env:KA_PROCWALK_CHILD = $prevChild2 } else { Remove-Item Env:KA_PROCWALK_CHILD -ErrorAction SilentlyContinue }
+    if ($timedOut2) { Bad 'the record-rule child did not finish in 180s' }
+    elseif ($text2 -notlike '*dead-and-recycled bridge*') {
+        Bad 'with the record rule deleted the child still passed - the no-record case does not depend on it'
+        foreach ($l in ($text2 -split "`r?`n") | Where-Object { $_.Trim() }) { Write-Output ('        ' + $l.Trim()) }
+    } else { Ok 'the no-record case goes red the moment that rule is deleted' }
+} finally {
+    Remove-Item -LiteralPath $out2 -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $mutant2 -Force -ErrorAction SilentlyContinue
+}
+
 foreach ($m in $bad) { Write-Output ('  problem: ' + $m) }
 if ($bad) { Write-Output ('PROBE FAILED: ' + $bad.Count + ' problem(s)'); exit 1 }
-Write-Output 'PROBE OK: the job lists what this leg started and assigned, does not list a WMI-created stranger, drops an exited member, takes its members with it when killed, and the WMI case goes red the moment the answer stops coming from the job'
+Write-Output 'PROBE OK: the job lists what this leg started and assigned, does not list a WMI-created stranger, drops an exited member and takes its members with it when killed; the walk names a chain to the leg root, refuses a rehanded pid and a hop nothing is recorded about, still crosses a dead hop it did sample; and each rule has an injection that reddens its own case'

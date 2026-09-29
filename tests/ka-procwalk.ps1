@@ -18,9 +18,12 @@
         the two guards below, which is what four CI cycles of false reds bought: a pid->ppid entry is
         evidence only about the process that held that pid when the entry was written, so a pid that
         has changed hands since is not followed, and an alive pid with no recorded creation time stops
-        the walk. The class left open by those guards is a hop through a *dead and recycled* pid, where
-        nothing is left to compare against - which is why the job is asked as well, and why the union
-        of the two is what the runner reports.
+        the walk. The class left open by the first version of those guards was a hop through a *dead and
+        recycled* pid, where nothing was left to compare against - it is closed by requiring a recorded
+        creation time for *every* hop the walk follows: a pid we never sampled while it lived is a pid we
+        cannot say anything about, so the walk stops there instead of following its recorded parent. A
+        dead hop we *did* sample is still crossed, which is exactly what keeps the shell-launched
+        leftover (whose parent is the leg's own script, alive and sampled for seconds) visible.
 
     The union is deliberately a union: the job can add a member the walk would have missed, and the
     walk can add one the job never had. A missing source therefore cannot silently shrink the report;
@@ -151,17 +154,20 @@ function Get-LeakedDescendants([int]$RootId, [hashtable]$History, [hashtable]$Na
             # walk stops instead of following it. A pid that is gone now keeps its recorded parent -
             # that dead tail is the whole reason this history exists (and it is also the class this
             # guard cannot close: see the header).
-            if ($nowBorn.ContainsKey($up)) {
-                # No recorded creation time for a pid that is alive now = no evidence at all that this
-                # entry is about the process holding it, so stop. That case is real and it is what CI
-                # caught on 2026-09-28 after the first version of this guard: a Windows servicing burst
-                # (TiWorker.exe, TrustedInstaller.exe, MoUsoCoreWorker.exe, three svchost.exe,
-                # CompatTelRunner.exe) was named as a 435 s leg's leftovers, because CIM answers no
-                # CreationDate for those images and a guard that only compares *available* times was
-                # skipped for them. When we do have the recorded time, it must still match.
-                if (-not $Born.ContainsKey($up)) { break }
-                if ($nowBorn[$up] -ne [long]$Born[$up]) { break }
-            }
+            # The guard, and it is deliberately two rules deep.
+            # (1) No recorded creation time for this pid at all = no evidence about who held it when the
+            #     entry was written, so stop. CI paid for this on 2026-09-28: a Windows servicing burst
+            #     (TiWorker.exe, TrustedInstaller.exe, MoUsoCoreWorker.exe, three svchost.exe,
+            #     CompatTelRunner.exe) was named as a 435 s leg's leftovers, because CIM answers no
+            #     CreationDate for those images and a guard that compared only *available* times was
+            #     skipped for them. This also closes the class the first version left open - a hop whose
+            #     pid is dead *and was recycled*: nothing is left to compare against, and following its
+            #     recorded parent is exactly the guess that invented a bed for an unrelated process
+            #     (locally: Git's sleep.exe). A dead hop we *did* sample is still crossed, which is what
+            #     keeps the shell-launched leftover (whose parent chain is the leg's own script) visible.
+            if (-not $Born.ContainsKey($up)) { break }
+            # (2) If the pid is alive now, it must still be the process the entry was written about.
+            if ($nowBorn.ContainsKey($up) -and $nowBorn[$up] -ne [long]$Born[$up]) { break }
             $up = [int]$History[$up]
             if ($up -eq $RootId) { $out += $pidNow; break }
             if ($up -eq 0) { break }
