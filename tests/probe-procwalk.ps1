@@ -80,6 +80,29 @@ try {
     if ($alive) { Bad ('TerminateJobObject left the member running: ' + $second.Id) } else { Ok 'the job kill took its members with it' }
     $pids5 = @((Get-KaLegPids $job).Pids)
     if ($pids5 -contains [int]$second.Id) { Bad 'the killed member is still listed' } else { Ok 'and it is no longer listed' }
+
+    Write-Output '--- 6. the other source: a hand-made chain through the reconstruction is named'
+    # The job cannot see a process the shell launched (measured on CI: the deliberate GUI leak was
+    # missing from the job while alive), so the union the runner reports depends on this source too.
+    $sentinelRoot = 999999
+    $walk = Start-Sleeper 60
+    $rows = @(Get-ProcessRows)
+    $real = @{}
+    foreach ($r in $rows) { try { $real[[int]$r.ProcessId] = [long]$r.CreationDate.Ticks } catch { } }
+    if (-not $real.ContainsKey([int]$walk.Id)) { Bad 'the sleeper is not in the row set - the reconstruction case could not be set up' }
+    else {
+        $hist = @{ [int]$walk.Id = $sentinelRoot }
+        $born = @{ [int]$walk.Id = $real[[int]$walk.Id] }
+        $nm = @{ [int]$walk.Id = 'ka-procwalk-synthetic' }
+        $got = @(Get-LeakedDescendants $sentinelRoot $hist $nm $born)
+        if ($got -contains [int]$walk.Id) { Ok ("the reconstruction names it: $($walk.Id)") }
+        else { Bad 'the reconstruction did not name a chain that reaches the root - the union would lose the shell-launched shape' }
+        $bornRecycled = @{ [int]$walk.Id = $real[[int]$walk.Id] - 36000000000 }
+        $got2 = @(Get-LeakedDescendants $sentinelRoot $hist $nm $bornRecycled)
+        if ($got2 -contains [int]$walk.Id) { Bad 'a pid rehanded since the entry was written was followed anyway' }
+        else { Ok 'and it still refuses the same entry once that pid has changed hands' }
+    }
+    try { Stop-Process -Id $walk.Id -Force -ErrorAction Stop } catch { }
 } finally {
     try { Stop-Process -Id $mine.Id -Force -ErrorAction Stop } catch { }
     if ($wmi) { try { Stop-Process -Id $wmi -Force -ErrorAction Stop } catch { } }
@@ -98,7 +121,7 @@ if ($asChild) {
 # Replace the one line that asks the job with "everything alive" and require case 2 to go red. Anchored
 # on exact text and counted first: a silent miss would make this half vacuous, which is the failure mode
 # this file exists to avoid.
-Write-Output '--- 6. the injection: the job query replaced by a list of everything alive'
+Write-Output '--- 7. the injection: the job query replaced by a list of everything alive'
 $anchor = '    $pids = [Ka.LegJob]::Pids($Job)'
 $libText = [IO.File]::ReadAllText($lib)
 $hits = ([regex]::Matches($libText, [regex]::Escape($anchor))).Count

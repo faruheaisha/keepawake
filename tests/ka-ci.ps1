@@ -137,14 +137,24 @@ function Invoke-Leg([object]$f) {
 
     # HasExited on the cmd we started: truthful (2.5 s for a child that lived 2 s) and blind to
     # descendants (0.5 s while a 6 s grandchild was still alive). The deadline is what turns a silent
-    # 30-minute hang into one named line. There is no sampling loop any more: the job is asked once,
-    # when the answer is needed, which also removes the CIM query the old 2 s history spent.
+    # 30-minute hang into one named line. The pid->ppid history is sampled in the same loop, one query
+    # every 2 s: it is what lets the reconstruction see a leftover the job cannot - a process the shell
+    # launched, which is not our child and inherits nothing.
     $exited = $false
+    $hist = @{ }
+    $names = @{ }
+    $born = @{ }
+    $nextSample = 0.0
     $seenAt = $null
     while ($sw.Elapsed.TotalSeconds -lt $TimeoutSec) {
         if ($child.HasExited) { $exited = $true; $seenAt = Get-Date; break }
+        if ($sw.Elapsed.TotalMilliseconds -ge $nextSample) {
+            Update-ProcessHistory $hist $names $born
+            $nextSample = $sw.Elapsed.TotalMilliseconds + 2000
+        }
         Start-Sleep -Milliseconds 200
     }
+    Update-ProcessHistory $hist $names $born
     if (-not $seenAt) { $seenAt = Get-Date }
 
     $answer = Get-KaLegPids $job
@@ -152,11 +162,13 @@ function Invoke-Leg([object]$f) {
         [Ka.LegJob]::Close($job)
         throw ("QueryInformationJobObject failed for the leg (pid $childPid, Win32 $($answer.Err)) - the leftover check cannot answer")
     }
-    $members = @($answer.Pids)
+    # Both sources, and the union is the point: the job knows the tree exactly but is blind to anything
+    # the shell launched (measured on CI, run 36534077753 - the deliberate GUI leak was missing from the
+    # job while being alive and visible), and the reconstruction sees those but needs its two guards.
+    # Neither source can silently shrink the report; each covers the other's blind spot.
+    $members = @(@($answer.Pids) + @(Get-LeakedDescendants $childPid $hist $names $born) | Select-Object -Unique)
     # One query, after the alive check, supplies the names for whatever survives. The job identifies
     # the tree; the age window is belt-and-braces around a pid recycled *within* the leg.
-    $names = @{ }
-    foreach ($r in @(Get-ProcessRows)) { $names[[int]$r.ProcessId] = [string]$r.Name }
     $consoleHosts = @('conhost.exe', 'OpenConsole.exe')
     # conhost.exe and OpenConsole.exe are pseudo-console hosts Windows starts for a process that gets
     # its own window station: a member of the leg's job, but not a leftover anybody can act on - they
@@ -171,11 +183,15 @@ function Invoke-Leg([object]$f) {
         $seenAt = Get-Date
         $answer = Get-KaLegPids $job
         if ($answer.Ok) {
-            $leftIds = @(Get-OwnLeftovers @($answer.Pids) $legBorn $seenAt | Where-Object { $consoleHosts -notcontains $names[[int]$_] })
+            $members = @(@($answer.Pids) + @(Get-LeakedDescendants $childPid $hist $names $born) | Select-Object -Unique)
+            $leftIds = @(Get-OwnLeftovers $members $legBorn $seenAt | Where-Object { $consoleHosts -notcontains $names[[int]$_] })
         }
     }
     $sw.Stop()
     $tag = '{0,-26} {1,5:0}s' -f $f.Name, $sw.Elapsed.TotalSeconds
+    # one query after the alive check supplies a name for everything that can still be printed
+    $names = @{ }
+    foreach ($r in @(Get-ProcessRows)) { $names[[int]$r.ProcessId] = [string]$r.Name }
     $left = @(Format-Leftovers $leftIds $names)
     # After the check, and closing does not kill anything: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE is
     # deliberately not set, because the leftover is the finding and has to outlive this handle.

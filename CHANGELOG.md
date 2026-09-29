@@ -164,20 +164,24 @@
 
 ## 未发布 / 下一步
 
-- **留口归属改成按构造认：每腿一个 Windows Job 对象，pid 考古整段删掉**（2026-09-29，#70 收口）。四次假红
-  （每次都烧掉一个 CI 周期，被点名的进程都与被点名的探针无关，而那些探针自己都印着 `PROBE OK`）：`wps.exe`/
-  `wpscloudsvr.exe`（office 套件，一条过期的父条目把它算成某一腿的后代）、本机自己的 worker pid 21688、
-  `CompatTelRunner.exe`、以及一整批 Windows 维护进程（`TiWorker.exe`、`TrustedInstaller.exe`、
-  `MoUsoCoreWorker.exe`、三个 `svchost.exe`、`CompatTelRunner.exe`），本机还多一次 `sleep.exe`（**Git 自带的
-  `sleep`**，由正在旁观的工具链拉起）。根都在"用 pid 重建祖先链"：一条 `pid→ppid` 条目只对**写下它时持有该
-  pid 的那个进程**成立。中间那两条补丁（比对创建时间；pid 活着却没记下创建时间就停）确实把 CI 弄绿过一次
-  （run `36528628613`），但留了一类没关：链条中间有一跳**已经死了又被人拿过**时无事可比。
-  现在改成：`ka-ci.ps1` 每一腿先 `CreateJobObject`、把 cmd 放进去（`AssignProcessToJobObject`，子孙自动继承），
-  事后一次 `QueryInformationJobObject`（`JobObjectBasicProcessIdList`）读成员表——精确、与 pid 回收无关，
-  而且**不再需要原来每 2 秒一次的采样**（那圈 CIM 查询全省了；超时路径也从 `taskkill /T` 换成
-  `TerminateJobObject`）。刻意**不**设 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`：关句柄不许杀掉留口，留口就是结论，
-  必须活过这次检查。`Assign` 与 `Query` 任何一步失败都**抛错**而不是当红腿——否则后面每个答案都是猜的，而
-  "猜着还过了"正是这一轮花四轮在删的那个失败模式。集成那一半仍然由 `probe-ci-harness.ps1` 把关：它那两个
+- **留口归属定案：两个源取并集（Job 对象 ∪ 带守卫的重建）**（2026-09-29，#70 收口）。四次假红每次都烧掉一个
+  CI 周期，被点名的进程都与被点名的探针无关（而那些探针自己都印着 `PROBE OK`）：`wps.exe`/`wpscloudsvr.exe`
+  （office 套件，一条过期的父条目把它算成某一腿的后代）、本机自己的 worker pid 21688、`CompatTelRunner.exe`、
+  以及一整批 Windows 维护进程（`TiWorker.exe`、`TrustedInstaller.exe`、`MoUsoCoreWorker.exe`、三个
+  `svchost.exe`、`CompatTelRunner.exe`），本机还多一次 `sleep.exe`（**Git 自带的 `sleep`**，由正在旁观的工具链
+  拉起）。根都在"用 pid 重建祖先链"：一条 `pid→ppid` 条目只对**写下它时持有该 pid 的那个进程**成立。
+  中途两条补丁（比对创建时间；pid 活着却没记下创建时间就停）把 CI 弄绿过一次（run `36528628613`），但
+  "中间有一跳已经死了又被人拿过"那一类关不掉。接着试了**只用 Windows Job 对象**（`CreateJobObject` +
+  `AssignProcessToJobObject`，事后一次 `QueryInformationJobObject`（`JobObjectBasicProcessIdList`）读成员表：
+  精确、与 pid 回收无关、不再需要每 2 秒的采样，超时路径也从 `taskkill /T` 换成 `TerminateJobObject`；
+  刻意**不**设 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`——关句柄不许杀掉留口，留口就是结论）——**被集成探针当场
+  否掉**：`probe-ci-harness.ps1` 那个故意的 GUI 留口是夹具用 `Diagnostics.Process` + `UseShellExecute` 起的
+  （浏览器交接就是这种形状），**它继承不到 job**，于是 CI 上 `our own look: 1 alive: 5216` 而 runner 报
+  `ok ka-d-leak.ps1 3s / ----- 1 run, 0 red`（run `36534077753`）；而重建恰好看得见它（历史里记着当时那个脚本
+  是它的父亲）。所以定案是**两个源的并集**：job（精确，但那类看不见）∪ 带两条守卫的重建（看得见那类，但需要
+  守卫），再过滤年龄窗与 `conhost.exe`/`OpenConsole.exe`。并集是刻意的：任一源缺失都只会让报告比真相**小**，
+  不会把无关进程平白算进来。`Assign` 与 `Query` 任何一步失败都**抛错**而不是当红腿——否则后面每个答案都是猜的，
+  而"猜着还过了"正是这一轮花四轮在删的那个失败模式。集成那一半仍由 `probe-ci-harness.ps1` 把关：它那两个
   **故意**漏进程的夹具必须照样被点名（否则就是拿假红换了假绿）。
   过程中被自己的两个陷阱咬到并记下：①**空数组从函数返回会扁平化成 `$null`**，于是"这一腿什么都没留"（最常见的
   健康情形）看起来和"查询失败"一模一样——第一版包装就这么在每一腿上抛错；现在包装返回 `@{ Ok; Pids; Err }`，

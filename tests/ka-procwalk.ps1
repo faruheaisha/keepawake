@@ -1,37 +1,36 @@
 ﻿<#
-    A leg's process bookkeeping: which processes belong to the leg, and how they are reported.
+    A leg's leftover bookkeeping: the two sources of "which processes are this leg's", and how they are
+    reported.
 
-    The name is historical. This file used to hold a walk that reconstructed a leg's tree out of a
-    pid->ppid history, and that walk was fooled four times, all false, each costing a CI cycle by
-    naming a process unrelated to the probe it was blamed on (and the blamed probe had printed its own
-    PROBE OK): wps.exe/wpscloudsvr.exe (the user's office suite), the machine's own worker pid 21688,
-    CompatTelRunner.exe, and then a whole Windows servicing burst (TiWorker.exe, TrustedInstaller.exe,
-    MoUsoCoreWorker.exe, three svchost.exe, CompatTelRunner.exe). Two rules were added - a pid->ppid
-    entry is followed only while the pid still holds the process recorded there, and an alive pid with
-    no recorded creation time stops the walk - and CI went green (run 36528628613). The class was
-    still not closed: a hop through a *dead and recycled* pid has nothing left to compare against, and
-    that is measured rather than theoretical (locally a Git `sleep.exe`, started by the tooling that
-    was watching the run, was named as a 384 s leg's leftover).
+    Two sources, because each one is blind to exactly what the other catches - and both halves of that
+    sentence are measured, not reasoned:
 
-    So the reconstruction is gone. A leg's tree is marked **by construction**: tests/ka-ci.ps1 creates
-    a Job object, puts the cmd it starts into it, and every descendant inherits the membership. Asking
-    the job for its process list is exact, cannot be fooled by pid reuse, and needs no sampling:
-    membership survives the exit of the parent that created it, which is exactly the leftover shape
-    (a browser whose whole ancestry had already exited) the old walk existed for.
+      * the JOB object (below, C#): tests/ka-ci.ps1 creates one per leg, puts the cmd it starts into it,
+        and every descendant inherits the membership. Exact, immune to pid reuse, one query, no
+        sampling. Measured blind spot: the deliberate GUI-leak fixture was NOT named by it on the CI
+        runner (run 36534077753: "our own look: 1 alive: 5216" while the runner said "1 run, 0 red"),
+        because that fixture spawns its leftover through Diagnostics.Process with UseShellExecute - the
+        same shape as the browser hand-off the whole check exists for. A process launched by the shell
+        is not our child and inherits nothing.
+      * the RECONSTRUCTION (Get-LeakedDescendants): walks up from every live process through a
+        pid->ppid history sampled every 2 s. It sees the shell-launched leftover (the history recorded
+        the leg's script as its parent while it was alive) and it is the only source that can. It needs
+        the two guards below, which is what four CI cycles of false reds bought: a pid->ppid entry is
+        evidence only about the process that held that pid when the entry was written, so a pid that
+        has changed hands since is not followed, and an alive pid with no recorded creation time stops
+        the walk. The class left open by those guards is a hop through a *dead and recycled* pid, where
+        nothing is left to compare against - which is why the job is asked as well, and why the union
+        of the two is what the runner reports.
 
-    Deliberately NOT set: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE. Closing the job's last handle must not
-    kill the leftovers - the leftover is the finding, so it has to outlive the check that reports it.
-    Killing is explicit (TerminateJobObject) and only on the timeout path, where `taskkill /T` ran.
+    The union is deliberately a union: the job can add a member the walk would have missed, and the
+    walk can add one the job never had. A missing source therefore cannot silently shrink the report;
+    it can only make it smaller than the truth in the shapes the other source owns.
 
-    Cross-checks: tests/probe-procwalk.ps1 drives these helpers directly (a real child is in the job, a
-    process created through WMI is not, an exited member is gone, kill terminates the members, the age
-    window still partitions, and replacing the job query with "everything alive" turns the WMI case
-    red), while tests/probe-ci-harness.ps1 keeps requiring that the deliberate leak fixtures are still
-    named through the runner - that is the integration half.
+    tests/probe-procwalk.ps1 drives both directly (a job member is named, a WMI-created stranger is not,
+    an exited member is gone, the job kill takes its members, a hand-made chain through the
+    reconstruction is named, a recycled pid is refused, a dead ancestor is still crossed, the query
+    line and the guard both have an injection that reddens their own case).
 #>
-
-# The point of this file is that the answer is exact, so the interop is written once, in C#, with the
-# struct marshalling spelled out instead of assembled in PowerShell.
 if (-not ('Ka.LegJob' -as [type])) {
     Add-Type -Namespace Ka -Name LegJob -MemberDefinition @'
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -105,18 +104,76 @@ function Get-KaLegPids([IntPtr]$Job) {
 function Get-ProcessRows {
     # 155 ms median measured on this host with ProcessId, ParentProcessId, Name against 278 ms for the
     # same query without Name and 192 ms for the unprojected table (6 samples each, 402 rows).
-    # CreationDate is no longer needed (the job identifies a leg's tree now), so the projection is back
-    # to the cheaper three; the pid->name map it feeds is built once per leg, at check time.
-    @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, Name -ErrorAction SilentlyContinue)
+    # CreationDate was added later for the recycling guard; measured again on 2026-09-28 at 197 ms
+    # median over 6 samples (same host, 430 rows) - ~0.4% of a core at one query every 2 s.
+    @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, Name, CreationDate -ErrorAction SilentlyContinue)
+}
+
+function Update-ProcessHistory([hashtable]$History, [hashtable]$Names, [hashtable]$Born) {
+    # One query fills all three maps: pid->ppid is what the walk crosses, pid->name is what it prints,
+    # and pid->creation-ticks is what tells a recycled pid from the process an entry was written about.
+    foreach ($r in @(Get-ProcessRows)) {
+        $id = [int]$r.ProcessId
+        $History[$id] = [int]$r.ParentProcessId
+        $Names[$id] = [string]$r.Name
+        try { $Born[$id] = [long]$r.CreationDate.Ticks } catch { }
+    }
+}
+
+function Get-LeakedDescendants([int]$RootId, [hashtable]$History, [hashtable]$Names, [hashtable]$Born) {
+    # Walk UP from everything alive now, through a pid->ppid history, instead of down from the child
+    # that is already gone. Down is blind here: the leftover that hung CI was a browser whose whole
+    # ancestry - cmd, ka.ps1, the panel's powershell - had exited before anyone looked, and Windows
+    # keeps no record of a dead process's parent. Up through the history reaches it.
+    # Blind spot, stated rather than hidden: a process born and buried between two samples leaves no
+    # entry, so its own child is invisible to this walk.
+    $rows = @(Get-ProcessRows)
+    $nowBorn = @{ }
+    foreach ($r in $rows) {
+        try { $nowBorn[[int]$r.ProcessId] = [long]$r.CreationDate.Ticks } catch { }
+    }
+    $out = @()
+    foreach ($r in $rows) {
+        $pidNow = [int]$r.ProcessId
+        # conhost.exe (23 of 402 rows on this host at rest) and OpenConsole.exe are pseudo-console
+        # hosts Windows starts for a process that gets its own window station. They die with the
+        # session they were made for, hold no port, no power request and no file handle, and in the
+        # one fixture that leaks on purpose they showed up next to the leftover that caused them.
+        # Asserting on them would only add a way for a clean run to go red by accident. The blind
+        # spot this opens is small and named: a console host orphaned by a parent that died between
+        # two samples is dropped unseen.
+        if ($consoleHosts -contains [string]$r.Name) { continue }
+        $up = $pidNow
+        for ($i = 0; $i -lt 40; $i++) {
+            if (-not $History.ContainsKey($up)) { break }
+            # The guard. A pid that is alive now but did not exist when this entry was recorded is a
+            # different process that inherited the number, so the entry says nothing about it and the
+            # walk stops instead of following it. A pid that is gone now keeps its recorded parent -
+            # that dead tail is the whole reason this history exists (and it is also the class this
+            # guard cannot close: see the header).
+            if ($nowBorn.ContainsKey($up)) {
+                # No recorded creation time for a pid that is alive now = no evidence at all that this
+                # entry is about the process holding it, so stop. That case is real and it is what CI
+                # caught on 2026-09-28 after the first version of this guard: a Windows servicing burst
+                # (TiWorker.exe, TrustedInstaller.exe, MoUsoCoreWorker.exe, three svchost.exe,
+                # CompatTelRunner.exe) was named as a 435 s leg's leftovers, because CIM answers no
+                # CreationDate for those images and a guard that only compares *available* times was
+                # skipped for them. When we do have the recorded time, it must still match.
+                if (-not $Born.ContainsKey($up)) { break }
+                if ($nowBorn[$up] -ne [long]$Born[$up]) { break }
+            }
+            $up = [int]$History[$up]
+            if ($up -eq $RootId) { $out += $pidNow; break }
+            if ($up -eq 0) { break }
+        }
+    }
+    return @($out | Sort-Object -Unique)
 }
 
 function Get-OwnLeftovers([int[]]$ProcIds, [datetime]$BornNoEarlierThan, [datetime]$BornNoLaterThan) {
     # The window is deliberately generous at the edges: a process whose start time cannot be read
     # (access denied, or a protected service) is kept, because losing a real leftover is worse than a
-    # red that names something for a human to go look at. With the job as the source of the pids this
-    # window is belt-and-braces rather than the guard it used to be - everything in the job was created
-    # by this leg - and it stays because a pid recycled *within* the leg is exactly the shape it
-    # catches.
+    # red that names something for a human to go look at.
     # $BornNoLaterThan is the moment the poll noticed the exit, not the exit itself: measured in
     # tests/ka-ci.ps1, a non-waited Start-Process object answers $null (without throwing) for ExitTime
     # and ExitCode once the child is gone, so there is nothing better to use. The gap is the poll's
@@ -139,8 +196,8 @@ function Get-OwnLeftovers([int[]]$ProcIds, [datetime]$BornNoEarlierThan, [dateti
 function Format-Leftovers([int[]]$ProcIds, [hashtable]$Names) {
     # Nothing to name returns an empty array, not '': an empty string inside @() is one element, and
     # 'left 1 descendant(s) alive: ' with nothing after the colon is exactly what it printed on the
-    # first fixture run. The caller builds $Names from one query taken after the alive check, so it has
-    # a name for everything that can be printed.
+    # first fixture run. Only a pid present in $History can be reported, and both maps are filled from
+    # the same rows, so $Names has a name for everything printed.
     if (-not $ProcIds.Count) { return @() }
     return @(foreach ($id in $ProcIds) { ('{0}:{1}' -f $id, $Names[$id]) })
 }
