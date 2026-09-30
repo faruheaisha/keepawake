@@ -24,6 +24,13 @@
         cannot say anything about, so the walk stops there instead of following its recorded parent. A
         dead hop we *did* sample is still crossed, which is exactly what keeps the shell-launched
         leftover (whose parent is the leg's own script, alive and sampled for seconds) visible.
+        One further defect in that same class, found on run 36679927952 and fixed 2026-09-30: the
+        guards rested on `[long]$r.CreationDate.Ticks`, and PS 5.1 answers `[long]$null.Ticks` with 0
+        *without throwing*, so every image CIM gives no CreationDate for was recorded as having been
+        created at tick 0. A 0 is a present key with a real-looking value, so "no recorded time" never
+        fired, and a live-but-unreadable pid compared 0 to 0 and read as "same process". Both guards
+        now treat only a positive time as evidence, and rule (2) turns "alive now but no readable
+        current time" into a stop rather than a skip.
 
     The union is deliberately a union: the job can add a member the walk would have missed, and the
     walk can add one the job never had. A missing source therefore cannot silently shrink the report;
@@ -119,7 +126,12 @@ function Update-ProcessHistory([hashtable]$History, [hashtable]$Names, [hashtabl
         $id = [int]$r.ProcessId
         $History[$id] = [int]$r.ParentProcessId
         $Names[$id] = [string]$r.Name
-        try { $Born[$id] = [long]$r.CreationDate.Ticks } catch { }
+        # [long]$null.Ticks is 0 and does not throw (measured 2026-09-30, PS 5.1), so an unguarded
+        # cast writes a *time* of 0 for every image CIM answers no CreationDate for (the runner's
+        # protected/system processes). A 0 looks like a real answer to both guards below, which is
+        # exactly how a Windows servicing burst got named as a leg's leftovers. Only a positive time
+        # is evidence; everything else is left out so the walk stops instead of guessing.
+        try { $t = [long]$r.CreationDate.Ticks; if ($t -gt 0) { $Born[$id] = $t } } catch { }
     }
 }
 
@@ -132,8 +144,14 @@ function Get-LeakedDescendants([int]$RootId, [hashtable]$History, [hashtable]$Na
     # entry, so its own child is invisible to this walk.
     $rows = @(Get-ProcessRows)
     $nowBorn = @{ }
+    $liveNow = @{ }
     foreach ($r in $rows) {
-        try { $nowBorn[[int]$r.ProcessId] = [long]$r.CreationDate.Ticks } catch { }
+        $id = [int]$r.ProcessId
+        $liveNow[$id] = $true
+        # Same 0-is-not-a-time rule as Update-ProcessHistory: a live pid whose CreationDate CIM will
+        # not give must land in $liveNow and NOT in $nowBorn, so rule (2) can tell "alive but
+        # unprovable" from "alive and provably the same process".
+        try { $t = [long]$r.CreationDate.Ticks; if ($t -gt 0) { $nowBorn[$id] = $t } } catch { }
     }
     $out = @()
     foreach ($r in $rows) {
@@ -149,12 +167,9 @@ function Get-LeakedDescendants([int]$RootId, [hashtable]$History, [hashtable]$Na
         $up = $pidNow
         for ($i = 0; $i -lt 40; $i++) {
             if (-not $History.ContainsKey($up)) { break }
-            # The guard. A pid that is alive now but did not exist when this entry was recorded is a
-            # different process that inherited the number, so the entry says nothing about it and the
-            # walk stops instead of following it. A pid that is gone now keeps its recorded parent -
-            # that dead tail is the whole reason this history exists (and it is also the class this
-            # guard cannot close: see the header).
-            # The guard, and it is deliberately two rules deep.
+            # The guard, deliberately two rules deep. An entry is evidence only about the process that
+            # held that pid when the entry was written; a dead tail is the whole reason this history
+            # exists, so a hop that is gone now keeps its recorded parent and the walk is crossed.
             # (1) No recorded creation time for this pid at all = no evidence about who held it when the
             #     entry was written, so stop. CI paid for this on 2026-09-28: a Windows servicing burst
             #     (TiWorker.exe, TrustedInstaller.exe, MoUsoCoreWorker.exe, three svchost.exe,
@@ -166,8 +181,17 @@ function Get-LeakedDescendants([int]$RootId, [hashtable]$History, [hashtable]$Na
             #     (locally: Git's sleep.exe). A dead hop we *did* sample is still crossed, which is what
             #     keeps the shell-launched leftover (whose parent chain is the leg's own script) visible.
             if (-not $Born.ContainsKey($up)) { break }
-            # (2) If the pid is alive now, it must still be the process the entry was written about.
-            if ($nowBorn.ContainsKey($up) -and $nowBorn[$up] -ne [long]$Born[$up]) { break }
+            # (2) If the pid is alive now, it must be *provably* still the process the entry was written
+            #     about: alive, and its creation time readable and equal to the recorded one. Written the
+            #     other way round first (`-and` on "a time was read now") it failed open - a live pid
+            #     whose current CreationDate is unreadable skipped the comparison and its entry was
+            #     followed. That is the same 0-sentinel defect as (1), one level down, and it is what
+            #     named 11 unrelated processes (TiWorker.exe, TrustedInstaller.exe, svchost.exe...) as a
+            #     6-minute leg's leftovers on run 36679927952. Alive-but-unprovable stops the walk.
+            if ($liveNow.ContainsKey($up)) {
+                if (-not $nowBorn.ContainsKey($up)) { break }
+                if ($nowBorn[$up] -ne [long]$Born[$up]) { break }
+            }
             $up = [int]$History[$up]
             if ($up -eq $RootId) { $out += $pidNow; break }
             if ($up -eq 0) { break }

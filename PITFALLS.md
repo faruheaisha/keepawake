@@ -70,9 +70,17 @@
 18. **`Add-Type` 的嵌套 job / 跨进程句柄**：`AssignProcessToJobObject` 在 Win8+ 支持嵌套 job，失败就**抛错**而不是
     当红腿——否则后面每个答案都是猜的。
 19. **一个探针"绿过"什么都不能证明**：必须见过它**红**。这个仓库所有的守卫都配一条能把自己那条判红的注入腿
-    （`probe-*-selftest.ps1` 与 `probe-procwalk.ps1` 的第 7、8 条）。
+    （`probe-*-selftest.ps1` 与 `probe-procwalk.ps1` 的四条注入腿——第 7、8、9、10 条）。
 20. **两次 sweep 不许共用文件名**：突变体名要带 `$PID`、暂存目录要带 GUID，否则先结束的那个会把另一个的
     测试对象删掉，症状是三条臂一起报"`-File` 参数指向的文件不存在"。
+21. **`[long]$null.Ticks` 是 `0`，而且不抛**（PS 5.1，2026-09-30 实测）。`try { $Born[$id] = [long]$r.CreationDate.Ticks } catch { }`
+    读起来像"读不到就跳过"，实际是给每个 CIM 不给 `CreationDate` 的进程**记下一个看起来是真的时间 0**——runner 上以
+    标准令牌查 TiWorker.exe / TrustedInstaller.exe / svchost.exe 就是这一类。于是所有"有没有时间可比"的守卫同时失效：
+    `ContainsKey` 是 true、`0 -ne 0` 是 false，pid 回收守卫被整段跳过。`[实测]` CI run 36679927952：一条 6 分钟腿的
+    留口名单里冒出 11 个与它无关的系统进程（同一次红里探针自己刚打印过 `PROBE OK`）。**修法**：`$t -gt 0` 才写进 map；
+    并且"活着但现在读不到时间"必须**停走**，不是跳过比较（`probe-procwalk.ps1` 第 9、10 条注入各自把这两条钉红）。
+    本机实测 334 行 CIM 里 0 行是 null（`_tmp/procwalk-cim-timing-20260930.txt`；这个行数每轮都不同，要紧的是那个 0），
+    所以这个形状在本机只能靠"喂给采样器一行没有 CreationDate 的行"来演，runner 上才是真的。
 
 ---
 

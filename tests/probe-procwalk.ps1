@@ -11,10 +11,13 @@
     process that held that pid when the entry was written, and a chain stitched through a recycled pid
     can land on the leg's cmd by coincidence.
 
-    So the reconstruction is gone. Each leg runs inside a Job object, every descendant inherits the
-    membership, and the members are read back with one query. The cases below pin that contract, and
-    the last run injects into the single line that asks the job, so a green here cannot survive that
-    line being replaced by "everything alive" - which is what the old approach amounted to.
+    So the walk is no longer trusted on its own. Each leg runs inside a Job object, every descendant
+    inherits the membership, and the members come back from one query. The walk is kept as the second
+    source, because each one is blind to exactly what the other catches - the job cannot see a process
+    the shell launches (measured on CI: the deliberate GUI leak was missing from the job while alive) -
+    and it carries the guards described in tests/ka-procwalk.ps1. The cases below pin both sources, and
+    each of the four rules has a run that injects into the one line it lives on, so a green here cannot
+    survive that line being put back to its old, wrong form.
 #>
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -120,6 +123,36 @@ try {
         if ($got4 -contains [int]$walk.Id) {
             Bad 'a hop whose pid has no record at all was followed - that is the dead-and-recycled bridge that named an unrelated process'
         } else { Ok 'refused: nothing was ever recorded about who held that pid' }
+
+        # The two cases below exist because of run 36679927952, where the sampler recorded tick 0 for
+        # images CIM would not time and both guards then read 0 as a real answer. This box has none of
+        # those images (measured 2026-09-30: 334 rows, 0 with no CreationDate), so the shape is handed
+        # to the walk the only way it can be here - a row set that mirrors the runner's. The guard
+        # cannot tell where a row came from; the sleeper is real and alive, only its time is withheld.
+        & {
+            $stubId = [int]$walk.Id
+            $stubBorn = $real[$stubId]
+            function Get-ProcessRows {
+                return @([pscustomobject]@{ ProcessId = $stubId; ParentProcessId = $sentinelRoot; Name = 'ka-procwalk-untimed'; CreationDate = $null })
+            }
+
+            Write-Output '   - a live pid the sampler cannot time (the guard must not be skipped for it)'
+            $nmStub = @{ $stubId = 'ka-procwalk-untimed' }
+            $histStub = @{ $stubId = $sentinelRoot }
+            $bornStub = @{ $stubId = $stubBorn }
+            $got5 = @(Get-LeakedDescendants $sentinelRoot $histStub $nmStub $bornStub)
+            if ($got5 -contains $stubId) {
+                Bad 'followed a live pid whose creation time cannot be read now - that is the fail-open that named a servicing burst (TiWorker.exe, TrustedInstaller.exe, svchost.exe) as a 6-minute leg''s leftovers'
+            } else { Ok 'refused: alive now but not provably the same process' }
+
+            Write-Output '   - and the sampler records no time at all for such a row'
+            $h5 = @{ }; $n5 = @{ }; $b5 = @{ }
+            Update-ProcessHistory $h5 $n5 $b5
+            if (-not $h5.ContainsKey($stubId)) { Bad 'the mirrored row set never reached the sampler - the case below would be vacuous' }
+            elseif ($b5.ContainsKey($stubId)) {
+                Bad ('a process CIM gave no CreationDate for was recorded as created at tick ' + $b5[$stubId] + ' - the 0 sentinel is a present key with a real-looking value, so it disarms the guard instead of firing it')
+            } else { Ok 'no time recorded for a row that has none, so the guard can fire' }
+        }
     }
     try { Stop-Process -Id $walk.Id -Force -ErrorAction Stop } catch { }
 } finally {
@@ -207,6 +240,75 @@ try {
     Remove-Item -LiteralPath $mutant2 -Force -ErrorAction SilentlyContinue
 }
 
+# ------------------------------------------------- the 0-sentinel's own red (run 36679927952)
+# The two rules repaired on 2026-09-30 each get reverted here, one at a time, and each mutant child is
+# required to redden the case that owns its rule.
+function New-LibMutant([string]$From, [string]$To, [string]$Slug) {
+    # Anchored on exact text and counted first: a silent miss would make the injection vacuous, which is
+    # the failure mode this file exists to avoid - so a miss ends the run here, like legs 7 and 8 do,
+    # and it is not reported through Bad(): Bad writes to the pipeline, and a helper that returns a path
+    # must not also return text (the two would be glued into one array).
+    $text = [IO.File]::ReadAllText($lib)
+    $hits = ([regex]::Matches($text, [regex]::Escape($From))).Count
+    if ($hits -ne 1) { Write-Output ("PROBE FAILED: the anchor for '$Slug' matches $hits time(s), expected 1 - the injection would not test what we think"); exit 1 }
+    $path = Join-Path $root ('_tmp/procwalk-' + $Slug + '-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    [IO.File]::WriteAllText($path, $text.Replace($From, $To), (New-Object Text.UTF8Encoding($true)))
+    return $path
+}
+
+function Invoke-InjectedChild([string]$LibPath) {
+    # This probe, run again as a child against the mutated library. The child reports on its own
+    # assertions; the leg here only asks whether it went red for the reason under test. $null means it
+    # did not finish, and the deadline is what turns a silent hang into one named line.
+    $out = Join-Path $env:TEMP ('ka-procwalk-child-' + [guid]::NewGuid().ToString('N') + '.out')
+    $prevLib = $env:KA_PROCWALK_LIB
+    $prevChild = $env:KA_PROCWALK_CHILD
+    $env:KA_PROCWALK_LIB = $LibPath
+    $env:KA_PROCWALK_CHILD = '1'
+    try {
+        $p = Start-Process -FilePath $ps -NoNewWindow -PassThru -RedirectStandardOutput $out `
+            -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "' + $selfPath + '"')
+        $deadline = (Get-Date).AddSeconds(180)
+        while (-not $p.HasExited -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100; $p.Refresh() }
+        if (-not $p.HasExited) { try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch { } ; return $null }
+        return (@(Get-Content -LiteralPath $out -Raw -ErrorAction SilentlyContinue) -join "`n")   # Get-Content: the redirect handle is still ours
+    } finally {
+        if ($prevLib) { $env:KA_PROCWALK_LIB = $prevLib } else { Remove-Item Env:KA_PROCWALK_LIB -ErrorAction SilentlyContinue }
+        if ($prevChild) { $env:KA_PROCWALK_CHILD = $prevChild } else { Remove-Item Env:KA_PROCWALK_CHILD -ErrorAction SilentlyContinue }
+        Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
+    }
+}
+
+Write-Output '--- 9. the injection: the 0-sentinel guard in the sampler deleted'
+$mutant9 = New-LibMutant `
+    '        try { $t = [long]$r.CreationDate.Ticks; if ($t -gt 0) { $Born[$id] = $t } } catch { }' `
+    '        try { $Born[$id] = [long]$r.CreationDate.Ticks } catch { }' `
+    'nulltime'
+try {
+    $text9 = Invoke-InjectedChild $mutant9
+    if ($null -eq $text9) { Bad 'the 0-sentinel child did not finish in 180s' }
+    elseif ($text9 -notlike '*0 sentinel*') {
+        Bad 'with the 0-sentinel guard deleted the child still passed - the sampler case does not depend on it'
+        foreach ($l in ($text9 -split "`r?`n") | Where-Object { $_.Trim() }) { Write-Output ('        ' + $l.Trim()) }
+    } else { Ok 'the sampler case goes red the moment a no-time row is recorded as tick 0' }
+} finally { Remove-Item -LiteralPath $mutant9 -Force -ErrorAction SilentlyContinue }
+
+Write-Output '--- 10. the injection: the walk''s guard reverted to its fail-open one-liner'
+# One line, and it is the whole of the old rule: gating on "a time was read now" instead of "alive now"
+# turns an unreadable current time into a skip rather than a stop.
+$mutant10 = New-LibMutant `
+    '            if ($liveNow.ContainsKey($up)) {' `
+    '            if ($nowBorn.ContainsKey($up)) {' `
+    'guard2'
+try {
+    $text10 = Invoke-InjectedChild $mutant10
+    if ($null -eq $text10) { Bad 'the guard-2 child did not finish in 180s' }
+    elseif ($text10 -notlike '*followed a live pid whose creation time cannot be read*') {
+        Bad 'with guard 2 reverted to its fail-open one-liner the child still passed - the live-but-unprovable case does not depend on it'
+        foreach ($l in ($text10 -split "`r?`n") | Where-Object { $_.Trim() }) { Write-Output ('        ' + $l.Trim()) }
+    } else { Ok 'the live-but-unprovable case goes red the moment guard 2 skips an unreadable time' }
+} finally { Remove-Item -LiteralPath $mutant10 -Force -ErrorAction SilentlyContinue }
+
 foreach ($m in $bad) { Write-Output ('  problem: ' + $m) }
 if ($bad) { Write-Output ('PROBE FAILED: ' + $bad.Count + ' problem(s)'); exit 1 }
-Write-Output 'PROBE OK: the job lists what this leg started and assigned, does not list a WMI-created stranger, drops an exited member and takes its members with it when killed; the walk names a chain to the leg root, refuses a rehanded pid and a hop nothing is recorded about, still crosses a dead hop it did sample; and each rule has an injection that reddens its own case'
+Write-Output 'PROBE OK: the job lists what this leg started and assigned, does not list a WMI-created stranger, drops an exited member and takes its members with it when killed; the walk names a chain to the leg root, refuses a rehanded pid, a hop nothing is recorded about and a live pid whose time it cannot read, still crosses a dead hop it did sample; the sampler records no time for a row that has none; and each of the four rules has an injection that reddens its own case'

@@ -7,6 +7,25 @@
 `.migrated.json` 都读它。仓库**不放** `VERSION` 文件——两份版本号一定会漂移。CI 在打 tag 时比对
 `KaVersion` 与 tag，不一致就构建失败。
 
+## [未发布]
+
+- **留口归属的 0 号哨兵：`[long]$null.Ticks` 是 `0`，而且不抛**（2026-09-30）。CI run `36679927952`（一个**只改了
+  文档**的提交）红在 "Gates and probes" 步：`FAIL probe-server-hint-selftest.ps1 371s left 11 descendant(s) alive:
+  4224:updater.exe, 4256:svchost.exe, …, 8844:TrustedInstaller.exe, 9712:CompatTelRunner.exe, 10160:svchost.exe`，
+  而同一次运行里被点名的探针自己刚打印过 `PROBE OK`。文档改不动行为，所以这是 09-29 那条归属 bug 的**残留分支**：
+  采样那一行 `try { $Born[$id] = [long]$r.CreationDate.Ticks } catch { }` 读起来像"读不到就跳过"，实际 PS 5.1 对
+  `$null` 求 `.Ticks` 给 `0` 且不抛，于是 runner 上以标准令牌查不到 `CreationDate` 的镜像（`TiWorker.exe`、
+  `TrustedInstaller.exe`、`svchost.exe`）被记成"创建于 tick 0"。两条守卫随后一起失效：`ContainsKey` 是 true
+  （键在），"现在这个 pid 还是不是那个进程"是 `0 -ne 0`（false）——pid 回收守卫被整段跳过，一条 6 分钟腿的名单里
+  冒出 11 个与它无关的系统进程。**修法两处**：只在 `$t -gt 0` 时才写进 map；步行的第二层守卫改成"**活着就必须可证**"
+  ——pid 现在活着而当前创建时间读不出来，**停走**而不是跳过比较。本机实测 334 行 CIM 里 0 行没有 `CreationDate`
+  （`_tmp/procwalk-cim-timing-20260930.txt`；这个行数每轮都不同，要紧的是那个 0），所以
+  这个形状在本机只能靠"喂给采样器一行没有 `CreationDate` 的行"来演（`& { function Get-ProcessRows { … } }`，只在
+  块内生效），runner 上它才是自然的。`tests/probe-procwalk.ps1` 加了第 ⑥ 条的两个用例与第 ⑨⑩ 两条注入腿，各自
+  把这两条规则钉红；`PITFALLS.md` 的 PowerShell 陷阱表因此从 20 条变 21 条。这一版没有改产品代码。
+  验证：本机 `tests\ka-ci.ps1 -Gates -Probes` 整步 28 行 0 红（15:08:40→15:29:54，`_tmp/ci-local-procwalk-fix.log`）；
+  三个改过的文件在冻结字节上另补跑一轮门禁 + 三个探针，各 0 红（`_tmp/postfreeze-rerun-20260930.log`）。
+
 ## [1.0.1] — 2026-09-30
 
 一个补丁版：一条**会停掉你自己面板**的归属 bug（下面第一条），加上三周来所有"闸门绿着、而它要防的

@@ -46,10 +46,10 @@
 | 想干的事 | 命令 | 本机实测 | CI 实测 |
 | --- | --- | --- | --- |
 | 五道门禁 | `tests\ka-ci.ps1 -Gates` | **67s**（encoding 1s / privacy 3s / privacy-mutation 60s / syntax 2s / workflow 1s；末行 `----- 5 run, 0 red`） | 同一入口 |
-| 门禁 + 全部探针 | `tests\ka-ci.ps1 -Gates -Probes` | **23m14s**（27 行 0 红） | **21m45s**（run `36553833882`，末行 `----- 28 run, 0 red`） |
+| 门禁 + 全部探针 | `tests\ka-ci.ps1 -Gates -Probes` | **21m14s**（28 行 0 红，2026-09-30） | **21m45s**（run `36553833882`，末行 `----- 28 run, 0 red`） |
 | 全量行为套件 | `tests\ka-tests.ps1` | **不要在本机随手跑**（动真电源设置与计划任务） | 每轮都跑（84 个 `It`，最近一轮印 91 条判定行：86 通过 / 5 跳过 / 0 失败） |
 | 字节形状 | `tests\ka-encoding.ps1`（`-Apply` 就地修） | 1s | 每轮 |
-| 某个探针单跑 | `tests\probe-<名字>.ps1` | 见 `README.md` 探针表（`probe-native` 5.2s、`probe-procwalk` 9–15s、`probe-server-hint` 50–76s、`probe-server-hint-selftest` 384–435s、`probe-bat-entry -SelfTest` 8m35s） | 前四类每轮；`probe-bat-entry` 不进 CI（理由与代价见 README 表内） |
+| 某个探针单跑 | `tests\probe-<名字>.ps1` | 见 `README.md` 探针表（`probe-native` 5.2s、`probe-procwalk` 15.4→26s、`probe-server-hint` 50–76s、`probe-server-hint-selftest` 384–435s、`probe-bat-entry -SelfTest` 8m35s） | 前四类每轮；`probe-bat-entry` 不进 CI（理由与代价见 README 表内） |
 | 出三件套 | `packaging\build.ps1 -Stage -Installer -Smoke` | zip 25 条目 / 0.31 MB；`setup.exe` 2.16 MB（Inno 编译 3.454s） | 每轮 |
 | 真装真卸 | `packaging\ka-test-install.ps1 -WithWorker -SelfTest` | **会删掉再补回你的 `KeepAwake-Guard`/`KeepAwake-Logon`**，别在没备份时跑 | 每轮（20 条断言 + 2 个突变，2m41s） |
 | 只打印版本 | `packaging\build.ps1 -ShowVersion` | 版本号真源是 `ka-core.ps1` 的 `$script:KaVersion` | 发布前比对 tag |
@@ -79,4 +79,4 @@
 
 ## 摩擦点
 
-全部写在 `PITFALLS.md`（PowerShell 5.1 与 cmd 的 20 条、CI/门禁经验、平台事实），这里不重抄。
+全部写在 `PITFALLS.md`（PowerShell 5.1 与 cmd 的 21 条、CI/门禁经验、平台事实），这里不重抄。

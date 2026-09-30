@@ -55,8 +55,9 @@
     The loop then polls HasExited with a deadline; on the deadline it kills the whole tree with
     TerminateJobObject, so a hanging script names itself instead of eating the step and cannot drag its
     leftovers into the next one. That, and the answer to "which processes did this leg leave behind?",
-    both come from the same Windows Job object every leg is started inside - see tests/ka-procwalk.ps1
-    for the four false results that retired the pid->ppid reconstruction this replaced. No verdict file
+    both come from the same Windows Job object every leg is started inside, unioned with the guarded
+    pid->ppid walk - see tests/ka-procwalk.ps1 for the four false results that forced the union and for
+    why each source is needed. No verdict file
     is never treated as a zero: it is a red that says so, which is the same rule
     tests/probe-bat-entry.ps1 fact 4 runs on.
 
@@ -121,8 +122,9 @@ function Invoke-Leg([object]$f) {
     # ms too tight can.
     $legBorn = Get-Date
     # The leg's tree is marked by construction: a job object holds the cmd and everything it creates,
-    # so "which processes are this leg's" is a query instead of an archaeology of pids. See
-    # tests/ka-procwalk.ps1 for the four false results that retired the reconstruction.
+    # so "which processes are this leg's" is a query instead of an archaeology of pids. It is the exact
+    # half of the union; the walk below is the other half, because the job cannot see a process the
+    # shell launches. See tests/ka-procwalk.ps1 for the four false results that forced the union.
     $job = [Ka.LegJob]::Create()
     if ($job -eq [IntPtr]::Zero) { throw 'CreateJobObject failed - the leftover check has no meaning without it' }
     $child = Start-Process -FilePath $cmd -NoNewWindow -PassThru -ArgumentList $line
