@@ -38,7 +38,9 @@
 - **也管不了屏保**："This function does not stop the screen saver from executing."
 - **`ES_USER_PRESENT` 不支持**："This value is not supported. If ES_USER_PRESENT is combined with other
   esFlags values, the call will fail and none of the specified states will be set."
-  → 所以我们的掩码里**永不出现**它（`tests/ka-tests.ps1` 有专门断言，见任务"SETS 掩码永不含 ES_USER_PRESENT"）。
+  → 所以我们的掩码里**永不出现**它（`tests/ka-tests.ps1:1839` 的用例"掩码位不串位：常量值与
+  `ES_USER_PRESENT` 陷阱钉死"：`Ka.Native` **不许**定义这个字段，且真把它混进掩码调一次内核，
+  要求调用**失败**——文档说的"整次调用失败"若在本机不成立，那条断言自己会红）。
 - **Away Mode 不是给笔记本的**："Applications that do not require critical background processing or that run
   on portable computers should not enable away mode because it prevents the system from conserving power by
   entering true sleep." 且它必须与 `ES_CONTINUOUS` 同时给。

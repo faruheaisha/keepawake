@@ -71,9 +71,9 @@
 | DR-3 | 一条腿的"留口"= **Windows Job 对象 ∪ 带两条守卫的 pid→ppid 重建** | ①只用 pid 重建 → 四种假红（office 套件、本机 worker、`CompatTelRunner`、一整批维护进程）②只用 Job 对象 → 看不见 `UseShellExecute` 起的进程（浏览器交接就是这种形状）③只取两者交集 → 漏掉重建独有的那只 | 两个源各有盲区且**不重叠**；交集会把真实留口过滤掉 | `README.md` §一条腿的"留口"该怎么认；`tests/ka-procwalk.ps1` + `probe-ci-harness.ps1` |
 | DR-4 | 双引擎：电源请求 + 防锁屏心跳 | 只用 `SetThreadExecutionState`；或只用合成输入 | 两个**不同的**空闲计时器：SETS 管睡眠/熄屏，锁屏由输入空闲决定，SETS 官方明说它不阻止屏保 | `docs/RESEARCH.md` §一手来源 |
 | DR-5 | `awayMode` 默认**关** | 默认打开 Away Mode | 官方说便携机不应启用（它反而阻止真正省电），且本机从没跑过对照实验（用户决定不停掉手上的保护） | `PITFALLS.md` §四；`README.md` §能力边界 |
-| DR-6 | 普通账户即可，不做 Windows 服务、不装驱动 | 装成服务/S4U 常驻 | 服务要管理员、要安装动作，与"下载即用"冲突；`S4U` 只在可选的 `KeepAwake-Boot` 里提供并写明代价 | `README.md` §权限、§断电自恢复链 |
+| DR-6 | 普通账户即可，不做 Windows 服务、不装驱动 | 装成服务/S4U 常驻 | 服务要管理员、要安装动作，与"下载即用"冲突；`S4U` 只在可选的 `KeepAwake-Boot` 里提供并写明代价 | `README.md` §硬事实 的"权限"行、§断电自恢复链 |
 | DR-7 | v1.0 **不做代码签名** | 买证书、签名 | 测 AV/SmartScreen 要上传样本，不是本机可逆动作；改用"每版附 `SHA256SUMS`"回答"这份文件是不是他发的那份" | `SECURITY.md`；`PITFALLS.md` §四 |
-| DR-8 | 心跳默认 **F15 按键**（`antiLockMethod='key'`），鼠标是选项 | 默认合成鼠标移动 | 键盘路径对多数场景更轻、更少被当成"连点器"特征；两种都留成配置项 | `ka-core.ps1:635`（默认值真源）；`README.md` §30 秒上手 |
+| DR-8 | 心跳默认 **F15 按键**（`antiLockMethod='key'`），鼠标是选项 | 默认合成鼠标移动 | 键盘路径对多数场景更轻、更少被当成"连点器"特征；两种都留成配置项 | `ka-core.ps1:635`（默认值真源）；`README.md` §配置 的 `antiLockMethod` 行 |
 | DR-9 | 不联网、不上传、不检查更新 | 遥测 / 自动更新 | 隐私面为零是可验证的承诺，也是它敢被下载的理由 | `PRIVACY.md`；`tests/ka-privacy.ps1`（含"隐私门禁真的会红"） |
 | DR-10 | 维护者文档（本目录）**不进便携包** | 把 `docs/**` 加进发布清单 | 根目录规则是"根部文件都会被认领、被认领的就进 zip"；下载者要的是产品不是维护笔记 | `tests/ka-release-files.ps1` 的认领规则；`docs/README.md` 末节 |
 
