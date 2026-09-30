@@ -70,6 +70,14 @@
   必须盖住引用的生长面**——引用长在注释里，扫描只到文档，就等于没扫。
   验证：本机 `tests\ka-ci.ps1 -Gates` 5 行 0 红（`_tmp/gates-tmpkeep-20260930.log`）。
 
+- **核对仓库里被引用的每一个 CI run/job id**（2026-09-30，纯文档）。从 README/PITFALLS/CHANGELOG/docs/tests
+  里提取全部 9 位以上的数字共 23 个，逐个 `gh api` 复查：全部可解析，且语义与引用一致（红/绿/取消都对得上）。
+  唯一的表面矛盾是 `36440936247` 读出 `cancelled`——它是 `run_attempt=2`：第一次 attempt 正是 `CHANGELOG` 记的
+  那次 1 red，第二次（`gh run rerun --failed`）被并发规则取消，run 级结论因此显示后者。据此给 `PITFALLS.md`
+  §三 加一条"`conclusion` 是最后一次 attempt 的"，免得下一个读日志的人把 `cancelled` 当成"没红过"。
+  证据：`_tmp/runid-audit-20260930.txt`（23 个 id 的 attempt/conclusion/sha 逐行）。
+  验证：本机 `tests\ka-ci.ps1 -Gates` 5 行 0 红（`_tmp/gates-runidaudit-20260930.log`）。
+
 ## [1.0.1] — 2026-09-30
 
 一个补丁版：一条**会停掉你自己面板**的归属 bug（下面第一条），加上三周来所有"闸门绿着、而它要防的

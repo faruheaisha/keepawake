@@ -121,6 +121,12 @@
 - **`push` 与"API 通"是两件事**：本机 `github.com` 走代理才通，`gh`/API 通不代表 `git push` 通；代理没起时
   `git push` 会 `Connection was reset`，别循环重试，也**别改用 Contents API 推**（那会毁掉 `.ps1` 的 BOM+LF）。
   `[实测]`
+- **一条 run 的 `conclusion` 读的是**最后一次 attempt**的**：`gh run rerun --failed` 在同一个 run id 上开
+  attempt 2；那次重跑若被并发规则取消，整条 run 从此读起来就是 `cancelled`——第一次 attempt 的失败（连同它
+  日志里的 1 red）藏在 `run_attempt` 后面。2026-09-30 核对仓库里全部 23 个被引用的 run/job id 时撞上：
+  `36440936247` 是 `run_attempt=2 / cancelled`，而 `CHANGELOG` 写它"以 `----- 27 run, 1 red` 结束、重跑被取消"
+  ——两者都对，错的是"cancelled 就当没红过"这种读法。查 attempt 数：`gh api repos/<o>/<r>/actions/runs/<id> --jq .run_attempt`。
+  `[实测]` `_tmp/runid-audit-20260930.txt`
 - **`tests/ka-tests.ps1` 不许随手在正在用的机器上跑**：它动真实电源设置与计划任务。它的位置是 CI 的一次性 runner。
   `[实测]`（用户两次拒绝本机跑）
 
