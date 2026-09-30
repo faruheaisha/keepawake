@@ -180,4 +180,6 @@ git grep -h -o '_tmp/[A-Za-z0-9._*{}/-]*' | Sort-Object -Unique   # 全部入库
 `ka-lid.ps1:280` 指的是**突变体**里的行号
 （`_tmp/check-log-ascii-rule.ps1` 从锚点算出，当天重跑 13 条腿全对、自己印 `ka-lid mutant sits at line 280`，
 见 `_tmp/logascii-rerun-20260930.log`——不是笔误）；1 个落空——`ka-release-files.ps1:16` 那张手打清单已被树
-推导取代、该行成了空行，已在 `CHANGELOG` 原句就地标注。
+推导取代、该行成了空行，已在 `CHANGELOG` 原句就地标注。同一轮核的另外三类：28 条相对链接全在（0 断链）、
+`INV-1…10`/`DR-1…10` 每处引用都有定义、数字断言（15 个 P/Invoke、84 个 `It`、25 个文件、6 个入口）全对；
+唯一一处数字漂移是 README 的探针数还写着 22（`probe-procwalk` 09-29 落地后是 23），已改。

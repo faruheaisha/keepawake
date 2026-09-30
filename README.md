@@ -251,8 +251,9 @@ tests/ka-ci.ps1     一条命令跑完上面五个门禁 + 全部探针（CI 和
 tests/ka-release-files.ps1
                     装了什么，只有一份清单——便携 zip、Inno 的暂存目录、探针拼的"刚下载的目录"、
                     CI 发布的三件套，全都从这一个函数取，不再各自抄一份
-tests/probe-*.ps1   22 个实测探针（`ls tests/probe-*.ps1 | wc -l` 当场给的数；HEAD 里那 20 个，加本轮
-                    的 `probe-ci-harness` 和 `probe-ci-harness-selftest`）：迁移、互斥体标识、CLM、下载标记(MOTW)、32 位 PowerShell、
+tests/probe-*.ps1   23 个实测探针（`ls tests/probe-*.ps1 | wc -l` 当场给的数；写这段时是 22——当时 HEAD 里那
+                    20 个加上 `probe-ci-harness` 和 `probe-ci-harness-selftest`——之后 `probe-procwalk`
+                    09-29 落地，2026-09-30 核到 23）：迁移、互斥体标识、CLM、下载标记(MOTW)、32 位 PowerShell、
                     区域文化、布尔配置、保存默认值、原生编译、全新解压时的数据根、面板句柄按端口分离、
                     托盘的 -SelfTest 到底有没有被谁执行过、字节形状闸门到底会不会红，
                     **外加那四个双击入口里的一行命令到底被 cmd 真跑过一次没有**，以及

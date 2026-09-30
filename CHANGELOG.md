@@ -87,6 +87,16 @@
   输出与逐行内容：`_tmp/fileref-audit-20260930.txt`、`_tmp/logascii-rerun-20260930.log`。
   验证：本机 `tests\ka-ci.ps1 -Gates` 5 行 0 红（`_tmp/gates-fileref-20260930.log`）。
 
+- **那个漏改的"当前数字"：README 的探针数还写着 22**（2026-09-30，纯文档）。同一段里已经解释了"数的是文件名"
+  这类数数法的坑，也都还是对的（`ls tests/probe-*selftest*` 是 7、会自己注入缺陷的探针 10 个、带 `-SelfTest`
+  开关的 2 个：`probe-native` 与 `probe-bat-entry`），唯独 `tests/probe-*.ps1` 那一行的 22 没跟上——
+  `probe-procwalk` 09-29 落地，`ls tests/probe-*.ps1 | wc -l` 现在是 **23**。改成 23 并写明它是哪一轮变成 23 的。
+  同一轮里另外几类引用一并核过：28 条相对链接全部可达（`_tmp/link-audit-20260930.txt`，0 断链）、
+  `INV-1…10` 与 `DR-1…10` 的每处引用在 `docs/DESIGN.md` 里都有定义、数字断言（P/Invoke 15 个、84 个 `It`、
+  便携包 25 个文件、CLM 门禁发现 6 个入口）逐个对过源码与构建全对。
+  验证：本机 `tests\ka-ci.ps1 -Gates` 5 行 0 红（`_tmp/gates-readmecount-20260930.log`）；dist 重建 25 项
+  （`_tmp/build-readmecount-20260930.log`）。
+
 ## [1.0.1] — 2026-09-30
 
 一个补丁版：一条**会停掉你自己面板**的归属 bug（下面第一条），加上三周来所有"闸门绿着、而它要防的
