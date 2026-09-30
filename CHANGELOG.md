@@ -22,9 +22,21 @@
   （`_tmp/procwalk-cim-timing-20260930.txt`；这个行数每轮都不同，要紧的是那个 0），所以
   这个形状在本机只能靠"喂给采样器一行没有 `CreationDate` 的行"来演（`& { function Get-ProcessRows { … } }`，只在
   块内生效），runner 上它才是自然的。`tests/probe-procwalk.ps1` 加了第 ⑥ 条的两个用例与第 ⑨⑩ 两条注入腿，各自
-  把这两条规则钉红；`PITFALLS.md` 的 PowerShell 陷阱表因此从 20 条变 21 条。这一版没有改产品代码。
+  把这两条规则钉红；`PITFALLS.md` 的 PowerShell 陷阱表因此从 20 条变 21 条。这次修复没有改产品代码。
   验证：本机 `tests\ka-ci.ps1 -Gates -Probes` 整步 28 行 0 红（15:08:40→15:29:54，`_tmp/ci-local-procwalk-fix.log`）；
   三个改过的文件在冻结字节上另补跑一轮门禁 + 三个探针，各 0 红（`_tmp/postfreeze-rerun-20260930.log`）。
+
+- **知识层里一条对比断言写反了：`$null -eq 0` 是 `FALSE`（`$null -ne 0` 才是 `TRUE`）**（2026-09-30）。`PITFALLS.md`
+  第 13 条旧文（"`$null -eq 0` 是 `TRUE`；未赋值的退出码读起来像成功"）两个错：方向反了；"读成成功"的机制其实是
+  **转换**——`[int]$null` 是 `0`（正是上一条 0 号哨兵的另一半），不是比较。这句话从知识层流进过三处注释：
+  `ka-core.ps1` 判"回到活动会话"的 `$null -ne $Evt.to`（**语义本来就对**，只有括号里的理由写反了：真语义下
+  `$null -ne 0` 为真，所以按值比较 `($Evt.to -ne 0)` 才会"缺字段放行、真 0 跳过"，正好反）、
+  `packaging/ka-test-install.ps1` 两处（超时返回显式 `$null` 的判据、`$null` 先查的理由）——三处注释与
+  `PITFALLS.md` 本条一并改成实测事实，`CHANGELOG` 1.0.0 段落里同源的旧句就地加了更正标注。**行为零变化**：
+  `tests/ka-tests.ps1` 的独立重算（`$null -eq $s.to` 跳过、值 0 重置 `lastScreenOffEpoch`）与产品判据在真语义下
+  本来就一致，这轮只动注释与文档。全矩阵（含 `AutomationNull`、哈希缺键、`0 -eq ''` 是 `TRUE` 的空串对照）：
+  `_tmp/null-semantics-20260930.txt`。
+  验证：本机 `tests\ka-ci.ps1 -Gates` 5 行 0 红（`_tmp/gates-nullfix-20260930.log`）。
 
 ## [1.0.1] — 2026-09-30
 
@@ -1056,7 +1068,8 @@
   survived the uninstall"，这一条顺便量出 Inno 只删它自己创建的目录；清单多算一个 → 文件数那条）。
   这一轮把三条 Windows 语义量成了事实而不是猜测：`Start-Process -Wait` **会等一个已经 detach 的孙进程**
   （父 → 立刻退出的子 → 藏起来的 40 秒孙 = 42.3 秒，改成轮询 `HasExited` 后 2.6 秒拿到 ExitCode 0——这正是
-  `ka.ps1 start` 的形状）；`$null -eq 0` 为真，所以一个从没被赋值的退出码会读成成功，四处调用点现在先查 `$null`、
+  `ka.ps1 start` 的形状）；未赋值的退出码经 `[int]` 读成 `0` 会假绿（2026-09-30 更正：这里原写"`$null -eq 0` 为真"，
+  方向反了——实测 `$null -eq 0` 为假、`$null -ne 0` 为真，见 `PITFALLS.md` 第 13 条），四处调用点现在先查 `$null`、
   超时改写成一条点名的红；`& script *> log` 会丢退出码（里面 `exit 7` 外面读到 1），要 `; exit $LASTEXITCODE`。
   顺带挖出两个自己写的 bug：构造子进程命令行时一个未闭合的单引号让三棵树全部红在解析错误上、而**日志文件根本没生出来**
   （于是两个突变"看起来"红得正确），补了缺日志即硬失败；`$bad.Add("..." -f $a, $b)` 里逗号比 `-f` 松，

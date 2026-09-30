@@ -3192,8 +3192,9 @@ function Add-KaSleepCount {
             }
         } elseif ($null -ne $Evt.to) {
             # Back to an active session: that display-off episode is closed, so a later sleep
-            # must not be charged to it. ($null -eq 0 is true in PowerShell, hence the
-            # explicit null test.)
+            # must not be charged to it. The test is on $null, not on the value: [int]$null is 0
+            # and $null -ne 0 is true, so a ($Evt.to -ne 0) value test would fire on a missing
+            # field and skip a real 0 - exactly backwards.
             $R['lastScreenOffEpoch'] = 0
         }
     }

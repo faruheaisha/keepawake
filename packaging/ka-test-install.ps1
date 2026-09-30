@@ -117,8 +117,11 @@ if ($SelfTest) {
     $bad = New-Object System.Collections.ArrayList
     foreach ($m in @('', 'precreate', 'expectfiles')) {
         $r = $runs[$m]
-        # A run that never finished has no exit code, and $null -ne 0 is false: without this branch a
-        # clean run that timed out would satisfy "exit -eq 0" and read as a pass.
+        # A run that never finished has no exit code: Start-UntilExit hands back an explicit $null
+        # and it wrote why into $script:TimedOut. The timeout keeps its own named red, because
+        # $null answers comparisons differently than 0 does ($null -eq 0 is false, $null -ne 0 is
+        # true - measured 2026-09-30) - through the exit tests below, a killed run would come out
+        # as "exited , expected 1", a blank where the number should be.
         if ($r.TimedOut) { [void]$bad.Add($r.TimedOut); continue }
         # A run that wrote nothing says nothing, and "0 FAIL lines" is otherwise indistinguishable
         # from "no problems found".
@@ -255,8 +258,10 @@ try {
         Write-Output '  mutation: the install directory exists before the installer runs'
     }
     $rc = Invoke-Quiet $Setup ('/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER /DIR="' + $app + '" /LOG="' + $setupLog + '"') 'setup.exe'
-    # $null first, and not by habit: $null -eq 0 is true in PowerShell, so an installer that had to be
-    # killed after its bound would have been reported as "exit 0, no elevation prompt".
+    # $null first, and not by hindsight: a killed installer has no exit code. $null answers
+    # comparisons differently than 0 does ($null -eq 0 is false, $null -ne 0 is true - measured
+    # 2026-09-30), so without this branch a killed installer would fall to the else below and
+    # "installer exit {0}" would print a blank where the exit code goes. This branch names the cause.
     if ($null -eq $rc) { Red ("setup.exe: {0} - see {1}" -f $script:TimedOut, $setupLog) }
     elseif ($rc -eq 0) { Ok 'installer exit 0, no elevation prompt in a silent per-user run' }
     else { Red ("installer exit {0} - see {1}" -f $rc, $setupLog) }

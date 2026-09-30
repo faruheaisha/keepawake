@@ -59,7 +59,12 @@
     手写文件时明确 `-join "`n"` 并用 `UTF8Encoding($true)` 补 BOM。
 12. **`[IO.File]::ReadAllText` 读不了"自己进程还开着写句柄"的文件**（`being used by another process`），
     `Get-Content` 是按共享打开的，能读。重定向 stdout 的场景一律用后者。
-13. **`$null -eq 0` 是 `TRUE`**；未赋值的退出码读起来像成功。
+13. **`$null -eq 0` 是 `FALSE`（`$null -ne 0` 才是 `TRUE`）**；所以 `if ($x -ne 0)` 对 `$null` **会进分支**
+    （把缺字段当成"非零"），`if ($x -eq 0)` 对 `$null` **不进**——"null 读成 0"只发生在**转换**里（`[int]$null` 是
+    `0`，第 2 条；`0 -eq ''` 是 `TRUE` 说的是空串，也不是 null）。要区分"字段缺失"与"值是 0"只有显式
+    `$null -eq $x` / `$null -ne $x`。`[实测]` 2026-09-30 全矩阵（含 `AutomationNull`、哈希缺键、空串对照）：
+    `_tmp/null-semantics-20260930.txt`。本条 2026-09-30 之前写作"`$null -eq 0` 是 `TRUE`"，方向相反；同一句话
+    流进过 `ka-core.ps1` 与 `packaging/ka-test-install.ps1` 的注释，一并按实测更正。
 14. **逗号比 `-f` 松散**：`$bad.Add("x {0}" -f $a, $b)` 是给 `Add()` 传两个参数。
 15. **`exit N` 在 dot-source 的文件里不中断调用方**（CLM 闸门必须写在每个入口脚本顶层的原因）。
 16. **文化（区域）会漏进三处**：`(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')` 跟线程日历（th-TH 写出**佛历 2569 年**）；
