@@ -142,8 +142,8 @@
   注释与文档；**产品行为零变化**——改的是一句注释里"这次读数是在哪儿量的"）。上一轮查的是 `[实测]` 的入口
   契约，这一轮查它的反面：文档/代码点名的 `_tmp/` 路径**本身**还找不找得到。全仓 35 个入库文件
   （`.md` 4、`.ps1` 30、`.gitignore` 1，按扩展名点过一遍确认没漏层）里的路径逐个判（`_tmp/tmp-evidence-audit.ps1`
-  → `_tmp/tmp-evidence-audit-20260930.txt`）：文件名级 73 条里**67 条在盘**、2 条已就地标注、4 条不在（这一段
-  自己新点的路径也在计数里）——不在
+  → `_tmp/tmp-evidence-audit-20260930.txt`）：文件名级 77 条里**71 条在盘**、2 条已就地标注、4 条不在
+  （09-30 当天快照——每轮验证都会再存几条日志，这个数只会往上走）——不在
   的那 4 条全是探针运行时自己写又删的暂存（`motw-native-child.ps1` 由 `probe-motw.ps1:83` 的 here-string
   拼出，三份 `probe-*-mutant*.ps1` 同理），**`*.log`/`*.txt` 这类取证零缺失**。真缺的一处是 `ka-core.ps1:588`：
   它把一次本地化读数（CIM 的 `Message` 已被翻译、真 WMI 码只存在于 error id、`Exception.HResult` 恒为泛化的
@@ -162,6 +162,22 @@
   会被算到本条头上），所以它只用来分诊、结论仍要人读一眼。
   验证：本机 `tests\ka-ci.ps1 -Gates` 5 行 0 红（`_tmp/gates-tmpevidence-20260930.log`）；dist 重建 25 项
   （`_tmp/build-tmpevidence-20260930.log`）。
+
+- **`PITFALLS.md` §一 的入口全部真跑了一遍：读数逐项对得上，只有一条复读命令写法不严**（2026-09-30，
+  文档；**产品行为零变化**）。上一轮给 `[实测]` 行补/换了入口，这一轮把它们真跑起来，看读数还是不是表里
+  那句话（脚本 `_tmp/pitfalls-section1-recheck-20260930.ps1` → `_tmp/pitfalls-section1-recheck-20260930.txt`）：
+  行 18 复现（`powercfg /a` 只有 S0 低电量待机、S1/S2/S3 固件不支持、休眠未启用；`HYBRIDSLEEP`=1、`RTCWAKE`=1）、
+  行 19 复现（近 14 天 113 次 Kernel-Power 506/507）、行 22 **逐字**复现（`/requestsoverride` exit 0 对
+  `/requests` exit 1，连"此命令需要管理员权限…"都对上）、行 26 **连数字都对得上**（`.Xml` 0 字符对
+  `Schedule.Service` 导出的 1777 字符）、行 28 的指针还立着（`ka-core.ps1:2648-2652` 里 `~10 s` 与
+  `under a second` 都在）、行 23/24 的 `tests/probe-clm-gate.ps1` 重跑绿
+  （`9 cases green now, 7 red without the gate, 6 entry points gated before ka-core`）。行 21 的电池读数
+  今天不置 critical 位（`ACLineStatus=1 / BatteryFlag=1 / 100`），与那行自己标注的"现场读数不可重放"一致。
+  唯一动到的是行 25 的**复读写法**：`MuiCached` 是子键、值名 `MachinePreferredUILanguages`，照原样只写键名
+  拿到的是个对象，已补成 `.MachinePreferredUILanguages`（与 `README.md:406` 的全名一致）——读数本身复现无误
+  （`zh-CN` 对 `en-US`）。教训写进 §五：**"复读命令"也得是自己跑得出来、直接给出那个值的命令**。
+  验证：本机 `tests\ka-ci.ps1 -Gates` 5 行 0 红（`_tmp/gates-section1recheck-20260930.log`）；dist 重建 25 项
+  （`_tmp/build-section1recheck-20260930.log`）。
 
 ## [1.0.1] — 2026-09-30
 

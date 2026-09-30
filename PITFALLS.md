@@ -22,7 +22,7 @@
 | `powercfg /requestsoverride` 列表**不需要管理员**；`powercfg /requests`（谁在持请求）**需要管理员**（exit 1） | `[实测]` 标准令牌下逐个试，两条都不带参数：`powercfg /requestsoverride` → exit 0、`powercfg /requests` → exit 1（2026-09-30 就地复读过一遍） |
 | `Ka.Native` 那 15 个 P/Invoke 调用**标准账户可调**；`Add-Type` 是 CLM 下唯一硬阻断 | `[实测]` `tests/probe-clm-gate.ps1`、`probe-native.ps1` |
 | **CLM（受约束语言模式）下工具完全跑不了**：`Add-Type` 被禁。`ka-gate.ps1` + 顶层 `if (-not (Test-KaLanguageMode)) { exit 2 }` 必须写在**每个入口脚本自己的顶层**——`exit N` 在 dot-source 的文件里**不会**中断调用方 | `[实测]` 同上探针 |
-| 本机 **`MuiCached`=zh-CN 而 `$PSUICulture`=en-US**：两个值不一样。命令行语言必须读注册表 `MuiCached`，否则中文用户拿到英文 | `[实测]` 本机；复读两行：`Get-ItemProperty 'HKCU:\Control Panel\Desktop\MuiCached'` 与 `[CultureInfo]::CurrentUICulture`（`tests/ka-tests.ps1` 里那条 `auto` 语言用例就是拿这两个值对峙的） |
+| 本机 **`MuiCached`=zh-CN 而 `$PSUICulture`=en-US**：两个值不一样。命令行语言必须读注册表 `MuiCached`，否则中文用户拿到英文 | `[实测]` 本机；复读两行：`(Get-ItemProperty 'HKCU:\Control Panel\Desktop\MuiCached').MachinePreferredUILanguages` 与 `[CultureInfo]::CurrentUICulture`（2026-09-30 复读：`{zh-CN}` 对 `en-US`。**值在 `MuiCached` 这个子键下、名叫 `MachinePreferredUILanguages`**——只写键名拿到的是个对象，得再取那个属性；`tests/ka-tests.ps1` 里那条 `auto` 语言用例就是拿这两个值对峙的） |
 | `Get-ScheduledTask` 的 `.Xml` 在本机**是空的**，要导任务定义得走 `New-Object -ComObject Schedule.Service` | `[实测]` 安装器实测时发现；复读：`(Get-ScheduledTask -TaskName KeepAwake-Guard).Xml` 读回空，而 `packaging/ka-test-install.ps1:239` 走 `Schedule.Service` 导出的是有内容的，备份/逐字节比对就建在那上面 |
 | 任务计划里 `New-ScheduledTaskTrigger -AtLogOn` **不加 `-User`** 注册的是"任意用户"触发 → 需要管理员；加上当前用户就免提示 | `[实测]` 环境矩阵那次；复读用例在 `tests/ka-tests.ps1`（它要真注册任务，所以是 CI runner 上的事，本机别为复验去注册） |
 | 强制杀面板会**留下 http.sys 前缀注册**，下一个面板的首请求会卡约 10 秒；优雅停机（`listener.Stop()/Close()`）能让后继面板 1 秒内应答 | `[实测]` `Stop-KaServer` 的注释里有数字 |
@@ -180,6 +180,24 @@ git grep -h -o '_tmp/[A-Za-z0-9._*{}/-]*' | Sort-Object -Unique   # 全部入库
 里引用的一切都没进名单：`ka-ci.ps1` 头部唯一引用的两条 `ws-outer*.log` 如今已不在盘上，那两处已如实标注
 "gone from disk"；扫描命令因此改成全仓。**没 grep 过就别删**：这里面没有能被自动化复现的东西，删了就真没了。
 
+**§一 里能当场重读的入口，2026-09-30 又跑了一遍，读数逐项对过。** 上一轮给 `[实测]` 行补/换了入口，
+这一轮把它们真的跑起来，看读数还是不是表里那句话（脚本 `_tmp/pitfalls-section1-recheck-20260930.ps1`，
+原始读数 `_tmp/pitfalls-section1-recheck-20260930.txt`）：行 18 复现（`powercfg /a` 只有 S0 低电量待机可用、
+S1/S2/S3 都是"系统固件不支持此待机状态"、休眠未启用；`powercfg /q` 里 `HYBRIDSLEEP`=1、`RTCWAKE`=1）；
+行 19 复现（近 14 天 **113** 次 Kernel-Power 506/507，最近一条 `Reason: Idle Timeout`）；行 22 逐字复现
+（`/requestsoverride` exit 0、`/requests` exit 1，回的就是"此命令需要管理员权限…"）；行 26 **连数字都对得上**
+（`.Xml` 0 字符、`Schedule.Service` 导出 **1777** 字符）；行 28 的指针也还立着（`ka-core.ps1:2648-2652` 里
+`~10 s` 与 `under a second` 都在）。行 21 的入口（`GetSystemPowerStatus`）本机现值是 `ACLineStatus=1`、
+`BatteryFlag=1`、`BatteryLifePercent=100`，critical 位**没置**——与那行记的 08-29 事故（插着电、99% 却置了
+critical）不同，这正是它自己写的"现场读数不可重放"，它给的入口是"同类读数随取随有"而不是"重放事故"
+（`ka.bat status` 的电池行就是这条读数，渲染在 `ka.ps1:208`）。行 23/24 的入口 `tests/probe-clm-gate.ps1`
+重跑也绿：`PROBE OK: 9 cases green now, 7 red without the gate, 6 entry points gated before ka-core`。
+**这一遍唯一改到的是行 25 的复读写法**：`MuiCached` 是个**子键**、值名叫 `MachinePreferredUILanguages`，
+照原样只写 `Get-ItemProperty 'HKCU:\Control Panel\Desktop\MuiCached'` 拿到的是个对象（语言只是它的一个
+属性），已补成 `.MachinePreferredUILanguages`（`README.md:406` 本来就是全名）；读数本身复现无误，
+`zh-CN` 对 `en-US`。教训：**"复读命令"也得是自己跑得出来的命令**——写成一个能返回对象的路径，
+核查的人得先猜到该取哪个属性，等于没给入口。
+
 **改完源码顺手核一遍文档里的 `file:line` 引用。** 这些引用是"结论要证据"的另一半：结论说源码哪一行有它，
 读者就该在那一行读到那件事。2026-09-30 把 README/PITFALLS/CHANGELOG/docs 里的 40 个引用逐个解析、打印目标行
 （脚本 `_tmp/fileref-audit.ps1`，输出 `_tmp/fileref-audit-20260930.txt`）：39 个落点正确，其中
@@ -214,8 +232,9 @@ CI runner 上。顺带在这一遍里查到一个**指错文件**的引用：那
 
 **`_tmp` 引用普查：取证日志一条不缺，产品代码里的入口缺一条。** 2026-09-30 把全仓引用 `_tmp/` 的 35 个
 入库文件（`.md` 4、`.ps1` 30、`.gitignore` 1，按扩展名点过一遍确认没漏层）里的路径全抽出来逐个判
-（脚本 `_tmp/tmp-evidence-audit.ps1`，输出 `_tmp/tmp-evidence-audit-20260930.txt`）：文件名级 73 条里
-67 条在盘、2 条已就地标注、4 条不在（这一段自己新点的路径也在计数里；数完连跑三次，结论不再翻），
+（脚本 `_tmp/tmp-evidence-audit.ps1`，输出 `_tmp/tmp-evidence-audit-20260930.txt`）：文件名级 77 条里
+71 条在盘、2 条已就地标注、4 条不在（**这是 09-30 当天的快照，不是要维护的"当前值"**——每轮验证都会再存
+几条日志，这个数只会往上走；连着跑三次结论不再翻），
 **`*.log`/`*.txt` 这类取证零缺失**——那 4 条不在的全是探针运行时
 自己写又删的暂存（`_tmp/motw-native-child.ps1` 由 `probe-motw.ps1:83` 的 here-string 拼出来、三份
 `_tmp/probe-*-mutant*.ps1` 同理）。唯一一处**真**缺在产品代码里：`ka-core.ps1:588` 把一次本地化读数归给
