@@ -470,9 +470,13 @@ function Get-KaPath {
     $root = Get-KaProgramRoot
     $data = Get-KaDataRoot
     @{
-        # root stays the program directory: the panel compares a recorded server pid
-        # against it, and the watchdog task's working directory has to be where the
-        # scripts are. Workers are attributed by it too (see Get-KaWorker).
+        # root stays the program directory, and it is only ever a *scan* key: the watchdog
+        # task's working directory has to be where the scripts are, and Get-KaServer /
+        # Get-KaWorker use it to find candidate processes. It no longer decides any
+        # attribution - that was the pre-1.0.1 model, and it shut down the wrong panel
+        # (see the Ours paragraph in Get-KaServer). A process is ours by data root: the
+        # handle file in our data root, or the -DataDir it was started with. Program root
+        # survives only as the fail-closed fallback for an unattributable command line.
         root       = $root
         program    = $root
         data       = $data
