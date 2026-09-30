@@ -17,19 +17,19 @@
 | --- | --- |
 | 本机只有 **S0 低功耗空闲（Modern Standby）**，没有 S3；休眠被禁用；混合睡眠开着；AC 下允许唤醒定时器 | `[实测]` `powercfg /a`、`powercfg /q SCHEME_CURRENT`（会随系统更新变，用前重测）。见 `tests/ka-tests.ps1` 的环境用例 |
 | 机器**真的每隔几分钟进一次 Modern Standby**（Kernel-Power 506/507），所以"要不要防休眠"不是理论问题 | `[实测]` 事件日志；`ka.bat evidence` 就是读它 |
-| **显式的熄屏请求会在 5–6 秒内链式进入真睡眠**；而"空闲超时"造成的熄屏在 14 天里一次都没链式睡过。危险的是**显式**熄屏，不是熄屏本身 | `[实测]` 五次独立观察（`CHANGELOG` 里记着时间点） |
-| 这台机器的固件**会谎报电池**：`ACLineStatus=1`、`BatteryLifePercent=99`、同时置了 critical 位，导致 worker 起来一秒就退出 | `[实测]` 2026-08-29 事故；结论：任何单次电池读数不可信，判断要带上 AC 状态 |
-| `powercfg /requestsoverride` 列表**不需要管理员**；`powercfg /requests`（谁在持请求）**需要管理员**（exit 1） | `[实测]` 标准令牌下逐个试 |
+| **显式的熄屏请求会在 5–6 秒内链式进入真睡眠**；而"空闲超时"造成的熄屏在 14 天里一次都没链式睡过。危险的是**显式**熄屏，不是熄屏本身 | `[实测]` 五次独立观察（`README.md` 的「熄屏→真睡」链条那一条记着五次的日期与时刻：08-29 事故、08-30 三次 `SC_MONITORPOWER`、08-31 的时间戳实验；`CHANGELOG.md` 里没有这份记录） |
+| 这台机器的固件**会谎报电池**：`ACLineStatus=1`、`BatteryLifePercent=99`、同时置了 critical 位，导致 worker 起来一秒就退出 | `[实测]` 2026-08-29 事故（现场读数不可重放）；同类读数随取随有——`ka.bat status` 的电池行就是 `GetSystemPowerStatus` 的现场值。结论：任何单次电池读数不可信，判断要带上 AC 状态 |
+| `powercfg /requestsoverride` 列表**不需要管理员**；`powercfg /requests`（谁在持请求）**需要管理员**（exit 1） | `[实测]` 标准令牌下逐个试，两条都不带参数：`powercfg /requestsoverride` → exit 0、`powercfg /requests` → exit 1（2026-09-30 就地复读过一遍） |
 | `Ka.Native` 那 15 个 P/Invoke 调用**标准账户可调**；`Add-Type` 是 CLM 下唯一硬阻断 | `[实测]` `tests/probe-clm-gate.ps1`、`probe-native.ps1` |
 | **CLM（受约束语言模式）下工具完全跑不了**：`Add-Type` 被禁。`ka-gate.ps1` + 顶层 `if (-not (Test-KaLanguageMode)) { exit 2 }` 必须写在**每个入口脚本自己的顶层**——`exit N` 在 dot-source 的文件里**不会**中断调用方 | `[实测]` 同上探针 |
-| 本机 **`MuiCached`=zh-CN 而 `$PSUICulture`=en-US**：两个值不一样。命令行语言必须读注册表 `MuiCached`，否则中文用户拿到英文 | `[实测]` 本机 |
-| `Get-ScheduledTask` 的 `.Xml` 在本机**是空的**，要导任务定义得走 `New-Object -ComObject Schedule.Service` | `[实测]` 安装器实测时发现 |
-| 任务计划里 `New-ScheduledTaskTrigger -AtLogOn` **不加 `-User`** 注册的是"任意用户"触发 → 需要管理员；加上当前用户就免提示 | `[实测]` 环境矩阵那次 |
+| 本机 **`MuiCached`=zh-CN 而 `$PSUICulture`=en-US**：两个值不一样。命令行语言必须读注册表 `MuiCached`，否则中文用户拿到英文 | `[实测]` 本机；复读两行：`Get-ItemProperty 'HKCU:\Control Panel\Desktop\MuiCached'` 与 `[CultureInfo]::CurrentUICulture`（`tests/ka-tests.ps1` 里那条 `auto` 语言用例就是拿这两个值对峙的） |
+| `Get-ScheduledTask` 的 `.Xml` 在本机**是空的**，要导任务定义得走 `New-Object -ComObject Schedule.Service` | `[实测]` 安装器实测时发现；复读：`(Get-ScheduledTask -TaskName KeepAwake-Guard).Xml` 读回空，而 `packaging/ka-test-install.ps1:239` 走 `Schedule.Service` 导出的是有内容的，备份/逐字节比对就建在那上面 |
+| 任务计划里 `New-ScheduledTaskTrigger -AtLogOn` **不加 `-User`** 注册的是"任意用户"触发 → 需要管理员；加上当前用户就免提示 | `[实测]` 环境矩阵那次；复读用例在 `tests/ka-tests.ps1`（它要真注册任务，所以是 CI runner 上的事，本机别为复验去注册） |
 | 强制杀面板会**留下 http.sys 前缀注册**，下一个面板的首请求会卡约 10 秒；优雅停机（`listener.Stop()/Close()`）能让后继面板 1 秒内应答 | `[实测]` `Stop-KaServer` 的注释里有数字 |
-| **`pid` 是会被回收的号码，不是身份**：`Get-Process -Id 2044` 前一刻是面板、重启后是 `fontdrvhost.exe`。任何"按 pid 认进程"的判断都要带创建时间 | `[实测]` 2026-09-29 现场抓到 |
+| **`pid` 是会被回收的号码，不是身份**：`Get-Process -Id 2044` 前一刻是面板、重启后是 `fontdrvhost.exe`。任何"按 pid 认进程"的判断都要带创建时间 | `[实测]` 2026-09-29 现场抓到；复读：早晚各一次 `Get-Process -Id <pid>` 就能看到同一个号换了镜像，`tests/probe-procwalk.ps1` 里"pid 易主必须拒"那条腿把它钉成了断言 |
 | **CIM 对受保护镜像不给 `CreationDate`**（`TrustedInstaller.exe`、`TiWorker.exe` 这类）——于是"比对创建时间"的守卫对它们会被**整段跳过** | `[实测]` CI 假红 run 36528628613 追出来的 |
 | **Job 对象管不住"壳起的进程"**：`Diagnostics.Process` + `UseShellExecute`（浏览器交接就是这种形状）起的子进程不继承 job 成员资格 | `[实测]` run 36534077753：`our own look: 1 alive: 5216` 而 runner 报 0 留口 |
-| 一次性 runner 的 `%TEMP%` 是 **8.3 短路径**（`C:\Users\RUNNER~1\…`），而 `Get-ChildItem` 给长名：任何拿"你传进去的路径"做 `Substring` 算相对名的代码都会错位（实测差 3 个字符，文件被报成 `48/CHANGELOG.md`） | `[实测]` CI 安装器那次 |
+| 一次性 runner 的 `%TEMP%` 是 **8.3 短路径**（`C:\Users\RUNNER~1\…`），而 `Get-ChildItem` 给长名：任何拿"你传进去的路径"做 `Substring` 算相对名的代码都会错位（实测差 3 个字符，文件被报成 `48/CHANGELOG.md`） | `[实测]` CI 安装器那次；落点就是 `packaging/ka-test-install.ps1:276` 那句按 `$appSeen.Length + 1` 切相对名的代码——runner 的 `%TEMP%` 是短名、`Get-ChildItem` 给长名，切片就错位 |
 
 ---
 
@@ -183,3 +183,11 @@ git grep -h -o '_tmp/[A-Za-z0-9._*{}/-]*' | Sort-Object -Unique   # 全部入库
 推导取代、该行成了空行，已在 `CHANGELOG` 原句就地标注。同一轮核的另外三类：28 条相对链接全在（0 断链）、
 `INV-1…10`/`DR-1…10` 每处引用都有定义、数字断言（15 个 P/Invoke、84 个 `It`、25 个文件、6 个入口）全对；
 唯一一处数字漂移是 README 的探针数还写着 22（`probe-procwalk` 09-29 落地后是 23），已改。
+
+**标了 `[实测]` 就得附得出入口，附不出就写明附不出。** 这是本文件开头那句承诺的另一半（"附可复跑的入口"），
+2026-09-30 逐行对过一遍：能补命令的补上并当场跑一遍（`powercfg /requestsoverride` → exit 0 对
+`powercfg /requests` → exit 1；`(Get-ScheduledTask …).Xml` 0 字符对 `Schedule.Service` 导出的 1777 字符；
+`MuiCached` 与 `[CultureInfo]::CurrentUICulture` 两行对峙），**事故记录**（现场读数早没了的那种）就地写明
+"不可重放"，别让下一个人去找一个不存在的入口；需要动真机器的复读用例（注册计划任务那类）点名它只跑在
+CI runner 上。顺带在这一遍里查到一个**指错文件**的引用：那条熄屏链的时间点原来写"见 `CHANGELOG`"，
+实际只记在 `README.md`——指向别处也算入口不存在。

@@ -97,6 +97,22 @@
   验证：本机 `tests\ka-ci.ps1 -Gates` 5 行 0 红（`_tmp/gates-readmecount-20260930.log`）；dist 重建 25 项
   （`_tmp/build-readmecount-20260930.log`）。
 
+- **`PITFALLS.md` 的 `[实测]` 行按它自己开头的承诺查了一遍：附不出的就写明附不出**（2026-09-30，纯文档）。
+  文件开头（第 8 行）承诺 `[实测]` = "本机或 CI runner 上真跑出来的，**附可复跑的入口**（探针 / 命令 / 日志）"；
+  逐行对下来两类不合格：①**指错了地方**——平台事实表里"显式熄屏会在 5–6 秒内链式真睡"那一行写"`CHANGELOG`
+  里记着时间点"，可 `CHANGELOG.md` 里 `SC_MONITORPOWER`、`566`、`15:17` 一个都搜不到，五次观测（08-29 事故、
+  08-30 三次 `SC_MONITORPOWER`、08-31 的时间戳实验）只记在 `README.md` 的产品叙述里，已改成指向 `README.md`
+  并注明 `CHANGELOG` 没有这份记录；②**只有结论没有入口**——六行 `[实测]` 后面写的是"本机""那次"，复不了。
+  能给命令的都补上，并且今天就地跑过一遍：`powercfg /requestsoverride` → exit 0 对 `powercfg /requests` → exit 1
+  （标准令牌）；`(Get-ScheduledTask -TaskName KeepAwake-Guard).Xml` 读回 **0 字符**、同一个任务的
+  `Schedule.Service` COM 导出 **1777 字符**；`HKCU:\Control Panel\Desktop\MuiCached` 与
+  `[CultureInfo]::CurrentUICulture` 两行对峙（即 `tests/ka-tests.ps1` 那条 `auto` 语言用例）；pid 易主看
+  `probe-procwalk.ps1` 的那条腿；8.3 短路径的落点是 `packaging/ka-test-install.ps1:276` 按
+  `$appSeen.Length + 1` 切相对名那句；需要真注册计划任务的那条（`-AtLogOn` 不带 `-User`）如实写明复读用例在
+  `tests/ka-tests.ps1`、**只在 CI runner 上跑**。剩下的三行是**事故记录**（08-29 电池谎报、09-29 pid 回收现场、
+  CI 安装器那次），本身不可重放，就地标明"现场读数不可重放"并给出同类读数随取随有的取法。
+  验证：本机 `tests\ka-ci.ps1 -Gates` 5 行 0 红（`_tmp/gates-pitfallsevid-20260930.log`）。
+
 ## [1.0.1] — 2026-09-30
 
 一个补丁版：一条**会停掉你自己面板**的归属 bug（下面第一条），加上三周来所有"闸门绿着、而它要防的
