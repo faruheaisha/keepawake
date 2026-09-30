@@ -11,8 +11,9 @@
 
     HOW THE WAIT WORKS, and why it is not one call. Four shapes were run against one child that
     prints a marker line, leaves a grandchild asleep for 6 s, and then `exit 5` - all four in a
-    single run, all three columns read from the same log (_tmp/wait-table-run1.log, drivers
-    _tmp/wait-table.ps1 and _tmp/wait-table-one.ps1, leftover _tmp/wait-shape-gc.ps1):
+    single run, all three columns read from the same log (_tmp/wait-table-run1.log; the one-off
+    drivers around it are no longer on disk, and the 2026-09-30 reruns below are the second,
+    re-readable source):
 
         shape                                        child's text    blind to the     code
                                                    reaches the log   grandchild?      reported
@@ -22,10 +23,14 @@
         [Diagnostics.Process]::Start, stdout
             redirected and never read, WaitForExit  NO - lost        yes   (0.8 s)    5  (true)
 
-    No single shape has all three properties. -Wait is the only way a Start-Process object reports
-    the child's real code (rows 1 and 2 report $null, and `[int]$null` is 0 - which is how a step
-    that exited 5 gets logged as a pass), and a process started through .NET loses its text whenever
-    its stdout is handed a pipe nobody drains - which is what a CI log is.
+    Read position, not the object, decides rows 1/2's third column (corrected 2026-09-30; the
+    reruns in _tmp/exitcode-shapes{,2}-20260930.txt): a non-waited Start-Process object answers a
+    silent $null when .ExitCode is read while the child still runs - that is what rows 1 and 2 were
+    showing ([int]$null is 0, so that read logs a running child as a pass) - and the same objects
+    answer the real code once the read sits after the exit (poll, WaitForExit() and
+    WaitForExit(30000) all measured true). What still separates the shapes: -Wait pays with the
+    leftover's lifetime (row 3), and .NET with an undrained stdout pipe loses the child's text
+    (row 4) - which is what a CI log is.
 
     -Wait also blocks on what the child leaves behind, and how far depends on the shape of the
     leftover. Same three leftovers, this time varying only the window style (_tmp/ws-outer2.log, no
@@ -49,9 +54,10 @@
 
     So the direct child here is cmd.exe, which exits the moment the script does (blind to whatever
     the script left alive), whose console the script's text reaches (it is Start-Process -NoNewWindow
-    all the way down), and which writes the script's own ERRORLEVEL into a verdict file (what a
-    non-waiting Start-Process object reports for a child that exited 5 is $null - rows 1 and 2 above,
-    and `[int]$null` is the 0 that would have been printed as a pass).
+    all the way down), and which writes the script's own ERRORLEVEL into a verdict file. The file
+    beats reading the object's .ExitCode on two counts: a read is only real once it sits after the
+    exit (and after a deadline kill the number would belong to the kill), while the file is written
+    by the script's own completion - evidence whose existence cannot be misordered.
     The loop then polls HasExited with a deadline; on the deadline it kills the whole tree with
     TerminateJobObject, so a hanging script names itself instead of eating the step and cannot drag its
     leftovers into the next one. That, and the answer to "which processes did this leg leave behind?",

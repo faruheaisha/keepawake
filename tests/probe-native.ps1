@@ -176,10 +176,11 @@ Write-Output ('FOREGROUND_PID=' + [long]$fg)
             Write-Output 'PROBE FAILED: 1 problem(s)'
             exit 1
         }
-        # Verdict by the child's own marker, not by its exit code: on a non-waited Start-Process
-        # object .NET answers $null for ExitCode once the child is gone (measured here and already
-        # written down in ka-ci.ps1), so `$null -ne 0` would fail a child that ended correctly.
-        # The child prints its verdict itself; that line is the evidence.
+        # Verdict by the child's own marker, not by its exit code: reading .ExitCode while the
+        # child still runs is a silent $null ([int]$null is 0, so a live child would be logged
+        # as a pass - measured 2026-09-30, _tmp/exitcode-shapes*.txt). The read below sits after
+        # the HasExited poll, so it is real here; the verdict stays the child's own printed line,
+        # and $code is only there to name a failure.
         $code = $c.ExitCode
         if ($text -notlike '*PROBE OK (self-test):*') {
             Write-Output ('  FAIL the sabotaged copy did not print its own verdict (exit=' +

@@ -30,9 +30,14 @@ $ErrorActionPreference = 'Stop'
          command was supposed to write, the process it was supposed to leave running, the port it was
          supposed to open, the byte count of the file it was supposed to serve. ka.bat is the third
          shape (it is pure pass-through), so its exit code is used there.
-         Reading either of those correctly is its own trap: Start-Process -PassThru then
-         WaitForExit(30000) reports ExitCode 0 for `cmd /c exit 3` - the object is cached and
-         unsynchronised. [Diagnostics.Process]::Start with UseShellExecute=false reports 3.
+         Reading either of those correctly is its own trap: a read of .ExitCode taken while the
+         child still runs is a silent $null, so any read must sit after the wait. (The sentence
+         that stood here - Start-Process -PassThru then WaitForExit(30000) reads 0 for `cmd /c
+         exit 3` - did not reproduce on 2026-09-30: the int overload read 3 on all four of its
+         runs, the no-arg one 3 on three of four, and the fourth sample is 0xC0000142 - cmd
+         itself failing loader init, a real code, not a read lie. v6/v7 in
+         _tmp/exitcode-shapes2-20260930.txt.) [Diagnostics.Process]::Start reads 3 too; why that
+         path is the one used is in Invoke-Cmd.
 
       2. Start-Process -Wait with -RedirectStandardOutput hangs the moment the child leaves a
          grandchild behind. panel.bat starts a hidden ka-server.ps1; that grandchild inherits the
@@ -245,12 +250,12 @@ function Read-FileLoose([string]$Path) {
 
 function Invoke-Cmd([string]$Line, [int]$TimeoutMs = 120000) {
     <#
-        Two ways to wait on cmd measured here, and one of them lies. Start-Process -PassThru hands
-        back a cached, unsynchronised Process: after its WaitForExit(int) overload returns, ExitCode
-        reads 0 for `cmd /c exit 3` - and so does WaitForExit() with no timeout. [Diagnostics.Process]
-        ::Start with UseShellExecute=false waits on the real handle: the same line gives 3. So the
-        exit codes below come from that path (measured: ka.bat with a broken target -> 5, the same
-        batch with `pause` appended -> 0, which is fact 1).
+        Exit codes were re-measured 2026-09-30 (v6/v7 in _tmp/exitcode-shapes2-20260930.txt; fact 1
+        carries the numbers): once the read sits after the wait, both paths read the real code, and
+        the Start-Process 0 for `cmd /c exit 3` did not reproduce. The exit codes below come from
+        the [Diagnostics.Process] path, the shape this harness measured every number with
+        (measured: ka.bat with a broken target -> 5, the same batch with `pause` appended -> 0,
+        which is fact 1).
     #>
     $si = New-Object Diagnostics.ProcessStartInfo
     $si.FileName = Join-Path $env:windir 'System32\cmd.exe'
