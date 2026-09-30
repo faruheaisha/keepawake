@@ -585,11 +585,16 @@ function Get-KaErrorToken {
         and for every payload field that a surface then wraps in its own sentence - because a
         Windows error message is NOT machine vocabulary.
 
-        Measured on this zh-CN box (_tmp/probe-err-fields.ps1, probe-err-fields2.ps1): a CIM
-        failure arrives with Message already translated (无效命名空间), and PowerShell copies a
-        hand-thrown string into FullyQualifiedErrorId as well (请求体过大（999 字节）). Type names,
-        HRESULTs and cmdlet error ids stayed ASCII in every case. That is the same half
-        Test-KaPathWritable returns as .Code, and the same half alert.dataDirUnwritable renders.
+        Measured on this zh-CN box (re-read 2026-09-30; the original scratch scripts
+        _tmp/probe-err-fields*.ps1 are gone from disk). The reading re-runs as
+        `try { Get-CimInstance -Namespace root\nosuchns -ClassName Win32_Process -EA Stop }`
+        `catch { $_.Exception.Message; $_.FullyQualifiedErrorId; $_.Exception.HResult }`
+        -> 无效命名空间 / `HRESULT 0x8004100e,...` / 0x80131500. So a CIM failure arrives with
+        Message already translated, the real WMI code exists only in the error id, and
+        Exception.HResult is the generic 0x80131500; PowerShell copies a hand-thrown string into
+        FullyQualifiedErrorId too (请求体过大（999 字节）). Type names, HRESULTs and cmdlet error
+        ids stayed ASCII in every case. That is the same half Test-KaPathWritable returns as
+        .Code, and the same half alert.dataDirUnwritable renders.
 
         Which part carries the signal varies by failure, so all three go in:
           * CimException.HResult is the generic 0x80131500 - the real WMI code only exists in the
