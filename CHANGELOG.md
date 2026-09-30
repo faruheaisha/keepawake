@@ -38,22 +38,29 @@
   `_tmp/null-semantics-20260930.txt`。
   验证：本机 `tests\ka-ci.ps1 -Gates` 5 行 0 红（`_tmp/gates-nullfix-20260930.log`）。
 
-- **`ExitCode` 那句"孩子走了才回 `$null`"也反了：静默 `$null` 来自读得太早**（2026-09-30）。上一条更正的是 `$null`
-  比较的方向；这条更正的是一句从 09-26 那张等待表起被反复引用的机制话——"非等待式 `Start-Process` 对象在子进程
-  **结束后** `ExitCode` 回 `$null`"。**重测正好相反**：孩子**还在跑**的时候读 `.ExitCode` 才给静默 `$null`（不抛
-  异常；提前读的 `[int]$null` 是 `0`，把"还在跑"记成"退出 0"），孩子结束之后读回真实码。证据是 v2–v7 六份驱动
-  （转录 `_tmp/exitcode-shapes-20260930.txt`、`_tmp/exitcode-shapes2-20260930.txt`）：cmd 与 powershell 两种
-  孩子，轮询 / `WaitForExit()` / `WaitForExit(30000)` / 睡后读各形状；`WaitForExit(30000)` 读 `cmd /c exit 3`
-  八次里七次是 `3`，剩一次是 cmd 自己死于加载器初始化（`0xC0000142`——一个真码，不是读出来的谎言）；v5 差分用
-  "提前读"**逐字复现**了 `wait-table-run1.log` 里 S1/S2 的 `code-raw=$null / code-as-int=0`（读的时候孩子还活着，
-  1.5 秒后才退出，同一对象事后再读是 5）——那两行的"撒谎"是读位，不是对象；它们的驱动脚本已不在盘上，能复现这
-  对值的只有这一种读法。同族另两处一并倒掉：`probe-bat-entry.ps1` 头部"Start-Process 读到 0"（同形状没复现，
-  就是上面那八个样本）；`ExitTime` 从头到尾给不出退出时刻——孩子退出后读回 FILETIME 0（`01/01/1601`），所以
-  `tests/ka-procwalk.ps1` 照旧拿"轮询看到退出的那一刻"当上界（只改注释，行为零变化）。被改的知识位点：
-  `PITFALLS.md` 第 2 条（就地重写，含 `ExitTime` 这一支）、`tests/probe-native.ps1` 里那条注释、`README.md`
-  探针表同一句、`tests/ka-ci.ps1` 头部两段（表下的结论句 + `cmd`+判定文件一段的理由；设计不动）、
-  `CHANGELOG.md` 1.0.1 段落两处旧句就地更正。产品代码零变化。
-  验证：本机 `tests\ka-ci.ps1 -Gates` 5 行 0 红（`_tmp/gates-exitpos-20260930.log`）。
+- **`ExitCode` 这一族的机制第三次定稿：决定它的是**启动开关**，不是读的位置**（2026-09-30）。这一格改过两版、
+  两版都不全：09-26 说"不等待的对象孩子一走就回 `$null`"（只对带开关的形状成立）；09-30 的第一次更正说
+  "静默 `$null` 来自读得太早、孩子退出后读回真实码"——那一版在复跑时把**开关**这一维丢了（跑的是裸形状），
+  结论作废。全矩阵（cmd 与 powershell 两种孩子）：**孩子还在跑** → 任何形状都静默 `$null`（`[int]$null` 是 `0`，
+  于是"还在跑"记成"退出 0"）；**你自己等过之后**（轮询 / `WaitForExit()` / `WaitForExit(ms)`）——启动带
+  `-NoNewWindow` 或 `-RedirectStandardOutput`/`-RedirectStandardError` 任意一个 → 仍是静默 `$null`，
+  `HasExited=True` 也一样，`Refresh()`、再等一次都救不回来（进程已消失，那个码不可追回）；三个都没带 → 真实码
+  （`-WorkingDirectory`、`-WindowStyle Hidden` 单项实测不影响）；PowerShell 的 `-Wait` 在任何形状下都给真码；
+  `[Diagnostics.Process]::Start` 也给真码。证据：`_tmp/exitcode-switch-matrix-20260930.txt`（T1–T10）、
+  `_tmp/exitcode-switch-verify-20260930.txt`（V1a–V2d 直线复跑）、`_tmp/exitcode-switch-recheck-20260930.txt`
+  （第三次独立驱动，两轮全格一致）、`_tmp/exitcode-switch-pin-20260930.txt`（W1/W2/W4/W5/W6/W7）、
+  `_tmp/exitcode-redirect-iso-20260930.txt`（S1–S5）、`_tmp/exitcode-refresh-20260930.txt`（R1–R7 排除 `Refresh()`）。
+  09-26 那张等待表前两行的 `$null -> 0` 与幸存的 `_tmp/exit-semantics-rerun.log` B/C/C2 行由此得到解释而不是被
+  推翻：那批形状要收回孩子的文本，带的就是 `-NoNewWindow`（`marker-in-log=yes` 本身就是这个证据）；此前那版
+  "读得太早"的差分虽然也能造出同一对值，但解释不了那批行，能同时解释两边的只有开关这一维。被改的知识位点：
+  `PITFALLS.md` 第 2 条（第三次改写，含 `ExitTime` 这一支）、`tests/ka-ci.ps1` 头部两段（表下的结论句 +
+  `cmd`+判定文件一段的理由；设计不动）、`tests/probe-bat-entry.ps1` 事实 1 与 `Invoke-Cmd` 注释（"那个 0 没复现"
+  的结论作废——它把开关丢了）、`tests/probe-native.ps1`（那条"读落在轮询之后所以是真的"的注释是反的：该形状
+  读不出来，判据只剩孩子自己印的标记）、`tests/ka-procwalk.ps1` 注释（"退出后 `ExitCode` 读回真实码"对
+  `-NoNewWindow` 形状不成立）、`tests/probe-ci-harness.ps1` 注释、`tests/probe-server-hint.ps1` 删掉那个永远读
+  `$null` 的死 `Exit` 键（无人消费，留着只会坑下一个读代码的人）、`README.md` 探针表两行、`CHANGELOG.md` 1.0.1
+  段落两处就地更正。产品代码零变化。
+  验证：本机 `tests\ka-ci.ps1 -Gates` 5 行 0 红（`_tmp/gates-exitswitch-20260930.log`）。
 
 ## [1.0.1] — 2026-09-30
 
@@ -190,8 +197,9 @@
   is called by the product but does not exist on the compiled type`）。代价近乎为零：本机整条 5.2 秒
   （原 5 秒），CI 上 `ok probe-native.ps1 5s`。期间被两件小事咬到，都记下来因为它正是"绿了也不作数"那类：
   ① 判据原先吃 `$c.ExitCode`，而**非等待式 `Start-Process` 对象在子进程结束后 `ExitCode` 回 `$null`**
-  （本机实测，`ka-ci.ps1` 里早写过这条）（2026-09-30 更正：方向反了——静默 `$null` 出现在读落在孩子**还在跑**
-  的时候，孩子结束之后读回真实码，那次红是"读得太早"），`$null -ne 0` 把一个正常结束的孩子判成了红——改成吃孩子自己
+  （本机实测，`ka-ci.ps1` 里早写过这条）（2026-09-30 第二次更正：这句对**本条自己的启动形状**是对的——该腿带
+  `-NoNewWindow` 与一条重定向，那种形状的孩子退出后读也还是 `$null`，`_tmp/exitcode-switch-matrix-20260930.txt`
+  T2/T4；错的是把它当成了通则，中间那版"方向反了、来自读得太早"的更正已被推翻），`$null -ne 0` 把一个正常结束的孩子判成了红——改成吃孩子自己
   印的标记，与 `probe-bat-entry` 的判据同一个形状；② `[IO.File]::ReadAllText` **读不到父进程自己那条
   重定向句柄还开着的文件**（实测 `being used by another process`，而子进程已经退出），`Get-Content`
   是按共享打开的，所以照旧能读。
@@ -260,10 +268,12 @@
   看得见孙进程、代码回 `$null`→`0`（撒谎）；`-PassThru` 配 `WaitForExit()` 0.8 秒返回、同样撒谎；
   `Start-Process -Wait -PassThru` 8.1 秒返回、代码 5（真话）、**但看不见孙进程**；
   `[Diagnostics.Process]::Start` + 重定向 stdout 而从不读 + `WaitForExit` 0.8 秒返回、代码 5、看得见
-  孙进程，**而孩子印的那行标记整个丢了**（`marker-in-log=NO`）。（2026-09-30 更正：前两行的"撒谎"是
-  **读得太早**的产物——读落在孩子还在跑的时候；同一张 log 的 `-Wait` 行读到的就是真实码 5，孩子退出后复测
-  同族对象也回真实码。四种形状的"瞎"据此收窄：第 4 行丢文本、第 3 行等活口，前两行只在读没坐在退出之后时
-  才瞎；`ka-ci` 选直系 `cmd` + 判定文件 + Job 形状不变，理由改写在该文件头部，见 `[未发布]` 本轮条目。）
+  孙进程，**而孩子印的那行标记整个丢了**（`marker-in-log=NO`）。（2026-09-30 第二次更正：前两行的 `$null` 是
+  **启动开关**的产物——那两行要让孩子文本进日志（`marker-in-log=yes`，这本身就是开关形状的证据），形状就带
+  `-NoNewWindow`；实测这种形状的孩子退出后读也还是 `$null`（孩子还在跑时任何形状都读 `$null`），而 `-Wait` 行
+  在任何形状下都读到真码 5。四种形状的"瞎"据此收窄：第 4 行丢文本、第 3 行等活口，前两行是开关造成的读不出
+  来，不是"只在读没坐在退出之后时才瞎"；`ka-ci` 选直系 `cmd` + 判定文件 + Job 形状不变，理由改写在该文件头部，
+  见 `[未发布]` 本轮条目。）
   所以 `ka-ci.ps1` 顶部那张表把"哪种瞎在哪一列"写成实测行，而不是脚注——上一版这里的几个数字是别处抄来的、
   和本机重测的对不上，本轮是先补出这张单一真源的表才把数字钉死的。收集器本身每行花 8.1 秒，而它检查的
   那个等待逻辑 0.7 秒返回，这句话也写进去了。

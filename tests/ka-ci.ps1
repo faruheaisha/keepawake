@@ -23,14 +23,20 @@
         [Diagnostics.Process]::Start, stdout
             redirected and never read, WaitForExit  NO - lost        yes   (0.8 s)    5  (true)
 
-    Read position, not the object, decides rows 1/2's third column (corrected 2026-09-30; the
-    reruns in _tmp/exitcode-shapes{,2}-20260930.txt): a non-waited Start-Process object answers a
-    silent $null when .ExitCode is read while the child still runs - that is what rows 1 and 2 were
-    showing ([int]$null is 0, so that read logs a running child as a pass) - and the same objects
-    answer the real code once the read sits after the exit (poll, WaitForExit() and
-    WaitForExit(30000) all measured true). What still separates the shapes: -Wait pays with the
-    leftover's lifetime (row 3), and .NET with an undrained stdout pipe loses the child's text
-    (row 4) - which is what a CI log is.
+    The 0 in rows 1/2 is the launch switches, not the read position (corrected a second time on
+    2026-09-30; the sentence before this one said "read position decides" and was wrong - it had
+    rerun the bare shape and dropped the switches, which is the one variable that matters). The
+    measured rule, three independent drivers, two shapes of child: a non-waited Start-Process
+    object answers a silent $null while the child still runs (any shape), and after your own
+    poll/WaitForExit()/WaitForExit(ms) it answers the real code ONLY when the launch carried
+    neither -NoNewWindow nor a standard-stream redirect. With either switch it stays a silent
+    $null even though HasExited is True - Refresh() and re-waiting do not help; the process is
+    gone and the code is unrecoverable. Rows 1/2 read $null after their polls because their
+    driver needed the child's text in the log, and text in the log is exactly -NoNewWindow.
+    (_tmp/exitcode-switch-matrix-20260930.txt T1-T10, reruns in -switch-verify- and
+    -switch-recheck-, pinned in -switch-pin- W1-W7.) What still separates the shapes: -Wait pays
+    with the leftover's lifetime (row 3), and .NET with an undrained stdout pipe loses the
+    child's text (row 4) - which is what a CI log is.
 
     -Wait also blocks on what the child leaves behind, and how far depends on the shape of the
     leftover. Same three leftovers, this time varying only the window style (_tmp/ws-outer2.log, no
@@ -55,9 +61,11 @@
     So the direct child here is cmd.exe, which exits the moment the script does (blind to whatever
     the script left alive), whose console the script's text reaches (it is Start-Process -NoNewWindow
     all the way down), and which writes the script's own ERRORLEVEL into a verdict file. The file
-    beats reading the object's .ExitCode on two counts: a read is only real once it sits after the
-    exit (and after a deadline kill the number would belong to the kill), while the file is written
-    by the script's own completion - evidence whose existence cannot be misordered.
+    beats reading the object's .ExitCode on two counts: this launch carries -NoNewWindow, and an
+    object from that shape answers a silent $null even after the exit - the read could not be made
+    real from here at all (see the note above) - and after a deadline kill the number would belong
+    to the kill, while the file is written by the script's own completion - evidence whose
+    existence cannot be misordered.
     The loop then polls HasExited with a deadline; on the deadline it kills the whole tree with
     TerminateJobObject, so a hanging script names itself instead of eating the step and cannot drag its
     leftovers into the next one. That, and the answer to "which processes did this leg leave behind?",

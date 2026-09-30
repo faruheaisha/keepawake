@@ -142,9 +142,11 @@ function Run-Runner([string]$Only, [int]$TimeoutSec) {
 
 function Run-RunnerTimed([string]$Only, [int]$TimeoutSec, [int]$BudgetSec) {
     # Same runner, timed, and NOT waited on: waiting would block on the leftover and hide the very
-    # property being measured. The object's exit code is deliberately not read here - row 1 of the
-    # table in ka-ci.ps1's header says a non-waiting Start-Process reports 0 whatever the child
-    # exited. The verdict comes from the summary line the runner prints itself.
+    # property being measured. The object's exit code is deliberately not read here - this launch
+    # carries -NoNewWindow, and an object from that shape cannot answer it at all: a silent $null
+    # even after the exit ([int]$null logs 0, whatever the child exited - measured 2026-09-30,
+    # _tmp/exitcode-switch-matrix-20260930.txt T2). The verdict comes from the summary line the
+    # runner prints itself.
     $f = Join-Path $env:TEMP ('ka-cih-' + [guid]::NewGuid().ToString('N') + '.out')
     $sw = [Diagnostics.Stopwatch]::StartNew()
     try {

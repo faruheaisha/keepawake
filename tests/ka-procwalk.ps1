@@ -204,10 +204,11 @@ function Get-OwnLeftovers([int[]]$ProcIds, [datetime]$BornNoEarlierThan, [dateti
     # The window is deliberately generous at the edges: a process whose start time cannot be read
     # (access denied, or a protected service) is kept, because losing a real leftover is worse than a
     # red that names something for a human to go look at.
-    # $BornNoLaterThan is the moment the poll noticed the exit, not the exit itself, and this object
-    # offers no better instant: remeasured 2026-09-30 (_tmp/exitcode-shapes2-20260930.txt, v6/v7),
-    # while the child runs ExitTime and ExitCode both read a silent $null, and after it exited
-    # ExitCode reads the real code while ExitTime reads FILETIME 0 (01/01/1601). So the poll's own
+    # $BornNoLaterThan is the moment the poll noticed the exit, not the exit itself, and the leg
+    # child offers no better instant: ka-ci launches it with -NoNewWindow, and an object from that
+    # shape answers a silent $null for ExitCode even after the exit ([int]$null is 0 - measured
+    # 2026-09-30, _tmp/exitcode-switch-matrix-20260930.txt T2-T4; while the child runs every shape
+    # reads $null), while ExitTime reads FILETIME 0 (01/01/1601) after the exit. So the poll's own
     # observation, at most one 200 ms period late, is the exit bound this loop has.
     $keep = @()
     foreach ($id in $ProcIds) {

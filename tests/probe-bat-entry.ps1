@@ -30,13 +30,20 @@ $ErrorActionPreference = 'Stop'
          command was supposed to write, the process it was supposed to leave running, the port it was
          supposed to open, the byte count of the file it was supposed to serve. ka.bat is the third
          shape (it is pure pass-through), so its exit code is used there.
-         Reading either of those correctly is its own trap: a read of .ExitCode taken while the
-         child still runs is a silent $null, so any read must sit after the wait. (The sentence
-         that stood here - Start-Process -PassThru then WaitForExit(30000) reads 0 for `cmd /c
-         exit 3` - did not reproduce on 2026-09-30: the int overload read 3 on all four of its
-         runs, the no-arg one 3 on three of four, and the fourth sample is 0xC0000142 - cmd
-         itself failing loader init, a real code, not a read lie. v6/v7 in
-         _tmp/exitcode-shapes2-20260930.txt.) [Diagnostics.Process]::Start reads 3 too; why that
+         Reading either of those correctly is its own trap, and the trap is the launch switches,
+         not the read position (corrected a second time 2026-09-30): a non-waited Start-Process
+         object reads a silent $null while the child still runs (any shape), and after your own
+         wait it reads the real code only when the launch carried neither -NoNewWindow nor a
+         standard-stream redirect - with either switch it stays a silent $null even after HasExited
+         turns True (Refresh() and re-waiting do not help; _tmp/exitcode-switch-matrix-20260930.txt
+         T1-T10, reruns in -switch-verify-/-switch-recheck-, pinned in -switch-pin-). So the
+         sentence that once stood here - Start-Process -PassThru then WaitForExit(30000) reports 0
+         for `cmd /c exit 3` - was right for its own shape: the 09-26 driver needed the child's
+         text in the log, i.e. -NoNewWindow (the surviving rows B/C/C2 of
+         _tmp/exit-semantics-rerun.log). A v6/v7 rerun that dropped the switches read 3 on the
+         plain shape and declared a non-reproduction - that verdict was the wrong one (its one
+         0xC0000142 sample is cmd dying in loader init, a real code, not a read lie; v6/v7 in
+         _tmp/exitcode-shapes2-20260930.txt). [Diagnostics.Process]::Start reads 3 too; why that
          path is the one used is in Invoke-Cmd.
 
       2. Start-Process -Wait with -RedirectStandardOutput hangs the moment the child leaves a
@@ -250,12 +257,12 @@ function Read-FileLoose([string]$Path) {
 
 function Invoke-Cmd([string]$Line, [int]$TimeoutMs = 120000) {
     <#
-        Exit codes were re-measured 2026-09-30 (v6/v7 in _tmp/exitcode-shapes2-20260930.txt; fact 1
-        carries the numbers): once the read sits after the wait, both paths read the real code, and
-        the Start-Process 0 for `cmd /c exit 3` did not reproduce. The exit codes below come from
-        the [Diagnostics.Process] path, the shape this harness measured every number with
-        (measured: ka.bat with a broken target -> 5, the same batch with `pause` appended -> 0,
-        which is fact 1).
+        Exit codes were re-measured 2026-09-30 a second time and the story is the switches (fact 1
+        has the rule and the file names): the shape that reads 0 for `cmd /c exit 3` is the one
+        carrying -NoNewWindow (or a redirect), and this harness keeps its numbers on the
+        [Diagnostics.Process] path below, the shape that measures every number here (measured:
+        ka.bat with a broken target -> 5, the same batch with `pause` appended -> 0, which is
+        fact 1).
     #>
     $si = New-Object Diagnostics.ProcessStartInfo
     $si.FileName = Join-Path $env:windir 'System32\cmd.exe'

@@ -176,15 +176,14 @@ Write-Output ('FOREGROUND_PID=' + [long]$fg)
             Write-Output 'PROBE FAILED: 1 problem(s)'
             exit 1
         }
-        # Verdict by the child's own marker, not by its exit code: reading .ExitCode while the
-        # child still runs is a silent $null ([int]$null is 0, so a live child would be logged
-        # as a pass - measured 2026-09-30, _tmp/exitcode-shapes*.txt). The read below sits after
-        # the HasExited poll, so it is real here; the verdict stays the child's own printed line,
-        # and $code is only there to name a failure.
-        $code = $c.ExitCode
+        # Verdict by the child's own marker, not by its exit code. This launch carries -NoNewWindow
+        # and a redirect, and an object from that shape answers a silent $null even after the exit
+        # - HasExited is True here and .ExitCode would still be $null (measured 2026-09-30,
+        # _tmp/exitcode-switch-matrix-20260930.txt T2/T4, rerun in -switch-verify-/-switch-pin-;
+        # while the child still runs it is $null in every shape). So there is no code to read from
+        # here, and the failure below names the only readable thing: the missing verdict line.
         if ($text -notlike '*PROBE OK (self-test):*') {
-            Write-Output ('  FAIL the sabotaged copy did not print its own verdict (exit=' +
-                          $(if ($null -eq $code) { 'unknown' } else { $code }) + ')')
+            Write-Output '  FAIL the sabotaged copy did not print its own verdict'
             foreach ($l in ($text -split "`r?`n") | Where-Object { $_.Trim() }) { Write-Output ('        ' + $l.Trim()) }
             Write-Output 'PROBE FAILED: 1 problem(s)'
             exit 1

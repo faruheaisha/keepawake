@@ -120,7 +120,11 @@ function Invoke-Child([string]$Dir, [string]$Data, [string]$ChildArgs) {
             $lines += ('CHILD_TIMEOUT after 90s: ' + $ChildArgs)
             try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch { }
         }
-        @{ Exit = $(if ($timedOut) { -1 } else { $p.ExitCode }); Lines = $lines }
+        # Lines only, and no exit code key: this launch carries -NoNewWindow and a redirect, and an
+        # object from that shape answers a silent $null even after the exit (measured 2026-09-30,
+        # _tmp/exitcode-switch-matrix-20260930.txt T2/T4). A $null key that nothing consumes would
+        # only be a trap for the next reader; a timeout is already a named line above.
+        @{ Lines = $lines }
     } finally {
         Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
         if ($null -eq $prev) { Remove-Item Env:KA_DATA -ErrorAction SilentlyContinue } else { $env:KA_DATA = $prev }
