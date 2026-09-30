@@ -173,3 +173,11 @@ git grep -h -o '_tmp/[A-Za-z0-9._*{}/-]*' | Sort-Object -Unique   # 全部入库
 五道门禁 `----- 5 run, 0 red`。**但那次用的规程只扫文档层（README/CHANGELOG/PITFALLS/docs）**，`tests/`
 里引用的一切都没进名单：`ka-ci.ps1` 头部唯一引用的两条 `ws-outer*.log` 如今已不在盘上，那两处已如实标注
 "gone from disk"；扫描命令因此改成全仓。**没 grep 过就别删**：这里面没有能被自动化复现的东西，删了就真没了。
+
+**改完源码顺手核一遍文档里的 `file:line` 引用。** 这些引用是"结论要证据"的另一半：结论说源码哪一行有它，
+读者就该在那一行读到那件事。2026-09-30 把 README/PITFALLS/CHANGELOG/docs 里的 40 个引用逐个解析、打印目标行
+（脚本 `_tmp/fileref-audit.ps1`，输出 `_tmp/fileref-audit-20260930.txt`）：39 个落点正确，其中
+`ka-lid.ps1:280` 指的是**突变体**里的行号
+（`_tmp/check-log-ascii-rule.ps1` 从锚点算出，当天重跑 13 条腿全对、自己印 `ka-lid mutant sits at line 280`，
+见 `_tmp/logascii-rerun-20260930.log`——不是笔误）；1 个落空——`ka-release-files.ps1:16` 那张手打清单已被树
+推导取代、该行成了空行，已在 `CHANGELOG` 原句就地标注。

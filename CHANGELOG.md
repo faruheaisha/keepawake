@@ -78,6 +78,15 @@
   证据：`_tmp/runid-audit-20260930.txt`（23 个 id 的 attempt/conclusion/sha 逐行）。
   验证：本机 `tests\ka-ci.ps1 -Gates` 5 行 0 红（`_tmp/gates-runidaudit-20260930.log`）。
 
+- **核了一遍文档里的 `file:line` 引用**（2026-09-30，纯文档）。40 个引用逐个解析：文件全在、行号全在范围内；
+  逐行比对后 39 个落点与引用说法一致——包括 `ka-lid.ps1:280`，那指的是**突变体**里的行号：2026-09-30 重跑
+  `_tmp/check-log-ascii-rule.ps1`，13 条腿全对，它自己印出 `ka-lid mutant sits at line 280`（该行由
+  `Add-KaLog "LID restore …"` 锚点算出，锚点如今在 `ka-lid.ps1:279`），不是笔误。1 个落空：
+  `ka-release-files.ps1:16` 那张当年手打的文件清单已被树推导取代、该行成了空行，已在原句就地标注。
+  核法写进 `PITFALLS.md` §五。
+  输出与逐行内容：`_tmp/fileref-audit-20260930.txt`、`_tmp/logascii-rerun-20260930.log`。
+  验证：本机 `tests\ka-ci.ps1 -Gates` 5 行 0 红（`_tmp/gates-fileref-20260930.log`）。
+
 ## [1.0.1] — 2026-09-30
 
 一个补丁版：一条**会停掉你自己面板**的归属 bug（下面第一条），加上三周来所有"闸门绿着、而它要防的
@@ -772,7 +781,8 @@
   run `36225438637`（sha `90438c3`）全绿——门禁+探针 `----- 22 run, 0 red`，套件 `通过 86，失败 0，跳过 5`，
   被挪出 `if ($running)` 的那半条在 runner 上印 `PASS`（用例名"英文界面上不会有中文：ka.ps1 status 的真实输出"）。
   然后回头查上一条自己在托盘里加的那条"预设文字必须等于 Tag 真值"的检查到底由谁执行：`grep -rn ka-tray tests/`
-  当时只有四处——两份文件清单（`ka-release-files.ps1:16`、`probe-migrate.ps1:14`）、`probe-clm-gate.ps1` 的
+  当时只有四处——两份文件清单（`ka-release-files.ps1:16`、`probe-migrate.ps1:14`；前者那张手打清单此后被
+  `ka-release-files.ps1` 头部的树推导取代，2026-09-30 核时该行已是空行）、`probe-clm-gate.ps1` 的
   `$entries` 数组、和 case `tray/clm`。其中**只有最后一处会真的启动一个托盘进程**，而那条腿断的是**闸门拒绝**
   （`ok tray/clm exit=2 lines=4`），`exit 2` 发生在 `ka-gate.ps1` 调用处、远在 `-SelfTest` 主体（`ka-tray.ps1:411`）
   之前。也就是说：**CI 上唯一会启动托盘自检的那条腿，恰恰是永远走不进自检主体的那条**。同一个位置上的
