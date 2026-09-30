@@ -43,15 +43,20 @@
 
 ## 命令与预算（数字都是实测）
 
+表里的本机数字于 **2026-09-30 逐行重测**（重测方式与旧值见下）；带 run id 的 CI 数字按那一轮查
+（`gh run view <id> --json jobs`）。一个 run 的"多久"分两层：`gh run view <id> --json jobs` 里
+**每一步**的 `startedAt/completedAt` 才是这一步的时长，`createdAt→updatedAt` 是整个 job——两者差着
+引擎/Inno 那几步和安装那一步，别互相顶替（这条是 2026-09-30 核本表时踩出来的）。
+
 | 想干的事 | 命令 | 本机实测 | CI 实测 |
 | --- | --- | --- | --- |
-| 五道门禁 | `tests\ka-ci.ps1 -Gates` | **67s**（encoding 1s / privacy 3s / privacy-mutation 60s / syntax 2s / workflow 1s；末行 `----- 5 run, 0 red`） | 同一入口 |
-| 门禁 + 全部探针 | `tests\ka-ci.ps1 -Gates -Probes` | **21m14s**（28 行 0 红，2026-09-30） | **21m45s**（run `36553833882`，末行 `----- 28 run, 0 red`） |
-| 全量行为套件 | `tests\ka-tests.ps1` | **不要在本机随手跑**（动真电源设置与计划任务） | 每轮都跑（84 个 `It`，最近一轮印 91 条判定行：86 通过 / 5 跳过 / 0 失败） |
-| 字节形状 | `tests\ka-encoding.ps1`（`-Apply` 就地修） | 1s | 每轮 |
+| 五道门禁 | `tests\ka-ci.ps1 -Gates` | **70s**（一次读数：encoding 2s / privacy 4s / privacy-mutation 54s / syntax 8s / workflow 1s；末行 `----- 5 run, 0 red`。同一天另两次是 2/3/64/10/1 与 2/3/62/9/1——**每一格都抖**，别拿单次读数做预算。旧的分项 1/3/60/2/1 里，syntax 从 2s 涨到 8–10s 是因为它扫的是**树**不是产品清单——`_tmp` 里攒的一次性 `.ps1` 也被解析） | 同一入口 |
+| 门禁 + 全部探针 | `tests\ka-ci.ps1 -Gates -Probes` | **21m14s**（28 行 0 红，2026-09-30） | **16m12s**（run `36695129254` 的 `Gates and probes` 步：09:18:42Z→09:34:54Z，末行 `----- 28 run, 0 red`。旧值 21m45s 是那一轮**整个 job** 的时长——同一轮 run `36553833882` 这一步实测 17m04s，本机反而比 runner 慢） |
+| 全量行为套件 | `tests\ka-tests.ps1` | **不要在本机随手跑**（动真电源设置与计划任务） | 每轮都跑（静态 84 条 `It`；核对过的一轮 run `36695129254`（2026-09-30）印 `通过 86，失败 0，跳过 5`，即 91 条判定行） |
+| 字节形状 | `tests\ka-encoding.ps1`（`-Apply` 就地修） | 2s | 每轮 |
 | 某个探针单跑 | `tests\probe-<名字>.ps1` | 见 `README.md` 探针表（`probe-native` 5.2s、`probe-procwalk` 15.4→26s、`probe-server-hint` 50–76s、`probe-server-hint-selftest` 384–435s、`probe-bat-entry -SelfTest` 8m35s） | 前四类每轮；`probe-bat-entry` 不进 CI（理由与代价见 README 表内） |
-| 出三件套 | `packaging\build.ps1 -Stage -Installer -Smoke` | zip 25 条目 / 0.31 MB；`setup.exe` 2.16 MB（Inno 编译 3.454s） | 每轮 |
-| 真装真卸 | `packaging\ka-test-install.ps1 -WithWorker -SelfTest` | **会删掉再补回你的 `KeepAwake-Guard`/`KeepAwake-Logon`**，别在没备份时跑 | 每轮（20 条断言 + 2 个突变，2m41s） |
+| 出三件套 | `packaging\build.ps1 -Stage -Installer -Smoke` | **2026-09-30 重建**：zip 25 条目 / 0.33 MB、`setup.exe` 2.24 MB（四次重建读数都相同）；Inno `Successful compile` 2.97–3.61 秒（四次读数 2.969 / 3.172 / 3.297 / 3.610，这一格每次都抖）。旧读数 0.31 MB / 2.16 MB / 3.454s：PITFALLS 与 README 是被打包进去的，它们长一截这两个字节数就跟着长；秒数只跟机器当时忙不忙有关 | 每轮 |
+| 真装真卸 | `packaging\ka-test-install.ps1 -WithWorker -SelfTest` | **会删掉再补回你的 `KeepAwake-Guard`/`KeepAwake-Logon`**，别在没备份时跑 | 每轮（20 条断言 + 2 个突变；CI 这一步实测 **1m40s**，run `36695129254`。README 里那个 2m41s 是**本机**一次三棵树 `-SelfTest` 的读数，不是这一步） |
 | 只打印版本 | `packaging\build.ps1 -ShowVersion` | 版本号真源是 `ka-core.ps1` 的 `$script:KaVersion` | 发布前比对 tag |
 
 每脚本的上限是 `tests\ka-ci.ps1 -TimeoutSec`（默认 **600 秒**），所以一条 sweep 的代价 ≈ 臂数 + 一次完整探针。
@@ -79,4 +84,6 @@
 
 ## 摩擦点
 
-全部写在 `PITFALLS.md`（PowerShell 5.1 与 cmd 的 21 条、CI/门禁经验、平台事实），这里不重抄。
+全部写在 `PITFALLS.md`（PowerShell 5.1 与 cmd 的 22 条、CI/门禁经验、平台事实），这里不重抄。
+（那个条数每添一条坑就变，2026-09-30 数一次是 22：`(Select-String -LiteralPath PITFALLS.md -Pattern '^\d+\.').Count`。
+同一个道理适用于上面那张表：**没有日期的"当前值"迟早是假引用**，所以重测过的行都带上了日子。）

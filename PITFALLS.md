@@ -133,6 +133,12 @@
   `36440936247` 是 `run_attempt=2 / cancelled`，而 `CHANGELOG` 写它"以 `----- 27 run, 1 red` 结束、重跑被取消"
   ——两者都对，错的是"cancelled 就当没红过"这种读法。查 attempt 数：`gh api repos/<o>/<r>/actions/runs/<id> --jq .run_attempt`。
   `[实测]` `_tmp/runid-audit-20260930.txt`
+- **"一个 run 花了多久"分两层，别互相顶替**：`gh run view <id>` 给的 `createdAt→updatedAt` 是**整个 job**；
+  某一步的时长在 `gh run view <id> --json jobs --jq '.jobs[0].steps[]'` 的 `startedAt/completedAt` 里。
+  2026-09-30 核 `docs/DEVELOPMENT.md` 时撞上：表里把 run `36553833882` 的 **21m45s**（整个 job）当成了
+  `-Gates -Probes` **那一步**的时长——那一步实测 **17m04s**、整个 job 21m38s。这种引用能重读、却读不出表里
+  那个数，和引用不存在是同一类坏（同一天还顺手把最新一轮 run `36695129254` 的这一步量成 16m12s，比本机
+  21m14s 快，与本仓"runner 常常比这台机器快"的旧观察一致）。`[实测]`
 - **`tests/ka-tests.ps1` 不许随手在正在用的机器上跑**：它动真实电源设置与计划任务。它的位置是 CI 的一次性 runner。
   `[实测]`（用户两次拒绝本机跑）
 
@@ -251,3 +257,17 @@ CI runner 上。顺带在这一遍里查到一个**指错文件**的引用：那
 （`_tmp/clm-wire/` 就被这么读成"已标注"），所以它只用来分诊、结论仍要人读一眼。另外代表行不能用
 `Sort-Object -Unique` 的第一条读——它不稳，同一条引用会自己翻（§二第 22 条）。所以上面那条保留名单
 规程除了按前缀归并，还得**分清"取证"与"运行时暂存"**：前者少一个就补，后者本来就该删。
+
+**表里的"当前值"没有日子，就是一条迟早变假的引用。** 2026-09-30 把 `docs/DEVELOPMENT.md` 的"命令与预算"
+表与"这台开发机的环境事实"逐行重跑（脚本/读数 `_tmp/devnum-gates-20260930.log`、`_tmp/devnum-pergate-20260930.ps1`、
+`_tmp/devnum-env-20260930.ps1`、`_tmp/build-devnum-20260930.log`）：五道门禁 67s→**70s**（分项 encoding 2s /
+privacy 4s / privacy-mutation 54s / syntax 8s / workflow 1s，其中 syntax 从 2s 涨到 8s 是因为它扫的是**树**——
+`_tmp` 里攒下的一次性 `.ps1` 也算）、zip 0.31→**0.33 MB**、`setup.exe` 2.16→**2.24 MB**、Inno
+`3.454 sec`→**`3.297 sec`**、以及本文件自己的条数 21→**22**。PITFALLS 与 README 是被打进 zip 的，
+它们长一截，那两个字节数就跟着长——所以这类数字要么带日子、要么带"怎么重数"的命令，别写成不动弹的
+"当前值"。同一遍里**仍然对得上**的：PS `5.1.26100.9444`、`HKLM\...\Nls\CodePage` 的 ACP `65001`、
+`git 2.54.0.windows.1`、`gh 2.93.0`、Inno `6.7.3`（读法用注册表 `DisplayVersion`——`ISCC.exe` 的
+`VersionInfo.FileVersion` 是 `0.0.0.0`，照那个读会以为装了个 0 版）、`Get-KaIscc` 与手写路径一致、
+`timeout-minutes` 60/30、静态 84 条 `It`、`ka-core.ps1` 的 `$script:KaVersion` = 1.0.1；`release.yml`
+"tag 对 `-ShowVersion` → 重建 → 逐项比 `SHA256SUMS` → `gh release create` 带文件 → `gh release view --json assets`
+读回来"这几句也逐句核过。

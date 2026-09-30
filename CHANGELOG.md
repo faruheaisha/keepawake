@@ -179,6 +179,33 @@
   验证：本机 `tests\ka-ci.ps1 -Gates` 5 行 0 红（`_tmp/gates-section1recheck-20260930.log`）；dist 重建 25 项
   （`_tmp/build-section1recheck-20260930.log`）。
 
+- **`docs/DEVELOPMENT.md` 那张"数字都是实测"的表，重测一遍：四处已经过期，其中一处是引用读错了层**（2026-09-30，
+  纯文档；**产品行为零变化**）。上一轮起在核知识层的引用能不能重读，这一轮轮到那份文档里**活的数字**——表头写着
+  "命令与预算（数字都是实测）"，但没写这些数是哪天的。逐行重跑（`_tmp/devnum-gates-20260930.log`、
+  `_tmp/devnum-pergate-20260930.ps1`、`_tmp/devnum-env-20260930.ps1`、`_tmp/build-devnum-20260930.log`）：
+  **五道门禁 67s → 70s**（分项 encoding 2s / privacy 4s / privacy-mutation 54s / syntax 8s / workflow 1s；
+  syntax 从 2s 涨到 8s 是因为它扫的是**树**，`_tmp` 里攒下的一次性 `.ps1` 也被解析）；**出三件套的字节数**
+  zip 0.31 → **0.33 MB**、`setup.exe` 2.16 → **2.24 MB**、Inno `Successful compile (3.454 sec)` →
+  四次重建 **2.969 / 3.172 / 3.297 / 3.610 sec**（这一格每次都抖；门禁的分项也抖，同一天三次是
+  2/4/54/8/1、2/3/64/10/1、2/3/62/9/1，所以表里记的是"约 3 秒""约 70 秒"这回事）（PITFALLS/README 是被打进
+  zip 的，它们长一截这两个字节数就跟着长，而这几个提交恰好都在长它们）；
+  **本文件所在的 `PITFALLS.md` 自己也从"21 条"长到 22 条**（就是上一轮落地的第 22 条，文档里的条数没人跟着改）。
+  最值得记的一处不是过期、是**读错了层**：表里把 CI 的 `-Gates -Probes` 写成 `21m45s（run 36553833882…）`，
+  而 21m45s 是那一轮**整个 job** 的时长——`gh run view <id> --json jobs --jq '.jobs[0].steps[]'` 里，
+  `Gates and probes` 这一步实测 **17m04s**（整个 job 21m38s）；顺手把最新一轮 run `36695129254` 的这一步
+  量成 **16m12s**（末行 `----- 28 run, 0 red`），比本机 21m14s 快，与本仓"runner 常常比这台机器快"的旧观察一致。
+  表里另外两条 CI 数字也一样**落地到具体一轮**：全量套件那格的"最近一轮 86/5/0"补成 run `36695129254`
+  （2026-09-30 印 `通过 86，失败 0，跳过 5`，即 91 条判定行），真装真卸那格的 `2m41s` 其实是**本机**一次三棵树
+  `-SelfTest` 的读数（`README.md:138` 写的就是本机），CI 这一步实测 **1m40s**，已各归各位。**仍然对得上、
+  只补了日子**的：PS `5.1.26100.9444`、ACP `65001`、`git 2.54.0.windows.1`、`gh 2.93.0`、Inno `6.7.3`
+  （读法得用注册表 `DisplayVersion`——`ISCC.exe` 的 `VersionInfo.FileVersion` 是 `0.0.0.0`）、
+  `Get-KaIscc` 与手写路径一致、`timeout-minutes` 60/30、静态 84 条 `It`、`$script:KaVersion`=1.0.1，
+  以及 `release.yml` 那五句（tag 对 `-ShowVersion` → 重建 → 逐项比 `SHA256SUMS` → `gh release create` 带文件
+  → `gh release view --json assets` 读回来）。教训写进 `PITFALLS.md`：§三 加了"一个 run 的时长分两层"，
+  §五 加了"没有日期的当前值就是迟早变假的引用"。
+  验证：本机 `tests\ka-ci.ps1 -Gates` 5 行 0 红（`_tmp/gates-devnum-20260930.log`）；dist 重建 25 项
+  （`_tmp/build-devnum-20260930.log`，含 `smoke: extracted, ran "status -Json" …`）。
+
 ## [1.0.1] — 2026-09-30
 
 一个补丁版：一条**会停掉你自己面板**的归属 bug（下面第一条），加上三周来所有"闸门绿着、而它要防的
