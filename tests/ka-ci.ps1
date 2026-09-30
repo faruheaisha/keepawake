@@ -48,6 +48,10 @@
     7.1 s / 7.1 s / 1.0 s, and the two poll shapes came back in 0.6 s and 0.7 s with their leftover
     still alive and still holding the redirect file open ("redirect=HELD" - the collector could not
     read its own child's text back until the grandchild let go).
+    Both logs this paragraph reads from are gone from disk (_tmp/ws-outer.log and ws-outer2.log):
+    they were cited only in this header, and the 2026-09-30 _tmp clean grepped just the docs layer
+    for its keep-list - so the numbers above are the surviving record of that run, and the keep-list
+    rule in PITFALLS.md now greps every tracked file.
 
     So the thing that cancelled run 36242306473 was a leftover holding a console, and it was not by
     itself the five orphan msedge processes that run's cleanup listed where the green run before it

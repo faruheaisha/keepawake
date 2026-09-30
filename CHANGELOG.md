@@ -62,6 +62,14 @@
   段落两处就地更正。产品代码零变化。
   验证：本机 `tests\ka-ci.ps1 -Gates` 5 行 0 红（`_tmp/gates-exitswitch-20260930.log`）。
 
+- **清 `_tmp/` 的保留名单规程与引用面不等宽：只扫了文档层，漏掉 `tests/`**（2026-09-30，纯文档与注释）。
+  `PITFALLS.md` §五 当日清库的规程只 grep README/CHANGELOG/PITFALLS/docs，于是**只在** `tests/ka-ci.ps1`
+  头部被点名的两条取证 `_tmp/ws-outer.log` / `_tmp/ws-outer2.log`（`-Wait` 按活口形状阻塞那次实验的原始日志）
+  没进保留名单、如今已不在盘上；规程改成 `git grep` 扫**全部入库文件**（§五内更新，含 `tests\*.ps1`），
+  `ka-ci.ps1` 那两处如实标注 "gone from disk"、表下数字原样保留为存活记录。教训：**保留名单的 grep 范围
+  必须盖住引用的生长面**——引用长在注释里，扫描只到文档，就等于没扫。
+  验证：本机 `tests\ka-ci.ps1 -Gates` 5 行 0 红（`_tmp/gates-tmpkeep-20260930.log`）。
+
 ## [1.0.1] — 2026-09-30
 
 一个补丁版：一条**会停掉你自己面板**的归属 bug（下面第一条），加上三周来所有"闸门绿着、而它要防的

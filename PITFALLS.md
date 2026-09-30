@@ -153,15 +153,17 @@
 | 留口归属（Job ∪ 重建） | `tests\probe-procwalk.ps1` + `tests\probe-ci-harness.ps1` |
 | 安装版真装真卸 | `packaging\ka-test-install.ps1 -WithWorker -SelfTest`（**会动你机器上的计划任务**，先看 README） |
 
-**清 `_tmp/` 之前先 grep 文档。** `_tmp/` 是 gitignore 的（只存在于开发机），但其中一批日志/脚本被
-`README.md`、`CHANGELOG.md` 与小节里的"引用哪次运行"**当成取证记录点名**（`_tmp/ci-gates-probes-run3.log`、
-`_tmp/hint-sweep-batch2.log`、`_tmp/panel-keepalive-probe.ps1`…）。删掉它们不会让任何门禁变红——只会让
-那些引用从此不可复读，而这正是本仓库要求"引用就必须能重读"的原因。所以顺序是**先**：
+**清 `_tmp/` 之前先 grep 全仓。** `_tmp/` 是 gitignore 的（只存在于开发机），但其中一批日志/脚本被仓库里的
+文件**当成取证记录点名**（`_tmp/ci-gates-probes-run3.log`、`_tmp/hint-sweep-batch2.log`、
+`_tmp/panel-keepalive-probe.ps1`…）。删掉它们不会让任何门禁变红——只会让那些引用从此不可复读，而这正是
+本仓库要求"引用就必须能重读"的原因。所以顺序是**先**：
 
 ```powershell
-Select-String -Path README.md, CHANGELOG.md, PITFALLS.md, docs\*.md -Pattern '_tmp/' -AllMatches
+git grep -h -o '_tmp/[A-Za-z0-9._*{}/-]*' | Sort-Object -Unique   # 全部入库文件，含 tests\*.ps1
 ```
 
-把输出里出现过的路径列成保留名单，**再**删其余。本机 2026-09-30 实做过一次：`_tmp` 从 493 项降到 33 项
-（30 MB → 535 KB），留下的正好就是被点名的那些；`dist/`（构建产物）同批清掉，之后 `git status` 干净、
-五道门禁 `----- 5 run, 0 red`。**没 grep 过就别删**：这里面没有能被自动化复现的东西，删了就真没了。
+把输出里出现过的路径列成保留名单（带 `*` 的按前缀归并），**再**删其余。本机 2026-09-30 实做过一次：
+`_tmp` 从 493 项降到 33 项（30 MB → 535 KB），`dist/`（构建产物）同批清掉，之后 `git status` 干净、
+五道门禁 `----- 5 run, 0 red`。**但那次用的规程只扫文档层（README/CHANGELOG/PITFALLS/docs）**，`tests/`
+里引用的一切都没进名单：`ka-ci.ps1` 头部唯一引用的两条 `ws-outer*.log` 如今已不在盘上，那两处已如实标注
+"gone from disk"；扫描命令因此改成全仓。**没 grep 过就别删**：这里面没有能被自动化复现的东西，删了就真没了。
