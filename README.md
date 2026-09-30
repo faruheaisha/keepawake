@@ -31,7 +31,7 @@ Windows 判断"没人用"的依据只有你多久没动键盘鼠标，它对"后
 | 怎么控制 | 五个 `.bat` 入口：`on.bat`、`off.bat`、`panel.bat`、`tray.bat`、`ka.bat`（命令行全功能）；面板 `http://127.0.0.1:8791/` 只监听回环地址，不想开浏览器就用托盘图标 |
 | 有没有效 | 不猜。读内核电源日志数出最近 N 小时真待机过几次：`ka.bat evidence`（见《有效性是实测的》） |
 | 卸载 | 便携包删掉目录就没了；安装版走"已安装的应用"或 `unins000.exe`。配置和日志在 `%LOCALAPPDATA%\KeepAwake`，不跟着程序目录一起消失 |
-| 摊开写的地方 | 磁盘上每一个文件、每一个字段：[PRIVACY.md](PRIVACY.md)。面板端口、提权、合成输入、没有代码签名这四件事的威胁模型：[SECURITY.md](SECURITY.md)。每个版本改了什么：[CHANGELOG.md](CHANGELOG.md) |。**踩过的坑与调研结论**（平台事实、PowerShell 陷阱、门禁经验，逐条标了怎么得来的）：[PITFALLS.md](PITFALLS.md)
+| 摊开写的地方 | 磁盘上每一个文件、每一个字段：[PRIVACY.md](PRIVACY.md)。面板端口、提权、合成输入、没有代码签名这四件事的威胁模型：[SECURITY.md](SECURITY.md)。每个版本改了什么：[CHANGELOG.md](CHANGELOG.md)。**踩过的坑与调研结论**（平台事实、PowerShell 陷阱、门禁经验，逐条标了怎么得来的）：[PITFALLS.md](PITFALLS.md)。**设计**（模块边界与不变量、每条决策被否掉的替代方案）：[docs/DESIGN.md](docs/DESIGN.md)；**环境依赖**（三层依赖、工具链版本、每条命令的实测耗时）：[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)；**同类工具调研**（一手来源逐条可核）：[docs/RESEARCH.md](docs/RESEARCH.md)。哪个问题该翻哪一份：[docs/README.md](docs/README.md)
 | 许可 | Apache-2.0。可商用、可修改、可闭源集成，自带专利授权；不授予任何商标或本项目名称的使用权（见下文《许可》） |
 
 版本号只有一个真源：`ka-core.ps1` 里的 `$script:KaVersion`（面板页脚、托盘提示、`/api/state` 读的都是它）。本文标题**不带**版本号，因为两份版本号写在一起迟早会互相打脸。
@@ -302,6 +302,10 @@ README.md / SECURITY.md / PRIVACY.md / CHANGELOG.md / PITFALLS.md / LICENSE (Apa
 - **状态真相**：`state.json` 是 worker 写的自述，但 `status` 只把它当成"锦上添花"——`Get-KaFullState` 里的 `$live` 判定要求真实进程存在才成立。
 - **想不想要保护**：`intent.json`。这是看门狗的唯一依据 —— 你 `stop` 了，它就不会在 10 分钟后自作主张把你刚关掉的保护又开起来（上一版就是这么惹恼用户的）。定时运行到期会被判定为 `expired`，不算"该保护却没保护"。
 - **写文件**：一律 write-then-move，读方永远看不到半截 JSON。
+
+这一节的规则是**共识**；把它们逐条写成可检查的条目（谁负责、谁**不许**做、违反了会怎样、当初否掉的替代
+方案是什么）在 [docs/DESIGN.md](docs/DESIGN.md)。改动模块边界之前先读那一份——它存在的理由就是让人不必
+从这些段叙述里重新推导。
 
 ## 有效性是实测的
 
