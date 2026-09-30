@@ -93,10 +93,10 @@ v1.0 **不做 Authenticode 签名**，这是明确的产品决定，不是没做
 - **杀软**：`SendInput` 合成输入 + `Add-Type` 现场编译 C# + 无签名，是"鼠标连点器/jiggle 类"工具的共性
   特征，存在被误报的可能。遇到拦截请核对你手上的哈希（见下）后做排除项，**不要**从来路不明的镜像下载。
 - **你能用什么来判断完整性**：每个 release 附 `SHA256SUMS`。发布产物由 CI 在 tag 上构建并给出哈希
-  （产物名约定为 `KeepAwake-<版本>-windows-x64.zip` 与对应的 per-user 安装器），你可以在本机自己算一遍比对：
+  （产物名约定为 `KeepAwake-<版本>-portable.zip` 与 `KeepAwake-<版本>-setup.exe`），你可以在本机自己算一遍比对：
 
   ```powershell
-  Get-FileHash -Algorithm SHA256 .\KeepAwake-1.0.0-windows-x64.zip
+  Get-FileHash -Algorithm SHA256 .\KeepAwake-1.0.1-portable.zip
   ```
 
   签名解决的是"这个 exe 是谁编译的"，哈希解决的是"这个文件和我下载的那份是否一致"。v1.0 只给后者。

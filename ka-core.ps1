@@ -302,7 +302,7 @@ public static class Native {
 # Captured while this file is being dot-sourced, so $PSScriptRoot is unambiguously
 # the project directory rather than whatever called into it.
 $script:KaProgramRoot = $PSScriptRoot
-$script:KaVersion = '1.0.0'
+$script:KaVersion = '1.0.1'
 $script:KaLogMaxBytes = 512KB
 $script:KaDataRoot = $null
 $script:KaDataError = $null
