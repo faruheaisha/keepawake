@@ -67,6 +67,9 @@ $c = Get-Identity -Dir $root -Data (Join-Path $work 'dataC')
 Write-Output ("  C: data={0} name={1}" -f $c.data, $c.name)
 if ($c.name -and $c.name -ne $a.name) { Ok 'a separate data root gets its own mutex, so copies can be decoupled on purpose' }
 else { Bad "KA_DATA did not change the identity (C=$($c.name) A=$($a.name))" }
+$alias = Get-Identity -Dir $root -Data (Join-Path $work 'dataC\folder\..')
+if ($alias.name -eq $c.name -and $alias.data -eq $c.data) { Ok 'equivalent path spellings use the same data root and mutex' }
+else { Bad 'equivalent data-root spellings produced different identities' }
 
 Write-Output '--- C. is the shared name actually contended across processes?'
 # Before staging a holder, ask who already holds the name. Measured 2026-09-25 (and reproduced from

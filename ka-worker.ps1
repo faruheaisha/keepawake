@@ -103,6 +103,8 @@ $ilSkips = 0
 $displayDowngraded = $false
 $battPct = -1
 $battAc = $true
+$battAcKnown = $false
+$battStatusKnown = $false
 
 function Apply-Flags {
     param([long]$Flags, [string]$Why)
@@ -156,11 +158,13 @@ $nextStopChk  = 0
 $nextBeatLog  = $now + 1800
 $lastTick     = $now
 $exitReason   = 'unknown'
+$processStartedEpoch = [DateTimeOffset]::new((Get-Process -Id $PID).StartTime).ToUnixTimeSeconds()
 
 function Write-State {
     $s = @{
         pid              = $PID
         startedEpoch     = [long]$startedEpoch
+        processStartedEpoch = [long]$processStartedEpoch
         expiresEpoch     = [long]$expiresEpoch
         lastTickEpoch    = [long](Get-KaEpoch)
         baseFlags        = [long]($flagsFull -bor [long][Ka.Native]::ES_CONTINUOUS)
@@ -172,6 +176,7 @@ function Write-State {
         antiLockMethod   = [string]$AntiLockMethod
         antiLockInterval = [int]$AntiLockIntervalSec
         reassertSec      = [int]$ReassertSec
+        batteryAllowDisplayOff = [bool]($BatteryAllowDisplayOff -eq 1)
         pulses           = [int]$pulses
         lastPulseEpoch   = [long]$lastPulseEpoch
         lockSkips        = [int]$lockSkips
@@ -181,7 +186,10 @@ function Write-State {
         batteryFloor     = [int]$BatteryFloorPercent
         batteryPercent   = [int]$battPct
         acOnline         = [bool]$battAc
+        acKnown          = [bool]$battAcKnown
+        batteryKnown     = [bool]$battStatusKnown
         displayDowngrade = [bool]$displayDowngraded
+        exitReason       = [string]$exitReason
         error            = [string]$lastError
         note             = [string]$note
     }
@@ -216,8 +224,14 @@ try {
                         -KeepDisplayOn ($KeepDisplayOn -eq 1) `
                         -BatteryAllowDisplayOff ($BatteryAllowDisplayOff -eq 1) `
                         -FloorPercent $BatteryFloorPercent -Downgraded $displayDowngraded
+                    try { $policy = Get-KaSupplyPolicy } catch { $policy = @{ mode = 'screen-off'; limitMinutes = 0 } }
+                    $supply = Get-KaSupplyDecision -Status $b -Policy $policy -Previous $supply -UptimeMs ([Ka.Native]::SystemUptimeMilliseconds())
+                    if ($supply.abort -and -not $act.Abort) { $act.Abort = $supply.abort }
+                    if ($supply.screenOff) { $act.Downgrade = -not $displayDowngraded; $act.Restore = $false }
                     $battPct = [int]$act.Percent
                     $battAc  = [bool]$act.Ac
+                    $battAcKnown = [bool]$b.acKnown
+                    $battStatusKnown = [bool]$b.batteryKnown
                     if ($act.Abort) {
                         # Only reached when the AC line is really gone: some firmware
                         # asserts the critical bit at 99% while plugged in.
@@ -233,7 +247,7 @@ try {
                         # A token, not a sentence: batteryPercent and batteryFloor are already
                         # their own state fields, and every surface renders this in its own
                         # language.
-                        $note = 'battery-floor'
+                        $note = if ($supply.screenOff) { 'battery-policy' } else { 'battery-floor' }
                         Add-KaLog "DOWNGRADE pid=$PID battery=$battPct% -> system-only"
                     } elseif ($act.Restore) {
                         $displayDowngraded = $false
@@ -250,8 +264,8 @@ try {
             $nextStopChk = $now + 1
             if (Test-Path -LiteralPath $paths.stopFlag) {
                 $asked = Read-KaJson $paths.stopFlag
-                $exitReason = 'stopped'
                 $why = if ($asked -and $asked.reason) { "$($asked.reason)" } else { 'flag' }
+                $exitReason = if ($why -eq 'battery-critical') { 'battery-critical' } else { 'stopped' }
                 Add-KaLog "STOP-REQUEST pid=$PID reason=$why"
                 break
             }
@@ -264,7 +278,7 @@ try {
         }
 
         # --- engine 2 -----------------------------------------------------------
-        if ($AntiLock -eq 1 -and $now -ge $nextPulse) {
+        if ($AntiLock -eq 1 -and -not $displayDowngraded -and $now -ge $nextPulse) {
             $nextPulse = $now + $AntiLockIntervalSec
             $sess = Get-KaSession
             if ($sess.lockScreen) {

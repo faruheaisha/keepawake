@@ -8,8 +8,13 @@ rem     ka.bat start -Method mouse -IntervalSec 90 -Json
 rem     ka.bat stop | report | check | evidence | log | config | guard | unguard
 rem     ka.bat serve | stop-server | tray | requests | lid
 rem With no argument it just shows the current status.
+if /I "%~1"=="run" goto run
 if "%~1"=="" (
     powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0ka.ps1" status
 ) else (
     powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0ka.ps1" %*
 )
+exit /b %errorlevel%
+:run
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0ka-run.ps1" %*
+exit /b %errorlevel%

@@ -8,7 +8,7 @@
 $ErrorActionPreference = 'Stop'
 <#
     Four of the five double-click entries had never been executed anywhere, and are here: nothing
-    but this file had ever started cmd.exe on on.bat / off.bat / panel.bat / tray.bat - in tests/
+    but this file had ever started cmd.exe on on.bat / off.bat / web-panel.bat / tray.bat - in tests/
     those four names appear only in the release manifest and in the byte-shape self test, which
     rewrites them without ever running them.
 
@@ -47,7 +47,7 @@ $ErrorActionPreference = 'Stop'
          path is the one used is in Invoke-Cmd.
 
       2. Start-Process -Wait with -RedirectStandardOutput hangs the moment the child leaves a
-         grandchild behind. panel.bat starts a hidden ka-server.ps1; that grandchild inherits the
+         grandchild behind. web-panel.bat starts a hidden ka-server.ps1; that grandchild inherits the
          write end of the pipe; .NET's WaitForExit() waits for the stream to reach EOF, which never
          happens because the panel is the point. The first version of this file hung on exactly
          that. So every command's output goes to a file through cmd's own `>` redirection and cmd
@@ -97,7 +97,7 @@ $ErrorActionPreference = 'Stop'
                 every Keep-Awake process on the machine is inventoried before and after and
                 required identical, so "this probe left the protection you are running alone" is a
                 measurement instead of a promise.
-      panel.bat a real panel on a real port, and then the thing the release manifest cannot check:
+      web-panel.bat a real panel on a real port, and then the thing the release manifest cannot check:
                 every file the zip ships under dashboard/ has to be *reachable* over HTTP. The
                 manifest now discovers dashboard/** from the tree while $staticMap in ka-server.ps1
                 stays a hand-typed list of routes, so a file can ship and still 404 - the favicon
@@ -139,7 +139,7 @@ $ps51 = Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $env:KA_DATA = $data
 
 # Also set before anything starts, for the same inheritance reason. `serve` ends with
-# Start-Process $url (ka.ps1:606) because a person double-clicking panel.bat wants a tab; on a
+# Start-Process $url (ka.ps1:606) because a person double-clicking web-panel.bat wants a tab; on a
 # runner with no browser already running that tab is a fresh descendant of this probe's own tree,
 # and the leftover check below is correct to name it (CI run 36256845636:
 # "left 8 descendant(s) alive: 1052:msedge.exe, 1276:msedge.exe, ..."). Locally msedge was already
@@ -168,7 +168,7 @@ function Mutate-Tree([string]$Mode) {
     $enc = New-Object Text.UTF8Encoding($false)
     switch ($Mode) {
         'badentry' {
-            $f = Join-Path $tree 'panel.bat'
+            $f = Join-Path $tree 'web-panel.bat'
             $l = [IO.File]::ReadAllLines($f)
             for ($i = 0; $i -lt $l.Count; $i++) { if ($l[$i] -like '*" serve') { $l[$i] = ($l[$i] -replace 'serve$', 'serveX') } }
             [IO.File]::WriteAllText($f, (($l -join "`r`n") + "`r`n"), $enc)
@@ -200,7 +200,7 @@ function Mutate-Tree([string]$Mode) {
     }
     # An injection that did not land turns the leg into an assertion about nothing.
     $landed = $false
-    if ($Mode -eq 'badentry') { $landed = [IO.File]::ReadAllText((Join-Path $tree 'panel.bat')) -like '*serveX*' }
+    if ($Mode -eq 'badentry') { $landed = [IO.File]::ReadAllText((Join-Path $tree 'web-panel.bat')) -like '*serveX*' }
     if ($Mode -eq 'wrongtarget') { $landed = [IO.File]::ReadAllText((Join-Path $tree 'ka.bat')) -like '*ka-nope.ps1*' }
     if ($Mode -eq 'badminutes') {
         $t = [IO.File]::ReadAllText((Join-Path $tree 'on.bat'))
@@ -537,11 +537,11 @@ function Invoke-Legs {
     elseif ("$($intent.desired)" -ne 'off') { Bad 'off-idle' ("off.bat wrote intent desired='{0}', not off" -f $intent.desired) }
     if (@(Get-ScratchProc 'ka-worker.ps1').Count -ne 0) { Bad 'off-idle' 'off.bat left a scratch worker running' }
 
-    # ---- panel.bat: a real panel, and every shipped dashboard file reachable over HTTP
-    $pp = Invoke-Bat 'panel.bat' ''
-    if ($pp.TimedOut) { Bad 'panel' 'panel.bat never returned' }
+    # ---- web-panel.bat: a real panel, and every shipped dashboard file reachable over HTTP
+    $pp = Invoke-Bat 'web-panel.bat' ''
+    if ($pp.TimedOut) { Bad 'panel' 'web-panel.bat never returned' }
     if (-not (Wait-Port $port)) {
-        Bad 'panel' ("panel.bat never brought a panel up on port {0} (text: {1})" -f $port, $pp.Text)
+        Bad 'panel' ("web-panel.bat never brought a panel up on port {0} (text: {1})" -f $port, $pp.Text)
     } else {
         $dashRoot = Join-Path $tree 'dashboard'
         $dash = @(Get-ChildItem -LiteralPath $dashRoot -File -Recurse)

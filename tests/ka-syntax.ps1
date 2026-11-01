@@ -9,10 +9,21 @@ param([string[]]$Files = @())
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 if (-not $Files.Count) {
-    # Recursive on purpose: tests/*.ps1 is where the parser traps keep showing up, and
-    # a checker that cannot see itself is not a checker.
-    $Files = @(Get-ChildItem -LiteralPath $root -Filter '*.ps1' -Recurse -File |
-               ForEach-Object { $_.FullName } | Sort-Object -Unique)
+    # Walk source recursively but do not inspect generated SDKs, staging trees or
+    # copied test fixtures. They are not source and can be arbitrarily large.
+    $pending = New-Object 'System.Collections.Generic.Stack[string]'
+    $pending.Push($root)
+    $found = New-Object 'System.Collections.Generic.List[string]'
+    while ($pending.Count -gt 0) {
+        $dir = $pending.Pop()
+        foreach ($file in @(Get-ChildItem -LiteralPath $dir -Filter '*.ps1' -File)) { $found.Add($file.FullName) }
+        foreach ($child in @(Get-ChildItem -LiteralPath $dir -Directory)) {
+            if ($dir -eq $root -and $child.Name -in @('_tmp','dist','.git')) { continue }
+            if ($dir -eq (Join-Path $root 'mcp-server') -and $child.Name -in @('bin','obj')) { continue }
+            $pending.Push($child.FullName)
+        }
+    }
+    $Files = @($found | Sort-Object -Unique)
 }
 
 $fail = 0

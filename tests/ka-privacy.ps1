@@ -48,11 +48,25 @@ $dash = Join-Path $Root 'dashboard'
 if (Test-Path -LiteralPath $dash) {
     $files += @(Get-ChildItem -LiteralPath $dash -File -Recurse | ForEach-Object { $_.FullName })
 }
+$desktop = Join-Path $Root 'desktop'
+if (Test-Path -LiteralPath $desktop) {
+    $files += @(Get-ChildItem -LiteralPath $desktop -File -Recurse | ForEach-Object { $_.FullName })
+}
 $pack = Join-Path $Root 'packaging'
 if (Test-Path -LiteralPath $pack) {
     $files += @(Get-ChildItem -LiteralPath $pack -File -Recurse | ForEach-Object { $_.FullName })
 }
+$integration = Join-Path $Root 'integrations\mcp'
+if (Test-Path -LiteralPath $integration) {
+    $files += @(Get-ChildItem -LiteralPath $integration -File -Recurse | ForEach-Object { $_.FullName })
+}
+$cliIntegration = Join-Path $Root 'integrations\cli'
+if (Test-Path -LiteralPath $cliIntegration) {
+    $files += @(Get-ChildItem -LiteralPath $cliIntegration -File -Recurse | ForEach-Object { $_.FullName })
+}
 if (-not $files.Count) { Write-Host "nothing to scan under $Root"; exit 2 }
+# Binary artwork is checked by ka-encoding; textual SVG stays in every privacy rule.
+$files = @($files | Where-Object { [IO.Path]::GetExtension($_) -notin @('.png', '.ico') })
 
 $fail = @()
 $ok = @()
@@ -268,7 +282,7 @@ if (-not (Test-Path -LiteralPath $srv)) {
 # Measured 2026-09-26: shipped code writes exactly one header, ka-server.ps1:346 Cache-Control.
 # The typed properties (ContentType, ContentLength64, StatusCode) are not this channel and are not
 # policed here; reading a REQUEST header ($req.Headers['Host']) is not writing a response header.
-$hdrAllow = @('Cache-Control')
+$hdrAllow = @('Cache-Control', 'X-Frame-Options')
 $corsLines = 0
 $hdrSeen = 0
 $hdrAddPat = "(Headers\.(?:Add|Set)\s*\(\s*|AddHeader\s*\(\s*)"
@@ -333,7 +347,12 @@ $shellAllow = @{
     'ka-core.ps1'           = 2
     'ka-tray.ps1'           = 1
     'ka-lid.ps1'            = 1
-    'build.ps1'             = 2
+    'lease-store.ps1'       = 1 # starts the local PowerShell lease keeper
+    'ka-desktop.ps1'        = 1
+    'ka-run.ps1'            = 1
+    'watch.ps1'             = 1
+    'KeepAwake.cs'          = 1
+    'build.ps1'             = 3 # CLI smoke, desktop smoke (no shell execution), installer compiler
     'ka-test-install.ps1'   = 2
 }
 $shellLines = @{}

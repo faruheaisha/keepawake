@@ -56,6 +56,7 @@ $cases = @(
     @{ Name = 'guard/clm';     Entry = 'ka-guard.ps1';  Args = @('-Json');                         Lang = 'en'; Mode = 'clm' }
     @{ Name = 'worker/clm';    Entry = 'ka-worker.ps1'; Args = @('-Minutes', '0.02');              Lang = 'en'; Mode = 'clm' }
     @{ Name = 'lid/clm';       Entry = 'ka-lid.ps1';    Args = @('-Action', 'status');             Lang = 'en'; Mode = 'clm' }
+    @{ Name = 'desktop/clm';   Entry = 'ka-desktop.ps1'; Args = @('-Action', 'state');             Lang = 'en'; Mode = 'clm' }
 )
 
 function Refusal([string]$Lang) {

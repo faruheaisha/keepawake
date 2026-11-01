@@ -2,6 +2,11 @@
 # intent.json 尤其危险 —— 带着 desired=awake 提交，别人 clone 完，
 # 他机器上的看门狗会在登录时替他把保护开起来。
 intent.json
+leases.json
+desktop.json
+automation.json
+automation-state.json
+supply-policy.json
 state.json
 machine.json
 stop.flag
@@ -33,3 +38,6 @@ ka-lid-backup.json
 
 # pid 文件是上一次谁活着留的痕，不是内容。
 *.pid
+
+/mcp-server/bin/
+/mcp-server/obj/

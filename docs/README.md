@@ -25,6 +25,7 @@
 
 | 我想知道 | 读 |
 | --- | --- |
+| 本轮审核的修复、功能落地与验收边界 | [DELIVERY-1.1.0.md](DELIVERY-1.1.0.md) |
 | 这工具能做什么、做不到什么 | `README.md` |
 | 模块之间谁负责什么、**不许**做什么 | [DESIGN.md](DESIGN.md) §模块边界 |
 | 哪些约定不能破（不变量） | [DESIGN.md](DESIGN.md) §不变量 |
@@ -32,6 +33,9 @@
 | 本地要装什么才能构建、测试 | [DEVELOPMENT.md](DEVELOPMENT.md) §依赖 |
 | 一条命令跑什么、要花多久 | [DEVELOPMENT.md](DEVELOPMENT.md) §命令与预算 |
 | 同类工具（PowerToys Awake 等）到底做了什么 | [RESEARCH.md](RESEARCH.md) §同类工具矩阵 |
+| 桌面视觉、交互顺序、图标尺寸和参考产品 | [DESKTOP-UX.md](DESKTOP-UX.md) |
+| imagegen 品牌图生成提示词与素材位置 | [ICON-PROMPT.md](ICON-PROMPT.md) |
+| 9 张页面、场景与状态插画的位置和实际提示词 | [ART-DIRECTION.md](ART-DIRECTION.md) |
 | 平台 API 的官方原话 | [RESEARCH.md](RESEARCH.md) §一手来源 |
 | 踩过的坑 | `PITFALLS.md` |
 | 某个数字是哪一次运行印出来的 | `CHANGELOG.md` |

@@ -1,7 +1,8 @@
 # 安全说明 / Security
 
-> **English (summary).** KeepAwake is a local PowerShell utility with one listening socket bound to the
-> loopback interface, no outbound network calls, no auto-elevation except behind one explicit command
+> **English (summary).** KeepAwake is a local Windows desktop application. Its optional legacy web panel
+> listens only on loopback; the desktop and optional stdio MCP companion open no listening socket. There
+> is no telemetry or automatic updater, and no auto-elevation except behind one explicit command
 > (`lid apply`, which raises a single UAC prompt), no service, no driver, no registry policy writes.
 > Binaries are unsigned in v1.0 by design — see《没有代码签名》。To report an issue, use the private
 > vulnerability reporting on this repository's Security tab.
@@ -12,7 +13,9 @@
 
 ## 面板的暴露面
 
-面板（`panel.bat` / `ka.bat serve`）是唯一开口的东西。
+原生桌面 GUI 不启动 HTTP 服务、不打开监听端口。`KeepAwake.exe` 使用系统 PowerShell 通过本机子进程调用既有引擎，参数以 Base64 JSON 传递，不把用户输入拼入 PowerShell 表达式。内嵌引擎按内容哈希释放到用户数据根并校验内容。EXE 使用普通用户权限，仍受企业 PowerShell 语言模式和应用控制策略约束；同账户用户对本机缓存的改写不构成安全隔离。EXE 与安装器均未签名。
+
+旧网页面板（显式执行 `ka.bat serve`）是唯一开口的东西。`panel.bat` 现在打开桌面窗口。
 
 - **只绑回环**：`ka-server.ps1` 的 `Prefixes.Add` 只有 `http://127.0.0.1:<port>/` 与 `http://localhost:<port>/`
   两种，**没有** `+`、`*` 或 `0.0.0.0`。局域网与互联网不可达，不需要防火墙规则。
@@ -77,7 +80,7 @@
 
 | 面 | 实际做的事 |
 | --- | --- |
-| 注册表 | **只读三处**：`HKLM\...\Control\Power` 的 `HibernateEnabled`、`HKLM\...\Policies\System` 的 `InactivityTimeoutSecs`、`HKLM\...\CurrentVersion` 的 `CurrentBuildNumber`。全文没有 `Set-ItemProperty` / `New-ItemProperty` / `reg add`。**不改任何策略**。 |
+| 注册表 | 读取电源、策略和 Windows 版本信息。用户在桌面设置中显式开启登录启动时，才写入当前用户 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\KeepAwakeDesktop`；关闭该选项会删除它。**不改任何策略**。 |
 | 电源计划 | 默认**不改**。`powercfg` 只用于读取；`lid apply` 是唯一写入路径，需要管理员、自带备份。 |
 | 内核电源请求 | `SetThreadExecutionState`，**进程作用域**——worker 退出即消失，重启即消失，不会残留在系统里。 |
 | 计划任务 | `ka.bat guard` 注册 `KeepAwake-Logon` / `KeepAwake-Guard`（当前用户范围，标准账户可装）；`-Boot` 额外注册 `KeepAwake-Boot`（需管理员，实测标准账户 `Access is denied`，此时给一行明确拒绝而不是假绿）。`ka.bat unguard` 删除。 |

@@ -203,13 +203,32 @@ switch ($Action) {
         # be impossible on exactly the machines that need this the most.
         try { & powercfg /attributes $KaLidSub $KaLidAction -ATTRIB_HIDE 2>$null | Out-Null } catch { }
 
-        if (-not (Test-Path -LiteralPath $backupPath)) {
+        if (Test-Path -LiteralPath $backupPath) {
+            $existingBackup = Read-KaJson $backupPath
+            if (-not $existingBackup -or -not $existingBackup.schemeGuid -or -not $scheme.guid -or
+                $existingBackup.schemeGuid -ne $scheme.guid -or -not $existingBackup.found -or
+                $null -eq $existingBackup.ac -or $null -eq $existingBackup.dc) {
+                $r.Reason = Get-KaText 'lid.backup.conflict'
+                break
+            }
+        } else {
             $lid = Get-KaLid
-            [void](Write-KaJson $backupPath @{
+            if (-not $lid.found -or $null -eq $lid.ac -or $null -eq $lid.dc -or -not $scheme.guid) {
+                $r.Reason = Get-KaText 'lid.backup.unreadable'
+                break
+            }
+            $backedUp = Write-KaJson $backupPath @{
                 ac = $lid.ac; dc = $lid.dc; found = [bool]$lid.found
                 schemeGuid = $scheme.guid; schemeName = $scheme.name
                 capturedAt = (Get-Date -Format 'o')   # 's' has no UTC offset; the reader would guess
-            } -Depth 3)
+            } -Depth 3
+            $checkBackup = Read-KaJson $backupPath
+            if (-not $backedUp -or -not $checkBackup -or $checkBackup.schemeGuid -ne $scheme.guid -or
+                $null -eq $checkBackup.ac -or $null -eq $checkBackup.dc -or
+                [int]$checkBackup.ac -ne [int]$lid.ac -or [int]$checkBackup.dc -ne [int]$lid.dc) {
+                $r.Reason = Get-KaText 'lid.backup.writefail'
+                break
+            }
         }
 
         try {
@@ -247,6 +266,11 @@ switch ($Action) {
             break
         }
         $b = Read-KaJson $backupPath
+        if (-not $b -or -not $b.found -or -not $b.schemeGuid -or $null -eq $b.ac -or $null -eq $b.dc -or
+            "$($b.ac)" -notmatch '^[0-3]$' -or "$($b.dc)" -notmatch '^[0-3]$') {
+            $r.Reason = Get-KaText 'lid.backup.invalid'
+            break
+        }
         $scheme = Get-KaActiveScheme
         if ($b.schemeGuid -and $scheme.guid -and ($b.schemeGuid -ne $scheme.guid)) {
             # Writing now would change a plan that was never modified and leave the
@@ -266,8 +290,8 @@ switch ($Action) {
         }
         $r.After = Get-KaLid
         $r.Ok = $true
-        $same = (($null -eq $b.ac) -or ([int]$r.After.ac -eq [int]$b.ac)) -and `
-                (($null -eq $b.dc) -or ($null -eq $r.After.dc) -or ([int]$r.After.dc -eq [int]$b.dc))
+        $same = $r.After.found -and $null -ne $r.After.ac -and $null -ne $r.After.dc -and `
+                ([int]$r.After.ac -eq [int]$b.ac) -and ([int]$r.After.dc -eq [int]$b.dc)
         $r.Verified = [bool]$same
         $r.Reason = $(if ($same) {
             try { Remove-Item -LiteralPath $backupPath -Force -ErrorAction Stop; Get-KaText 'lid.restore.ok' }

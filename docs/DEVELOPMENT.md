@@ -1,5 +1,7 @@
 # 环境依赖与工作流（Environment & Workflow）
 
+当前默认产品是原生桌面程序。使用系统 C# 编译器运行 `powershell -NoProfile -ExecutionPolicy Bypass -File packaging/build.ps1 -Stage -Smoke`，生成独立 EXE 和便携包；`-Installer` 另需 Inno Setup。运行 `tests/probe-desktop.ps1` 验证实际窗口和隔离引擎流程。可选 MCP 的 .NET 10 构建、依赖及配置见 `mcp-server/README.md`，该配套包自带运行时。以下历史耗时与探针数量是当时读数，不能替代当前 CI 结果。
+
 改这个仓库要装什么、跑什么、花多久。**产品本身对下载者的依赖只有一条**（系统自带的 PowerShell 5.1），
 下面区分三层，别把开发机的依赖当产品依赖。
 

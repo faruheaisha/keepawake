@@ -27,22 +27,23 @@ const $ = (id) => document.getElementById(id);
 const els = {};
 [
   'conn', 'connText', 'clock', 'version', 'dais', 'nav', 'langSeg',
-  'stateDot', 'stateTitle', 'stateDetail', 'modes', 'alerts',
+  'stateDot', 'stateTitle', 'stateDetail', 'modes', 'alerts', 'leaseSection', 'leaseList',
   'ringArc', 'mLeft', 'mLeftHint', 'gaugeMeta',
   'bits', 'eng1State', 'eng1Note', 'eng2State', 'eng2Spec', 'eng2Note',
   'traceCanvas', 'traceIdle', 'traceStart', 'traceMid', 'traceEnd',
   'mElapsed', 'mElapsedSub', 'mPulses', 'mPulsesSub', 'mIdle', 'mIdleSub',
   'mBattery', 'mBatterySub', 'mEfficacy', 'mEfficacySub',
-  'presets', 'customMin', 'optDisplay', 'optAntiLock', 'optInterval', 'optReassert',
+  'presets', 'customMin', 'expireAt', 'optDisplay', 'optAntiLock', 'optInterval', 'optReassert',
   'optAway', 'optBattOff', 'optFloor', 'methodSegs', 'lockRow', 'intervalHint',
-  'btnStart', 'btnStop', 'btnSave', 'btnRefresh', 'busy',
+  'btnStart', 'btnStop', 'btnPause', 'btnSave', 'btnRefresh', 'busy',
   'evRange', 'evSummary', 'timeline', 'btnEvidence', 'evCounts', 'evNote',
   'evfChips', 'evfSearch', 'evfHits', 'evfLens',
   'guide', 'btnGuideDismiss', 'preview',
   'pvDur', 'pvFlags', 'pvHb', 'pvAway', 'pvBattery', 'pvRisks', 'pvConfirm', 'pvCancel',
   'planTable', 'machineCard', 'riskList', 'lidNow', 'btnCheck', 'checkHint',
   'btnGuard', 'guardText', 'guardTable',
-  'log', 'logPath', 'btnLog', 'autoLog', 'btnStopServer', 'footInfo', 'toasts'
+  'log', 'logPath', 'btnLog', 'autoLog', 'btnStopServer', 'footInfo', 'toasts',
+  'btnDiagnostic', 'diagnosticDialog', 'diagnosticPreview', 'diagnosticSave', 'diagnosticClose'
 ].forEach((k) => { els[k] = $(k); });
 
 const ES = { continuous: 0x80000000, system: 0x00000001, display: 0x00000002, away: 0x00000040 };
@@ -138,6 +139,7 @@ function hhmmss(epoch) {
 function nowEpoch() { return Math.floor(Date.now() / 1000) + state.skew; }
 
 function selectedMinutes() {
+  if (els.expireAt.value) return 0;
   const custom = parseInt(els.customMin.value, 10);
   if (Number.isFinite(custom) && custom > 0) return Math.min(10080, custom);
   const on = els.presets.querySelector('.seg.is-on');
@@ -159,8 +161,11 @@ function toast(msg, kind) {
 
 function setBusy(b) {
   els.busy.hidden = !b;
-  [els.btnStart, els.btnStop, els.btnSave, els.btnRefresh, els.btnGuard, els.btnCheck, els.pvConfirm, els.pvCancel].forEach((x) => { if (x) x.disabled = !!b; });
-  if (!b && state.s) els.btnStop.disabled = !state.s.running && !kaUnrecorded(state.s);
+  [els.btnStart, els.btnStop, els.btnPause, els.btnSave, els.btnRefresh, els.btnGuard, els.btnCheck, els.btnDiagnostic, els.pvConfirm, els.pvCancel].forEach((x) => { if (x) x.disabled = !!b; });
+  if (!b && state.s) {
+    const canStop = state.s.running || kaUnrecorded(state.s) || !!(state.s.leases || {}).paused;
+    els.btnStop.disabled = !canStop; els.btnPause.disabled = !canStop;
+  }
 }
 
 async function api(path, opts) {
@@ -170,9 +175,14 @@ async function api(path, opts) {
   // disagree, and the panel already decided which one the visitor is reading.
   const o = Object.assign({}, opts);
   o.headers = Object.assign({}, o.headers, { 'X-Ka-Lang': KA.lang });
-  const res = await fetch(path, o);
-  let data = null;
-  try { data = await res.json(); } catch (e) { data = { ok: false, reason: KA.t('api.notJson', { status: res.status }) }; }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  o.signal = controller.signal;
+  let res, data = null;
+  try {
+    res = await fetch(path, o);
+    try { data = await res.json(); } catch (e) { data = { ok: false, reason: KA.t('api.notJson', { status: res.status }) }; }
+  } finally { clearTimeout(timer); }
   if (!res.ok || data.ok === false) {
     const err = new Error(data.reason || data.error_text || KA.t('api.http', { status: res.status }));
     err.status = res.status; err.data = data;
@@ -196,6 +206,39 @@ function renderConn(ok, slow) {
 function kaUnrecorded(s) {
   return !!(s && !s.running && Number(s.workerCount || 0) > 0);
 }
+
+let leaseRenderKey = '';
+function renderLeases(s) {
+  const info = s.leases || {}, items = Array.isArray(info.items) ? info.items : [];
+  const bad = info.readable === false;
+  const key = JSON.stringify([items, bad, KA.lang]);
+  els.leaseSection.hidden = !items.length && !bad;
+  if (leaseRenderKey === key) return;
+  leaseRenderKey = key;
+  els.leaseList.textContent = '';
+  if (bad) { text(els.leaseList, KA.t('leases.unreadable')); return; }
+  items.forEach((item) => {
+    const row = document.createElement('div'); row.className = 'row';
+    const label = document.createElement('span');
+    label.textContent = String(item.reason || '') + ' · ' + fmtClock(item.expiresEpoch);
+    const grow = document.createElement('span'); grow.className = 'grow';
+    const button = document.createElement('button'); button.type = 'button';
+    button.className = 'btn btn--quiet btn--sm'; button.dataset.leaseId = item.id;
+    button.textContent = KA.t('leases.release');
+    button.setAttribute('aria-label', KA.t('leases.releaseLabel', { reason: item.reason }));
+    row.append(label, grow, button); els.leaseList.appendChild(row);
+  });
+}
+
+els.leaseList.addEventListener('click', async (event) => {
+  const button = event.target.closest('button[data-lease-id]');
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  try {
+    await api('/api/leases/release', { method: 'POST', headers: HJ, body: JSON.stringify({ id: button.dataset.leaseId }) });
+    leaseRenderKey = ''; await loadState();
+  } catch (err) { toast(KA.t('leases.error', { msg: err.message }), 'err'); button.disabled = false; }
+});
 
 function renderPills(s) {
   els.modes.textContent = '';
@@ -530,8 +573,9 @@ function renderState(s) {
     text(els.mEfficacy, '—'); readout(els.mEfficacy, 'warn');
     text(els.mEfficacySub, KA.t('state.unrecordedEfficacySub'));
   } else {
-    text(els.stateTitle, KA.t('state.notRunning'));
-    text(els.stateDetail, s.intent && s.intent.expired
+    const paused = !!(s.leases || {}).paused;
+    text(els.stateTitle, KA.t(paused ? 'state.paused' : 'state.notRunning'));
+    text(els.stateDetail, paused ? KA.t('state.pausedUntil', { at: fmtClock(s.leases.pauseUntilEpoch) }) : s.intent && s.intent.expired
       ? KA.t('state.detailExpired')
       : KA.t('state.detailIdle'));
     text(els.mElapsed, '—'); text(els.mElapsedSub, KA.t('state.elapsedNone'));
@@ -547,7 +591,7 @@ function renderState(s) {
 
   const b = s.battery || {}, floor = (s.config || {}).batteryFloorPercent;
   const bpct = Number(b.percent) >= 0 ? Number(b.percent) + '%' : '?';
-  if (!b.known) {
+  if (!b.known || b.acKnown === false || b.batteryKnown === false) {
     text(els.mBattery, KA.t('common.unreadable'));
     readout(els.mBattery, 'warn');
     text(els.mBatterySub, KA.t('state.battUnknown'));
@@ -568,11 +612,17 @@ function renderState(s) {
   renderEngines(s);
   renderPills(s);
   renderAlerts(s);
+  renderLeases(s);
   drawTrace();
 
   // /api/stop finds workers by process, so it works with no state record at all. Gating
   // this on s.running alone would announce a live worker and grey out its only stop button.
-  els.btnStop.disabled = !s.running && !kaUnrecorded(s);
+  const paused = !!(s.leases || {}).paused;
+  const canStop = s.running || kaUnrecorded(s) || paused;
+  els.btnStop.disabled = !canStop || !els.busy.hidden;
+  els.btnPause.disabled = !canStop || !els.busy.hidden;
+  els.btnPause.dataset.op = paused ? 'resume' : 'pause';
+  text(els.btnPause, KA.t(paused ? 'btn.resume' : 'btn.pause'));
   document.title = KA.t(s.running ? 'docTitle.running' : 'docTitle.idle', { name: KA.t('page.name') });
 
   text(els.footInfo, KA.t('foot.info', {
@@ -1151,11 +1201,35 @@ async function loadLog() {
   } catch (e) { /* the log is context, never a reason to withhold status */ }
 }
 
+async function openDiagnostic() {
+  setBusy(true);
+  try {
+    const data = await api('/api/diagnostic', { headers: H });
+    text(els.diagnosticPreview, JSON.stringify(data, null, 2));
+    els.diagnosticDialog.showModal();
+    els.diagnosticClose.focus();
+  } catch (err) { toast(KA.t('diagnostic.failed', { msg: err.message }), 'err'); }
+  finally { setBusy(false); }
+}
+
+els.diagnosticClose.addEventListener('click', () => els.diagnosticDialog.close());
+els.diagnosticSave.addEventListener('click', () => {
+  const blob = new Blob([els.diagnosticPreview.textContent + '\n'], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = 'keepawake-diagnostics.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+
 /* ------------------------------------------------- preview before starting */
 function renderPreview() {
   const body = collectPayload();
   const mins = Number(body.minutes || 0);
-  text(els.pvDur, mins
+  const target = body.expireAt ? new Date(body.expireAt).getTime() : 0;
+  const invalidTarget = !!body.expireAt && (!Number.isFinite(target) || target <= Date.now() || target - Date.now() > 10080 * 60000);
+  els.pvConfirm.disabled = invalidTarget;
+  text(els.pvDur, invalidTarget ? KA.t('preview.invalidUntil') : body.expireAt
+    ? KA.t('start.until', { at: body.expireAt.replace('T', ' ') }) : mins
     ? fmtDuration(mins * 60) + ' · ' + KA.t('preview.ends', { at: fmtClock(nowEpoch() + mins * 60) })
     : KA.t('preview.unlimited'));
 
@@ -1215,7 +1289,7 @@ function openPreview() {
   els.preview.hidden = false;
   state.previewOpen = true;
   els.preview.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  els.pvConfirm.focus();
+  (els.pvConfirm.disabled ? els.pvCancel : els.pvConfirm).focus();
 }
 
 function closePreview() {
@@ -1230,7 +1304,7 @@ els.pvCancel.addEventListener('click', closePreview);
 function collectPayload() {
   const on = els.methodSegs.querySelector('.seg.is-on');
   const n = (el, dflt) => { const v = parseInt(el.value, 10); return Number.isFinite(v) ? v : dflt; };
-  return {
+  const payload = {
     minutes: selectedMinutes(),
     keepDisplayOn: els.optDisplay.checked,
     antiLock: els.optAntiLock.checked,
@@ -1241,6 +1315,8 @@ function collectPayload() {
     batteryAllowDisplayOff: els.optBattOff.checked,
     batteryFloorPercent: Math.min(90, Math.max(0, n(els.optFloor, 20)))
   };
+  if (els.expireAt.value) payload.expireAt = els.expireAt.value;
+  return payload;
 }
 
 async function doStart() {
@@ -1260,7 +1336,8 @@ async function doStart() {
       pid: r.Pid,
       disp: KA.t(got.keepDisplayOn ? 'pill.displayOn' : 'start.dispOff'),
       hb: KA.t(got.antiLock ? 'start.hb' : 'start.hbOff', { method: got.antiLockMethod, sec: got.antiLockIntervalSec }),
-      dur: KA.t(body.minutes ? 'start.endsIn' : 'common.unlimited', { dur: fmtDuration(body.minutes * 60) }),
+      dur: body.expireAt ? KA.t('start.until', { at: body.expireAt.replace('T', ' ') })
+        : KA.t(body.minutes ? 'start.endsIn' : 'common.unlimited', { dur: fmtDuration(body.minutes * 60) }),
       clamp: KA.t(clamped ? 'start.clamped' : '')
     }), !r.Ok ? 'err' : (unrecorded ? 'info' : 'ok'));
   } catch (e) { toast(KA.t('start.fail', { msg: e.message }), 'err'); }
@@ -1280,6 +1357,17 @@ async function doStop() {
     loadEvidence();
   } catch (e) { toast(KA.t('stop.fail', { msg: e.message }), 'err'); }
   finally { setBusy(false); loadLog(); }
+}
+
+async function doPause() {
+  const resume = els.btnPause.dataset.op === 'resume';
+  setBusy(true);
+  try {
+    await api(resume ? '/api/resume' : '/api/pause', { method: 'POST', headers: HJ,
+      body: JSON.stringify(resume ? {} : { minutes: 15 }) });
+    await loadState(); toast(KA.t(resume ? 'pause.resumed' : 'pause.paused'), 'ok');
+  } catch (err) { toast(KA.t('pause.failed', { msg: err.message }), 'err'); }
+  finally { setBusy(false); }
 }
 
 async function doSave() {
@@ -1376,10 +1464,22 @@ els.presets.addEventListener('click', (e) => {
   if (!btn) return;
   selectSeg(els.presets, 'min', btn.dataset.min);
   els.customMin.value = '';
+  els.expireAt.value = '';
+  state.controlsDirty = true;
   if (state.previewOpen) renderPreview();
 });
 els.customMin.addEventListener('input', () => {
+  if (els.customMin.value) els.expireAt.value = '';
+  state.controlsDirty = true;
   if (els.customMin.value) els.presets.querySelectorAll('.seg').forEach((b) => b.classList.remove('is-on'));
+  if (state.previewOpen) renderPreview();
+});
+els.expireAt.addEventListener('input', () => {
+  if (els.expireAt.value) {
+    els.customMin.value = '';
+    els.presets.querySelectorAll('.seg').forEach((b) => b.classList.remove('is-on'));
+  } else { selectSeg(els.presets, 'min', '0'); }
+  state.controlsDirty = true;
   if (state.previewOpen) renderPreview();
 });
 els.methodSegs.addEventListener('click', (e) => {
@@ -1437,11 +1537,13 @@ els.optAntiLock.addEventListener('change', () => {
 
 els.btnStart.addEventListener('click', openPreview);
 els.btnStop.addEventListener('click', doStop);
+els.btnPause.addEventListener('click', doPause);
 els.btnSave.addEventListener('click', doSave);
 els.btnGuard.addEventListener('click', doGuard);
 els.btnCheck.addEventListener('click', doCheck);
 els.btnEvidence.addEventListener('click', loadEvidence);
 els.btnLog.addEventListener('click', loadLog);
+els.btnDiagnostic.addEventListener('click', openDiagnostic);
 els.btnStopServer.addEventListener('click', doStopServer);
 els.btnRefresh.addEventListener('click', () => {
   state.controlsDirty = false;      // explicit refresh = "show me what the server has"
@@ -1509,9 +1611,12 @@ function initGuide() {
 }
 
 /* ------------------------------------------------------------------ polling */
+let tickPending = false;
 async function tick() {
   if (state.stopping) return;
-  await loadState();
+  if (tickPending) return;
+  tickPending = true;
+  try { await loadState(); } finally { tickPending = false; }
 }
 function bootClock() {
   setInterval(() => { text(els.clock, hhmmss(nowEpoch())); }, 1000);

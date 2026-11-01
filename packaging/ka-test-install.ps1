@@ -162,7 +162,7 @@ $hookData = Join-Path $work 'scratch-data'
 $taskBackup = Join-Path $work 'tasks'
 foreach ($d in @($work, $taskBackup)) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
 
-$manifest = @(Get-KaReleaseFile | ForEach-Object { $_.Replace('\', '/') }) | Sort-Object
+$manifest = @(@(Get-KaReleaseFile | ForEach-Object { $_.Replace('\', '/') }) + 'KeepAwake.exe') | Sort-Object
 $bad = New-Object System.Collections.ArrayList
 function Ok([string]$m) { Write-Output ('  ok   ' + $m) }
 function Red([string]$m) { [void]$bad.Add($m); Write-Output ('  FAIL ' + $m) }
@@ -292,9 +292,9 @@ try {
     else { Red ("installed scripts still blocked: {0}" -f ($motw -join ', ')) }
 
     $sm = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\KeepAwake'
-    $wantLnk = @('KeepAwake - Dashboard.lnk', 'KeepAwake - Tray.lnk', 'KeepAwake - Protect.lnk', 'KeepAwake - Release.lnk', 'Uninstall KeepAwake.lnk') | Sort-Object
+    $wantLnk = @('KeepAwake.lnk', 'KeepAwake - Dashboard.lnk', 'KeepAwake - Tray.lnk', 'KeepAwake - Protect.lnk', 'KeepAwake - Release.lnk', 'Uninstall KeepAwake.lnk') | Sort-Object
     $gotLnk = @(Get-ChildItem -LiteralPath $sm -Filter '*.lnk' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) | Sort-Object
-    if (($gotLnk -join ',') -eq ($wantLnk -join ',')) { Ok 'Start Menu holds exactly the five shortcuts' }
+    if (($gotLnk -join ',') -eq ($wantLnk -join ',')) { Ok 'Start Menu holds exactly the six shortcuts' }
     else { Red ("Start Menu: got [{0}]" -f ($gotLnk -join ', ')) }
     $desktop = [Environment]::GetFolderPath('Desktop')
     if (Test-Path -LiteralPath (Join-Path $desktop 'KeepAwake.lnk')) { Ok "the desktopicon task is checked by default - shortcut in $desktop" }

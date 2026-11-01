@@ -30,6 +30,83 @@ namespace Ka {
 
 public static class Native {
 
+    [StructLayout(LayoutKind.Sequential)] struct SecurityAttributes {
+        public int length; public IntPtr descriptor; public int inherit;
+    }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct StartupInfo {
+        public int cb; public string reserved, desktop, title;
+        public uint x, y, xSize, ySize, xCount, yCount, fill, flags;
+        public short show, reservedSize; public IntPtr reservedPtr, input, output, error;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct StartupInfoEx { public StartupInfo info; public IntPtr attributes; }
+    [StructLayout(LayoutKind.Sequential)] struct ProcessInfo { public IntPtr process, thread; public int pid, tid; }
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool CreatePipe(out IntPtr read, out IntPtr write, ref SecurityAttributes security, int size);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr CreateFile(string name, uint access, uint share, ref SecurityAttributes security, uint creation, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, int flags, ref IntPtr size);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool UpdateProcThreadAttribute(IntPtr list, uint flags, IntPtr attribute, IntPtr value, IntPtr size, IntPtr previous, IntPtr returned);
+    [DllImport("kernel32.dll")] static extern void DeleteProcThreadAttributeList(IntPtr list);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateProcess(string application, System.Text.StringBuilder command, IntPtr processAttributes, IntPtr threadAttributes, bool inherit, uint flags, IntPtr environment, string directory, ref StartupInfoEx startup, out ProcessInfo process);
+    static void CheckNative(bool success) { if (!success) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error()); }
+
+    // An explicit Win32 inheritance list is necessary on Framework: redirected
+    // ProcessStartInfo still inherits unrelated pipe handles from the bridge.
+    // Only NUL and the optional monitor handshake may reach these long-lived children.
+    public static System.Diagnostics.Process StartBackground(string executable, string arguments, string input) {
+        if (String.IsNullOrEmpty(input)) input = null;
+        var security = new SecurityAttributes { length = Marshal.SizeOf(typeof(SecurityAttributes)), inherit = 1 };
+        IntPtr nil = IntPtr.Zero, inRead = IntPtr.Zero, inWrite = IntPtr.Zero, outRead = IntPtr.Zero, outWrite = IntPtr.Zero;
+        IntPtr attributes = IntPtr.Zero, handles = IntPtr.Zero;
+        bool initialized = false;
+        System.Diagnostics.Process child = null;
+        try {
+            nil = CreateFile("NUL", 0xC0000000, 3, ref security, 3, 0, IntPtr.Zero);
+            if (nil == new IntPtr(-1)) { nil = IntPtr.Zero; CheckNative(false); }
+            if (input != null) {
+                CheckNative(CreatePipe(out inRead, out inWrite, ref security, 4096));
+                CheckNative(CreatePipe(out outRead, out outWrite, ref security, 4096));
+            }
+            IntPtr size = IntPtr.Zero;
+            InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
+            attributes = Marshal.AllocHGlobal(size);
+            CheckNative(InitializeProcThreadAttributeList(attributes, 1, 0, ref size)); initialized = true;
+            IntPtr[] allowed = input == null ? new IntPtr[] { nil } : new IntPtr[] { nil, inRead, outWrite };
+            handles = Marshal.AllocHGlobal(IntPtr.Size * allowed.Length);
+            Marshal.Copy(allowed, 0, handles, allowed.Length);
+            CheckNative(UpdateProcThreadAttribute(attributes, 0, new IntPtr(0x20002), handles, new IntPtr(IntPtr.Size * allowed.Length), IntPtr.Zero, IntPtr.Zero));
+            var startup = new StartupInfoEx { attributes = attributes };
+            startup.info.cb = Marshal.SizeOf(typeof(StartupInfoEx)); startup.info.flags = 0x100;
+            startup.info.input = input == null ? nil : inRead;
+            startup.info.output = input == null ? nil : outWrite; startup.info.error = nil;
+            ProcessInfo created;
+            CheckNative(CreateProcess(executable, new System.Text.StringBuilder("\"" + executable + "\" " + arguments), IntPtr.Zero, IntPtr.Zero, true, 0x08080000, IntPtr.Zero, null, ref startup, out created));
+            try { child = System.Diagnostics.Process.GetProcessById(created.pid); }
+            finally { CloseHandle(created.thread); CloseHandle(created.process); }
+            if (input != null) {
+                CloseHandle(inRead); inRead = IntPtr.Zero; CloseHandle(outWrite); outWrite = IntPtr.Zero;
+                using (var stream = new System.IO.FileStream(new Microsoft.Win32.SafeHandles.SafeFileHandle(inWrite, true), System.IO.FileAccess.Write)) {
+                    inWrite = IntPtr.Zero;
+                    byte[] payload = System.Text.Encoding.UTF8.GetBytes(input);
+                    stream.Write(payload, 0, payload.Length);
+                }
+                using (var stream = new System.IO.FileStream(new Microsoft.Win32.SafeHandles.SafeFileHandle(outRead, true), System.IO.FileAccess.Read))
+                using (var reader = new System.IO.StreamReader(stream, System.Text.Encoding.UTF8)) {
+                    outRead = IntPtr.Zero;
+                    var line = reader.ReadLineAsync();
+                    if (!line.Wait(20000) || line.Result != "READY") throw new InvalidOperationException("The task monitor did not become ready.");
+                }
+            }
+            return child;
+        } catch {
+            if (child != null) { try { if (!child.HasExited) child.Kill(); } catch { } child.Dispose(); }
+            throw;
+        } finally {
+            foreach (IntPtr handle in new IntPtr[] { nil, inRead, inWrite, outRead, outWrite }) if (handle != IntPtr.Zero) CloseHandle(handle);
+            if (initialized) DeleteProcThreadAttributeList(attributes);
+            if (attributes != IntPtr.Zero) Marshal.FreeHGlobal(attributes);
+            if (handles != IntPtr.Zero) Marshal.FreeHGlobal(handles);
+        }
+    }
+
     // ---- power request -------------------------------------------------------
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern uint SetThreadExecutionState(uint esFlags);
@@ -127,6 +204,7 @@ public static class Native {
     static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
     [DllImport("kernel32.dll")]
     static extern ulong GetTickCount64();
+    public static ulong SystemUptimeMilliseconds() { return GetTickCount64(); }
 
     struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
 
@@ -153,7 +231,7 @@ public static class Native {
     static extern int GetSystemMetrics(int nIndex);
 
     const uint INPUT_MOUSE = 0, INPUT_KEYBOARD = 1;
-    const uint MOUSEEVENTF_MOVE = 0x0001, MOUSEEVENTF_ABSOLUTE = 0x8000;
+    const uint MOUSEEVENTF_MOVE = 0x0001, MOUSEEVENTF_VIRTUALDESK = 0x4000, MOUSEEVENTF_ABSOLUTE = 0x8000;
     const uint KEYEVENTF_EXTENDEDKEY = 0x0001, KEYEVENTF_KEYUP = 0x0002;
     const int  SM_XVIRTUALSCREEN = 76, SM_YVIRTUALSCREEN = 77;
     const int  SM_CXVIRTUALSCREEN = 78, SM_CYVIRTUALSCREEN = 79;
@@ -213,9 +291,9 @@ public static class Native {
         inputs[0].u.mi.dx = NormX(nx, ox, w); inputs[0].u.mi.dy = NormY(ny, oy, h);
         inputs[1].u.mi.dx = NormX(p.X, ox, w); inputs[1].u.mi.dy = NormY(p.Y, oy, h);
         for (int i = 0; i < 2; i++) {
-            inputs[i].u.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
+            inputs[i].u.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
         }
-        SendInput((uint)inputs.Length, inputs, size);
+        if (SendInput((uint)inputs.Length, inputs, size) != (uint)inputs.Length) return false;
         POINT back;
         return GetCursorPos(out back) && back.X == p.X && back.Y == p.Y;
     }
@@ -248,12 +326,14 @@ public static class Native {
         if (!GetSystemPowerStatus(out s)) { h["known"] = false; return h; }
         bool noBattery = (s.BatteryFlag == 128 || s.BatteryFlag == 255);
         h["known"] = true;
+        h["acKnown"] = s.ACLineStatus != 255;
+        h["batteryKnown"] = s.BatteryFlag != 255;
         h["acOnline"] = (s.ACLineStatus == 1);
         h["hasBattery"] = !noBattery;
         h["percent"] = (int)(s.BatteryLifePercent > 100 ? -1 : s.BatteryLifePercent);
-        h["low"] = (s.BatteryFlag & 4) != 0;
-        h["critical"] = (s.BatteryFlag & 8) != 0;
-        h["onBatterySaver"] = (s.SystemStatus & 8) != 0;
+        h["low"] = s.BatteryFlag != 255 && (s.BatteryFlag & 2) != 0;
+        h["critical"] = s.BatteryFlag != 255 && (s.BatteryFlag & 4) != 0;
+        h["onBatterySaver"] = s.SystemStatus == 1;
         return h;
     }
 
@@ -302,7 +382,7 @@ public static class Native {
 # Captured while this file is being dot-sourced, so $PSScriptRoot is unambiguously
 # the project directory rather than whatever called into it.
 $script:KaProgramRoot = $PSScriptRoot
-$script:KaVersion = '1.0.1'
+$script:KaVersion = '1.1.0'
 $script:KaLogMaxBytes = 512KB
 $script:KaDataRoot = $null
 $script:KaDataError = $null
@@ -360,6 +440,13 @@ function Initialize-KaDataRoot {
         $dir = Join-Path $env:TEMP 'KeepAwake'
         $script:KaDataError = 'no-localappdata'
     }
+    # Child processes may use another working directory. Canonicalize relative paths
+    # and redundant separators before they are used in mutex and process identity keys.
+    try {
+        $dir = [IO.Path]::GetFullPath($dir)
+        $rootPart = [IO.Path]::GetPathRoot($dir)
+        if ($dir.Length -gt $rootPart.Length) { $dir = $dir.TrimEnd([char[]]@('\','/')) }
+    } catch { }
     $probe = Test-KaPathWritable $dir
     if (-not $probe.Ok) { $script:KaDataError = $probe.Code }
     $script:KaDataRoot = $dir
@@ -527,21 +614,38 @@ function Write-KaJson {
     # cannot make "we wrote it" and "we could not" look identical to the next reader.
     $script:KaLastWriteError = $null
     $script:KaLastWriteCode = $null
+    $writeMutex = $null
+    $writeOwned = $false
     try {
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $hash = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes([IO.Path]::GetFullPath($Path).ToLowerInvariant()))).Replace('-', '').Substring(0, 24) }
+        finally { $sha.Dispose() }
+        $writeMutex = New-Object System.Threading.Mutex($false, ('Global\KA-Json-' + $hash))
+        try { $writeOwned = $writeMutex.WaitOne([TimeSpan]::FromSeconds(30)) }
+        catch [System.Threading.AbandonedMutexException] { $writeOwned = $true }
+        if (-not $writeOwned) { throw 'JSON write lock timed out' }
         $json = if ($Pretty) { $Object | ConvertTo-Json -Depth $Depth }
                 else { $Object | ConvertTo-Json -Depth $Depth -Compress }
-        $tmp = "$Path.tmp"
+        $tmp = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
         [IO.File]::WriteAllText($tmp, $json,
             (New-Object System.Text.UTF8Encoding($false)))
-        Move-Item -LiteralPath $tmp -Destination $Path -Force
+        if ([IO.File]::Exists($Path)) {
+            $backup = "$tmp.bak.tmp"
+            [IO.File]::Replace($tmp, $Path, $backup)
+            try { [IO.File]::Delete($backup) } catch {}
+        }
+        else { [IO.File]::Move($tmp, $Path) }
         return $true
     } catch {
         # Type name, not Message: this string ends up in ka.log and inside a translated
         # sentence, and Windows writes its IO errors in the OS language.
         $script:KaLastWriteCode = $_.Exception.GetType().Name
         $script:KaLastWriteError = "$Path :: $script:KaLastWriteCode"
-        try { Remove-Item "$Path.tmp" -Force -ErrorAction SilentlyContinue } catch {}
+        try { if ($tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } } catch {}
         return $false
+    } finally {
+        if ($writeOwned) { try { $writeMutex.ReleaseMutex() } catch {} }
+        if ($writeMutex) { $writeMutex.Dispose() }
     }
 }
 
@@ -740,7 +844,7 @@ function Get-KaBounded($value, [double]$min, [double]$max, $fallback) {
     } catch { return $fallback }
 }
 
-function Set-KaConfig {
+function Invoke-KaConfigSetInternal {
     param([hashtable]$Patch)
     $clean = @{}
     foreach ($k in $Patch.Keys) {
@@ -793,6 +897,11 @@ function Set-KaConfig {
         [void](Set-KaUiLanguage -Configured $clean['language'])
     }
     return $wrote
+}
+
+function Set-KaConfig {
+    param([hashtable]$Patch)
+    Invoke-KaOperationLocked { Invoke-KaConfigSetInternal -Patch $Patch }
 }
 
 function Get-KaOsUiLanguages {
@@ -878,6 +987,7 @@ $script:KaUi = @{
         'api.noFile'                = '没有这个文件'
         'api.dashMissing'           = '面板文件缺失，请检查 dashboard 目录是否完整'
         'api.internal'              = '服务器内部错误'
+        'api.stopIncomplete'        = '停止未完全生效，请检查保护状态及数据目录。'
         'api.host'                  = 'Host 头不是本机回环地址：{host}'
         'api.origin'                = 'Origin 非本机：{origin}'
         'api.client'                = '缺少 X-Ka-Client 头（跨站页面无法发送该头，这是有意为之）'
@@ -885,9 +995,12 @@ $script:KaUi = @{
         'api.badJson'               = '请求体不是合法 JSON：{msg}'
         'time.empty'                = '没有输入时间'
         'time.unparsed'             = '无法识别的时刻。支持 HH:mm、HH:mm:ss、yyyy-MM-dd HH:mm、yyyy-MM-dd'
+        'time.invalidLocal'         = '这个本地时间因夏令时切换而不存在。'
+        'time.ambiguousLocal'       = '这个本地时间因夏令时切换出现两次，请选择其他时间。'
         'time.past'                 = '{at} 不在将来，那等于不要到期时间 —— 请写一个将来的时刻'
         'proc.noScript'             = '找不到 {file}：{path}'
         'proc.noStart'              = '无法启动进程：{msg}'
+        'proc.stopIncomplete'       = '仍有保护进程未停止，未应用新配置。'
         'proc.noLine'               = '子进程未上报状态'
         'proc.noReport'             = 'worker 启动后没有回报（{why}）'
         'proc.earlyExit'            = 'worker 上报后立即退出了：{why}'
@@ -982,6 +1095,13 @@ $script:KaUi = @{
         'lid.status.nolid'              = '内核能力位显示本机没有盖开关（台式机或虚拟机）：上面的合盖值因此不适用，除非这台机器实际带盖。'
         'lid.apply.nolid'               = '内核能力位显示本机没有盖开关（台式机或虚拟机），合盖动作不适用，未做任何修改。确实要强行写入请运行：ka.bat lid apply -Force'
         'lid.apply.writefail'           = 'powercfg 写入失败：{msg}'
+        'lid.backup.conflict'           = '合盖备份无效或属于其他电源方案，请先处理原备份。'
+        'lid.backup.unreadable'         = '无法读取当前合盖设置和电源方案，未修改合盖动作。'
+        'lid.backup.writefail'          = '无法写入并验证合盖备份，未修改合盖动作。'
+        'lid.backup.invalid'            = '合盖备份无效，已保留备份供检查。'
+        'api.invalidMinutes'            = '保护时长无效。'
+        'api.invalidStart'              = '启动参数无效。'
+        'api.invalidBoolean'            = '布尔参数无效：{key}'
         'lid.apply.ok'                  = '合盖动作已设为「不采取任何操作」，写后重新读取确认。这只证明设置值写进去了，不证明内核会照做 —— 部分现代待机固件接受写入却仍然进待机。'
         'lid.apply.verify'              = '要确认它真的管用：合上盖子等 10 秒再打开，然后运行 ka.bat evidence —— 这段时间出现待机事件就说明平台没采纳（保持开盖是唯一可靠做法）。'
         'lid.apply.heat'                = '设成不操作后，合盖不再让机器休眠，它照常发热：不要把合着盖的电脑塞进包里或放在被子上。'
@@ -1160,6 +1280,18 @@ $script:KaUi = @{
         'tray.mi.headerLoading'         = '读取中…'
         'tray.mi.start'                 = '启动保护（用当前设置）'
         'tray.mi.stop'                  = '停止保护'
+        'tray.mi.pause'                 = '暂停 15 分钟'
+        'tray.mi.resume'                = '恢复保护'
+        'tray.state.paused'             = '已暂停，将自动恢复'
+        'tray.bal.pauseFail'            = '无法更改暂停状态'
+        'tray.notice.missing'           = '保护进程已退出，但仍有保护需求。'
+        'tray.notice.unrecorded'        = '保护进程存在，但无法读取状态。'
+        'tray.notice.stale'             = '保护进程已停止更新状态。'
+        'tray.notice.error'             = '电源请求发生错误，请查看控制台。'
+        'tray.notice.locked'            = '会话已锁定，防锁心跳已跳过。'
+        'tray.notice.input'             = '前台程序阻止了防锁心跳。'
+        'tray.notice.battery'           = '低电量时已释放屏幕常亮请求。'
+        'tray.notice.recovered'         = '保护状态已恢复正常。'
         'tray.mi.duration'              = '按时长启动'
         'tray.mi.display'               = '屏幕常亮'
         'tray.mi.antilock'              = '防锁屏心跳'
@@ -1169,7 +1301,7 @@ $script:KaUi = @{
         'tray.mi.mouse'                 = '移动鼠标'
         'tray.mi.interval'              = '心跳间隔'
         'tray.mi.intervalNow'           = '心跳间隔（当前 {n}s）'
-        'tray.mi.open'                  = '打开控制面板'
+        'tray.mi.open'                  = '打开主窗口'
         'tray.mi.guard'                 = '开机看门狗（登录自启 + 每 10 分钟自检）'
         'tray.mi.stopServer'            = '关闭面板进程'
         'tray.mi.quit'                  = '退出托盘（不影响已运行的保护）'
@@ -1227,6 +1359,8 @@ $script:KaUi = @{
         'report.riskHead'               = '风险提示:'
         'alert.foreignWorkers'          = '另有 {count} 个 worker 属于别的目录（{roots}），本工具无法停止它 —— 关掉这里后电脑仍不会休眠'
         'alert.batteryFloor'            = '电池 {pct}% 且未插电，显示保护已按策略降级'
+        'alert.batteryCritical'         = '电池电量危急，保护已停止'
+        'alert.batteryPolicy'           = '已按电池策略停止保护'
         'alert.sleepEvidence'           = '保护运行期间有 {n} 次真睡眠发生在电源请求正被持有时 —— 平台在这些时刻绕过了它'
         'alert.evidenceBlind'           = '本机声明的睡眠态里至少有一种不会留下本工具读得到的记录 —— 界面上的绿色只代表「没有记录」，不代表「没有睡」；本机能读到什么写在证据区'
         'alert.standbyLid'              = '本窗口内有 {count} 次低功耗会话由合盖触发 —— 合盖会绕过电源请求直接进待机，唤醒后 Windows 默认要求登录；需要远程访问请保持开盖（但开盖只是必要不充分：本机大多数待机是盖子开着时的空闲超时，那一半才是本工具管得住的），或运行 ka.bat lid apply 把合盖动作改成「不进行操作」（改完请真的合一次盖验证：部分平台接受写入却仍然进待机）'
@@ -1264,6 +1398,7 @@ $script:KaUi = @{
         'api.noFile'                = 'No such file'
         'api.dashMissing'           = 'A dashboard file is missing - check that the dashboard folder is complete'
         'api.internal'              = 'Internal server error'
+        'api.stopIncomplete'        = 'Protection did not stop completely; check its status and data directory.'
         'api.host'                  = 'The Host header is not a loopback address: {host}'
         'api.origin'                = 'The Origin header is not this machine: {origin}'
         'api.client'                = 'Missing the X-Ka-Client header (a cross-site page cannot send one - that is the point)'
@@ -1271,9 +1406,12 @@ $script:KaUi = @{
         'api.badJson'               = 'Request body is not valid JSON: {msg}'
         'time.empty'                = 'No time was given'
         'time.unparsed'             = 'Unrecognised time. Accepted: HH:mm, HH:mm:ss, yyyy-MM-dd HH:mm, yyyy-MM-dd'
+        'time.invalidLocal'         = 'This local time does not exist because of a daylight-saving transition.'
+        'time.ambiguousLocal'       = 'This local time occurs twice because of a daylight-saving transition; choose another time.'
         'time.past'                 = '{at} is not in the future, which is the same as no expiry at all - give a future moment'
         'proc.noScript'             = 'Cannot find {file}: {path}'
         'proc.noStart'              = 'Could not start the process: {msg}'
+        'proc.stopIncomplete'       = 'A protection process is still running; new settings were not applied.'
         'proc.noLine'               = 'the child process never reported'
         'proc.noReport'             = 'The worker never reported in ({why})'
         'proc.earlyExit'            = 'The worker reported once and then exited: {why}'
@@ -1368,6 +1506,13 @@ $script:KaUi = @{
         'lid.status.nolid'              = 'The kernel capability bit reports no lid switch on this machine (desktop or virtual machine): the lid values above do not apply unless it actually has one.'
         'lid.apply.nolid'               = 'The kernel capability bit reports no lid switch on this machine (desktop or virtual machine), so the lid action does not apply and nothing was changed. To write it anyway: ka.bat lid apply -Force'
         'lid.apply.writefail'           = 'powercfg write failed: {msg}'
+        'lid.backup.conflict'           = 'The lid backup is invalid or belongs to another power plan; restore it first.'
+        'lid.backup.unreadable'         = 'Cannot read the current lid settings and power plan; lid actions were not changed.'
+        'lid.backup.writefail'          = 'Cannot write and verify the lid backup; lid actions were not changed.'
+        'lid.backup.invalid'            = 'The lid backup is invalid; it has been kept for inspection.'
+        'api.invalidMinutes'            = 'Invalid protection duration.'
+        'api.invalidStart'              = 'Invalid start parameters.'
+        'api.invalidBoolean'            = 'Invalid boolean parameter: {key}'
         'lid.apply.ok'                  = 'The lid action is set to "take no action" and the re-read confirms the value. That only proves the write landed - it does not prove the kernel honours it: some Modern Standby firmware accepts the write and still enters standby.'
         'lid.apply.verify'              = 'To prove it works: close the lid for about 10 seconds, open it again, then run ka.bat evidence - a standby event inside that window means the platform ignored the setting (keeping the lid open is the only reliable answer).'
         'lid.apply.heat'                = 'With the lid set to do nothing the machine keeps producing heat while closed: never put it in a bag or leave it on a bed or blanket.'
@@ -1537,6 +1682,18 @@ $script:KaUi = @{
         'tray.mi.headerLoading'         = 'Reading…'
         'tray.mi.start'                 = 'Start protection (current settings)'
         'tray.mi.stop'                  = 'Stop protection'
+        'tray.mi.pause'                 = 'Pause for 15 minutes'
+        'tray.mi.resume'                = 'Resume protection'
+        'tray.state.paused'             = 'Paused; protection will resume automatically'
+        'tray.bal.pauseFail'            = 'Could not change pause state'
+        'tray.notice.missing'           = 'The protection process exited while protection is still requested.'
+        'tray.notice.unrecorded'        = 'The protection process exists but its state cannot be read.'
+        'tray.notice.stale'             = 'The protection process stopped updating its state.'
+        'tray.notice.error'             = 'The power request reported an error; check the dashboard.'
+        'tray.notice.locked'            = 'The session is locked; anti-lock input was skipped.'
+        'tray.notice.input'             = 'The foreground application blocked anti-lock input.'
+        'tray.notice.battery'           = 'The display request was released on low battery.'
+        'tray.notice.recovered'         = 'Protection status returned to normal.'
         'tray.mi.duration'              = 'Start for a duration'
         'tray.mi.display'               = 'Keep display on'
         'tray.mi.antilock'              = 'Anti-lock heartbeat'
@@ -1546,7 +1703,7 @@ $script:KaUi = @{
         'tray.mi.mouse'                 = 'Move the mouse'
         'tray.mi.interval'              = 'Heartbeat interval'
         'tray.mi.intervalNow'           = 'Interval (now {n}s)'
-        'tray.mi.open'                  = 'Open the dashboard'
+        'tray.mi.open'                  = 'Open window'
         'tray.mi.guard'                 = 'Boot watchdog (auto-start at logon + self-check every 10 min)'
         'tray.mi.stopServer'            = 'Stop the panel process'
         'tray.mi.quit'                  = 'Quit the tray (running protection is unaffected)'
@@ -1604,6 +1761,8 @@ $script:KaUi = @{
         'report.riskHead'               = 'Risk notes:'
         'alert.foreignWorkers'          = '{count} worker(s) belong to another folder ({roots}); this tool cannot stop them - the machine stays awake after you stop this one'
         'alert.batteryFloor'            = 'On battery at {pct}%: display protection stepped down as configured'
+        'alert.batteryCritical'         = 'Protection stopped because the battery charge is critical'
+        'alert.batteryPolicy'           = 'Protection stopped by the battery policy'
         'alert.sleepEvidence'           = 'While protection ran, {n} real sleep(s) happened with the power request held - the platform bypassed it at those moments'
         'alert.evidenceBlind'           = 'At least one sleep state this machine declares leaves no record this tool reads - green on the panel means nothing was logged, not that it did not sleep; what this machine does leave readable is written in the evidence section'
         'alert.standbyLid'              = '{count} low-power session(s) in this window came from the lid - closing the lid bypasses power requests and Windows asks for sign-in on wake; keep the lid open for unattended remote access, but that is necessary and not sufficient - most standbys on this box are idle timeouts with the lid open, and that half is what this tool can hold. Or run ka.bat lid apply to set the lid action to "do nothing" (verify it with a real lid close - some platforms accept the write and still enter standby)'
@@ -1984,7 +2143,7 @@ function Get-KaMinutesUntil {
 
         Returns @{ Ok; Minutes; At; Reason }.
     #>
-    param([string]$Text, [datetime]$Now = (Get-Date))
+    param([string]$Text, [datetime]$Now = (Get-Date), [TimeZoneInfo]$TimeZone = [TimeZoneInfo]::Local)
     $r = @{ Ok = $false; Minutes = 0.0; At = $null; Reason = '' }
     $t = "$Text".Trim()
     if (-not $t) { $r.Reason = Get-KaText 'time.empty'; return $r }
@@ -2013,10 +2172,22 @@ function Get-KaMinutesUntil {
         $r.Reason = Get-KaText 'time.past' @{ at = $d.ToString('yyyy-MM-dd HH:mm:ss') }
         return $r
     }
-    $mins = ($d - $Now).TotalMinutes
+    $local = [datetime]::SpecifyKind($d, [DateTimeKind]::Unspecified)
+    if ($TimeZone.IsInvalidTime($local)) { $r.Reason = Get-KaText 'time.invalidLocal'; return $r }
+    if ($TimeZone.IsAmbiguousTime($local)) { $r.Reason = Get-KaText 'time.ambiguousLocal'; return $r }
+    $nowLocal = [datetime]::SpecifyKind($Now, [DateTimeKind]::Unspecified)
+    if ($TimeZone.IsInvalidTime($nowLocal) -or ($TimeZone.IsAmbiguousTime($nowLocal) -and
+        -not ($Now.Kind -eq [DateTimeKind]::Local -and $TimeZone.Id -eq [TimeZoneInfo]::Local.Id))) {
+        $r.Reason = Get-KaText 'time.ambiguousLocal'; return $r
+    }
+    $nowUtc = if ($Now.Kind -eq [DateTimeKind]::Local -and $TimeZone.Id -eq [TimeZoneInfo]::Local.Id) {
+        $Now.ToUniversalTime()
+    } else { [TimeZoneInfo]::ConvertTimeToUtc($nowLocal, $TimeZone) }
+    $mins = ([TimeZoneInfo]::ConvertTimeToUtc($local, $TimeZone) - $nowUtc).TotalMinutes
+    if ($mins -le 0) { $r.Reason = Get-KaText 'time.past' @{ at = $d.ToString('yyyy-MM-dd HH:mm:ss') }; return $r }
     $r.Ok = $true
     $r.At = $d
-    $r.Minutes = [math]::Round($mins, 2)
+    $r.Minutes = [math]::Max(0.01, [math]::Round($mins, 2))
     return $r
 }
 
@@ -2067,6 +2238,12 @@ function Get-KaBattery {
     try { return [Ka.Native]::PowerStatus() } catch { return @{ known = $false } }
 }
 
+function Test-KaCriticalBattery {
+    param($Status = (Get-KaBattery))
+    # Unknown AC state must never be treated as proof that power was removed.
+    return [bool]($Status -and $Status.known -and $Status.acKnown -and -not $Status.acOnline -and $Status.critical)
+}
+
 function Get-KaBatteryAction {
     <#
         The whole battery policy as one pure decision, so it can be tested without
@@ -2093,17 +2270,51 @@ function Get-KaBatteryAction {
     if (-not $Status -or -not [bool]$Status.known) { return $r }
     $pct = [int]$Status.percent
     $ac  = [bool]$Status.acOnline
+    $acKnown = if ($null -eq $Status.acKnown) { $true } else { [bool]$Status.acKnown }
     $r.Percent = $pct
     $r.Ac = $ac
-    $r.OnBattery = ((-not $ac) -and [bool]$Status.hasBattery)
-    if ([bool]$Status.critical -and -not $ac) { $r.Abort = 'battery-critical'; return $r }
+    $r.OnBattery = ($acKnown -and (-not $ac) -and [bool]$Status.hasBattery)
+    if ([bool]$Status.critical -and $acKnown -and -not $ac) { $r.Abort = 'battery-critical'; return $r }
     $eligible = $KeepDisplayOn -and $BatteryAllowDisplayOff -and $r.OnBattery `
                 -and ($pct -ge 0) -and ($pct -le $FloorPercent)
     if ($eligible -and -not $Downgraded) {
         $r.Downgrade = $true
     } elseif ((-not $eligible) -and $Downgraded) {
-        if ($ac -or ($pct -ge ($FloorPercent + 10))) { $r.Restore = $true }
+        if (($acKnown -and $ac) -or ($r.OnBattery -and $pct -ge ($FloorPercent + 10))) { $r.Restore = $true }
     }
+    return $r
+}
+
+function Get-KaSupplyPolicy {
+    $path = Join-Path (Get-KaDataRoot) 'supply-policy.json'
+    if (-not (Test-Path -LiteralPath $path)) { return @{ mode = 'continue'; limitMinutes = 0 } }
+    $p = Read-KaJson $path
+    $limit = 0
+    if (-not $p -or "$($p.mode)" -cnotin @('continue','screen-off','stop') -or
+        -not [int]::TryParse("$($p.limitMinutes)", [ref]$limit) -or $limit -lt 0 -or $limit -gt 1440) { throw 'Invalid battery policy.' }
+    return @{ mode = "$($p.mode)"; limitMinutes = $limit }
+}
+
+function Set-KaSupplyPolicy {
+    param([string]$Mode, [int]$LimitMinutes)
+    if ($Mode -cnotin @('continue','screen-off','stop') -or $LimitMinutes -lt 0 -or $LimitMinutes -gt 1440) { throw 'Invalid battery policy.' }
+    Invoke-KaOperationLocked {
+        if (-not (Write-KaJson (Join-Path (Get-KaDataRoot) 'supply-policy.json') @{ mode = $Mode; limitMinutes = $LimitMinutes })) { throw 'Could not save battery policy.' }
+    }
+}
+
+function Get-KaSupplyDecision {
+    param($Status, $Policy, $Previous, [long]$UptimeMs)
+    $r = @{ batterySince = [long]$Previous.batterySince; readings = [int]$Previous.readings; screenOff = $false; abort = ''; confirmed = $false }
+    if (-not $Status.known -or -not $Status.acKnown) { $r.readings = 0; return $r }
+    if ($Status.acOnline -or -not $Status.hasBattery) { $r.batterySince = 0; $r.readings = 0; return $r }
+    if ($r.batterySince -le 0) { $r.batterySince = [math]::Max(1, $UptimeMs) }
+    $r.readings = [math]::Min(2, $r.readings + 1)
+    if ($r.readings -lt 2) { return $r }
+    $r.confirmed = $true
+    if ($Policy.mode -eq 'stop') { $r.abort = 'battery-policy' }
+    elseif ([int]$Policy.limitMinutes -gt 0 -and $UptimeMs - $r.batterySince -ge [long]$Policy.limitMinutes * 60000) { $r.abort = 'battery-limit' }
+    $r.screenOff = ($Policy.mode -eq 'screen-off')
     return $r
 }
 
@@ -2399,7 +2610,14 @@ function Start-KaWorker {
         '-Minutes',               [string]$Minutes
     )
     try {
-        $proc = Start-Process powershell.exe -ArgumentList $a -WindowStyle Hidden -PassThru
+        # The worker can outlive its caller. Give it its own output pipes so a
+        # desktop or MCP bridge reading redirected output can finish immediately.
+        $info = New-Object Diagnostics.ProcessStartInfo
+        $info.FileName = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $info.Arguments = $a -join ' '
+        $info.UseShellExecute = $false; $info.CreateNoWindow = $true
+        $info.RedirectStandardOutput = $true; $info.RedirectStandardError = $true
+        $proc = [Ka.Native]::StartBackground($info.FileName, $info.Arguments, $null)
     } catch {
         return @{ Ok = $false; Reason = (Get-KaText 'proc.noStart' @{ msg = $_.Exception.Message }) }
     }
@@ -2461,10 +2679,10 @@ function Stop-KaWorker {
     param([int]$GraceSec = 6, [string]$Reason = 'user')
     $p = Get-KaPath
     $workers = @(Get-KaWorker)
-    if ($workers.Count -eq 0) { return @{ Stopped = 0; Forced = 0; Cooperative = $true } }
+    if ($workers.Count -eq 0) { return @{ Stopped = 0; Forced = 0; Cooperative = $true; Remaining = 0 } }
 
     $cooperative = Write-KaJson $p.stopFlag @{ epoch = (Get-KaEpoch); reason = $Reason } -Depth 3
-    $left = @()
+    $left = @($workers)
     $deadline = (Get-Date).AddSeconds($GraceSec)
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 250
@@ -2475,9 +2693,17 @@ function Stop-KaWorker {
     foreach ($w in $left) {
         try { Stop-Process -Id $w.Pid -Force -ErrorAction Stop; $forced++ } catch { }
     }
-    try { Remove-Item -LiteralPath $p.stopFlag -Force -ErrorAction SilentlyContinue } catch { }
+    if ($left.Count -gt 0) {
+        $end = (Get-Date).AddSeconds(2)
+        do {
+            $left = @(Get-KaWorker)
+            if ($left.Count -eq 0) { break }
+            Start-Sleep -Milliseconds 200
+        } while ((Get-Date) -lt $end)
+    }
+    if ($left.Count -eq 0) { try { Remove-Item -LiteralPath $p.stopFlag -Force -ErrorAction SilentlyContinue } catch { } }
     if (-not $cooperative) { Add-KaLog "STOP-UNCOOPERATIVE forced=$forced write=$($p.stopFlag)" }
-    return @{ Stopped = $workers.Count; Forced = $forced; Cooperative = [bool]$cooperative
+    return @{ Stopped = [math]::Max(0, $workers.Count - $left.Count); Remaining = $left.Count; Forced = $forced; Cooperative = [bool]$cooperative
               Detail = $(if ($cooperative) { '' } else { (Test-KaPathWritable $p.data).Code }) }
 }
 
@@ -3038,9 +3264,10 @@ function Get-KaProtectedSpan {
     $liveStarted = 0
     try {
         $st = Read-KaJson $p.state
-        if ($st -and [int]$st.pid -gt 0 -and (Get-Process -Id ([int]$st.pid) -ErrorAction SilentlyContinue)) {
-            $livePid = [int]$st.pid
-            $liveStarted = [long]$st.startedEpoch
+        if ($st -and [int]$st.pid -gt 0 -and [long]$st.startedEpoch -gt 0) {
+            $match = @(Get-KaWorker | Where-Object { $_.Pid -eq [int]$st.pid -and $_.StartEpoch -gt 0 -and
+                [long]$st.processStartedEpoch -gt 0 -and [long]$_.StartEpoch -eq [long]$st.processStartedEpoch })
+            if ($match.Count -eq 1) { $livePid = [int]$st.pid; $liveStarted = [long]$st.startedEpoch }
         }
     } catch { }
     $lines = @()
@@ -3464,6 +3691,10 @@ function Get-KaFullState {
     $minutesLeft = if ($expiresEpoch -gt 0) { [math]::Max(0, [int][math]::Ceiling(($expiresEpoch - (Get-KaEpoch)) / 60)) } else { 0 }
 
     $alert = @()
+    if (-not $live -and $st -and "$($st.exitReason)" -in @('battery-critical','battery-policy','battery-limit')) {
+        $alertId = if ($st.exitReason -eq 'battery-critical') { 'alert.batteryCritical' } else { 'alert.batteryPolicy' }
+        $alert += [PSCustomObject]@{ level = 'bad'; id = $alertId }
+    }
     # Deliberately outside `if ($live)`: the dangerous case is this copy saying "stopped"
     # while a second one still holds the power request. Shaped exactly like Get-KaReport's
     # risk entries - an id plus the numbers - so no surface can be handed a sentence it
@@ -3499,7 +3730,7 @@ function Get-KaFullState {
                                      names = (@($guard.disabled) -join ', ') }
     }
     if ($live) {
-        if ($bat.hasBattery -and -not $bat.acOnline -and $bat.percent -ge 0 -and $bat.percent -le $cfg.batteryFloorPercent) {
+        if ($bat.hasBattery -and $bat.acKnown -and $bat.batteryKnown -and -not $bat.acOnline -and $bat.percent -ge 0 -and $bat.percent -le $cfg.batteryFloorPercent) {
             $alert += [PSCustomObject]@{ level = 'warn'; id = 'alert.batteryFloor'; pct = $bat.percent }
         }
         if ($evidence) {
@@ -3560,6 +3791,24 @@ function Get-KaFullState {
             [Security.Principal.WindowsBuiltInRole]::Administrator)
     } catch { }
 
+    $leaseInfo = @{ available = [bool]$script:KaLeaseAvailable; readable = $true; manualActive = $false; items = @(); paused = $false; pauseUntilEpoch = 0 }
+    if (Test-Path -LiteralPath (Join-Path (Get-KaDataRoot) 'leases.json')) {
+        try {
+            if (-not $script:KaLeaseAvailable) { throw 'lease support is missing' }
+            $ledger = Get-KaLeaseLedger
+            $leaseNow = Get-KaEpoch
+            $leaseLive = @(Get-KaLeaseBootLeases -Leases $ledger.leases -Now $leaseNow)
+            $leaseUptime = Get-KaLeaseUptimeMs
+            $leaseInfo.items = @(Get-KaLeasePublicSnapshot -Leases $leaseLive -Now $leaseNow -UptimeMs $leaseUptime)
+            $leaseInfo.manualActive = [bool](Get-KaLeaseAggregate -Leases $leaseLive -Manual $ledger.manual -Now $leaseNow -UptimeMs $leaseUptime).manualActive
+            if ($ledger.pause -and [long]$ledger.pause.untilUptimeMs -gt $leaseUptime -and
+                [math]::Abs([long]$ledger.pause.bootEpoch - (Get-KaLeaseBootEpoch)) -le 5) {
+                $leaseInfo.paused = $true
+                $leaseInfo.pauseUntilEpoch = $leaseNow + [long][math]::Ceiling(([long]$ledger.pause.untilUptimeMs - $leaseUptime) / 1000.0)
+            }
+        } catch { $leaseInfo.readable = $false }
+    }
+
     return [PSCustomObject]@{
         nowEpoch      = Get-KaEpoch
         version       = $script:KaVersion
@@ -3573,6 +3822,7 @@ function Get-KaFullState {
         session       = $session
         config        = $cfg
         intent        = $intent
+        leases        = $leaseInfo
         minutesLeft   = $minutesLeft
         guard         = $guard
         evidence      = $evidence
@@ -3588,7 +3838,31 @@ function Get-KaFullState {
 }
 
 # ---------------------------------------------------------------- orchestration
-function Start-KaProtection {
+function Get-KaDiagnosticExport {
+    # A whitelist, not a redaction pass over logs. Never include paths, PIDs,
+    # account names, task reasons, capability hashes, or event timestamps.
+    $s = Get-KaFullState -Quiet
+    $e = Get-KaSleepEvidence -Since (Get-Date).AddHours(-24)
+    $w = $s.worker; $b = $s.battery
+    $ids = @($s.alert | ForEach-Object { "$($_.id)" } | Where-Object { $_ -cmatch '^alert\.[a-zA-Z0-9]+$' })
+    $instrument = if ("$($e.instrument)" -in @('full','both','s3-only','no-session-events','blind')) { "$($e.instrument)" } else { 'unknown' }
+    return [PSCustomObject]@{
+        schemaVersion = 1; version = $script:KaVersion
+        environment = @{ windowsBuild = [Environment]::OSVersion.Version.Build; powershellVersion = "$($PSVersionTable.PSVersion)" }
+        protection = @{ running = [bool]$s.running; workerCount = [int]$s.workerCount; stateRecorded = [bool]($null -ne $w)
+            displayActive = $(if ($w) { [bool]$w.displayActive } else { $null }); antiLock = $(if ($w) { [bool]$w.antiLock } else { $null })
+            hasWorkerError = $(if ($w) { [bool]$w.error } else { $null }) }
+        guard = @{ installed = [bool]$s.guard.installed; enabled = [bool]$s.guard.enabled }
+        battery = @{ known = [bool]$b.known; acKnown = [bool]$b.acKnown; batteryKnown = [bool]$b.batteryKnown
+            acOnline = $(if ($b.acKnown) { [bool]$b.acOnline } else { $null }); percent = $(if ($b.batteryKnown -and [int]$b.percent -ge 0) { [int]$b.percent } else { $null }) }
+        evidence = @{ hours = 24; queriesOk = [bool]$e.queriesOk; canSee = [bool]$e.canSee; instrument = $instrument
+            realSleeps = [int]$e.realSleeps; s3Enters = [int]$e.s3Enters; bypasses = [int]$e.bypasses
+            s3Bypasses = [int]$e.s3Bypasses; unknown = ([int]$e.spanUnknown + [int]$e.s3SpanUnknown); truncated = [bool]$e.truncated }
+        alertIds = $ids
+    }
+}
+
+function Invoke-KaProtectionStartInternal {
     <#
         The one entry point for "protect now" - CLI, dashboard, tray and watchdog all
         call this so they cannot drift apart.
@@ -3599,17 +3873,23 @@ function Start-KaProtection {
     #>
     param([double]$Minutes = 0, [hashtable]$Override = @{})
 
+    if (Test-KaCriticalBattery) { return @{ Ok = $false; Reason = 'Battery charge is critical while unplugged.' } }
+
     $cfg = Get-KaConfig
     foreach ($k in $Override.Keys) { if ($cfg.ContainsKey($k)) { $cfg[$k] = $Override[$k] } }
 
     $p = Get-KaPath
     $restarted = $false
+    if (Test-Path -LiteralPath $p.stopFlag) {
+        try { Remove-Item -LiteralPath $p.stopFlag -Force -ErrorAction Stop }
+        catch { return @{ Ok = $false; Reason = (Get-KaText 'proc.stopIncomplete') } }
+    }
     $existing = @(Get-KaWorker)
     if ($existing.Count -gt 0) {
         $st = Read-KaJson $p.state
         $wantExp = if ($Minutes -gt 0) { (Get-KaEpoch) + [long]($Minutes * 60) } else { 0 }
         $differs = $false
-        if (-not $st) {
+        if (-not $st -or $null -eq $st.reassertSec -or $null -eq $st.batteryAllowDisplayOff) {
             # A worker exists but never reported: cannot reason about its parameters.
             $differs = $true
         } else {
@@ -3619,13 +3899,16 @@ function Start-KaProtection {
                     @([bool]$st.awayMode,      [bool]$cfg.awayMode),
                     @([string]$st.antiLockMethod, [string]$cfg.antiLockMethod),
                     @([int]$st.antiLockInterval,  [int]$cfg.antiLockIntervalSec),
+                    @([int]$st.reassertSec,       [int]$cfg.reassertSec),
+                    @([bool]$st.batteryAllowDisplayOff, [bool]$cfg.batteryAllowDisplayOff),
                     @([int]$st.batteryFloor,      [int]$cfg.batteryFloorPercent),
                     @([long]$st.expiresEpoch,     [long]$wantExp))) {
                 if ($pair[0] -ne $pair[1]) { $differs = $true; break }
             }
         }
         if ($differs) {
-            [void](Stop-KaWorker -Reason 'restart')
+            $stopped = Stop-KaWorker -Reason 'restart'
+            if ([int]$stopped.Remaining -gt 0) { return @{ Ok = $false; Reason = (Get-KaText 'proc.stopIncomplete') } }
             $restarted = $true
         }
     }
@@ -3645,6 +3928,7 @@ function Start-KaProtection {
             antiLock      = [bool]$cfg.antiLock
             antiLockMethod = $cfg.antiLockMethod
             antiLockIntervalSec = [int]$cfg.antiLockIntervalSec
+            reassertSec    = [int]$cfg.reassertSec
             awayMode      = [bool]$cfg.awayMode
             batteryFloorPercent = [int]$cfg.batteryFloorPercent
             batteryAllowDisplayOff = [bool]$cfg.batteryAllowDisplayOff
@@ -3653,7 +3937,7 @@ function Start-KaProtection {
     return $r
 }
 
-function Stop-KaProtection {
+function Invoke-KaProtectionStopInternal {
     param([string]$Reason = 'user')
     # Intent first: if the guard task fires between the stop and the kill it must read
     # "off", otherwise it starts the worker straight back up again.
@@ -3669,7 +3953,7 @@ function Stop-KaProtection {
     return $r
 }
 
-function Reconcile-KaProtection {
+function Invoke-KaProtectionReconcileInternal {
     <#
         The watchdog's whole job, as a comparison between two facts:
           intent.json  = what the user last asked for
@@ -3756,6 +4040,87 @@ function Reconcile-KaProtection {
 }
 
 # ---------------------------------------------------------------- environment report
+function Invoke-KaOperationLocked {
+    param([scriptblock]$Operation)
+    $m = New-Object System.Threading.Mutex($false, ('Global\' + (Get-KaIdentitySuffix 'KA-Operation')))
+    $owned = $false
+    try {
+        try { $owned = $m.WaitOne([TimeSpan]::FromSeconds(90)) }
+        catch [System.Threading.AbandonedMutexException] { $owned = $true }
+        if (-not $owned) { throw 'KeepAwake operation lock timed out' }
+        & $Operation
+    } finally {
+        if ($owned) { try { $m.ReleaseMutex() } catch {} }
+        $m.Dispose()
+    }
+}
+
+function Start-KaProtection {
+    param([double]$Minutes = 0, [hashtable]$Override = @{}, [switch]$Force)
+    Invoke-KaOperationLocked {
+        if (Test-KaCriticalBattery) { return @{ Ok = $false; Reason = 'Battery charge is critical while unplugged.' } }
+        if ($Force) { [void](Stop-KaWorker -Reason 'force') }
+        if (Test-Path -LiteralPath (Join-Path (Get-KaDataRoot) 'leases.json')) {
+            if (-not $script:KaLeaseAvailable) { throw 'lease support is missing; cannot safely change protection' }
+            Invoke-KaLeaseManualStart -Minutes $Minutes -Override $Override
+        } else { Invoke-KaProtectionStartInternal -Minutes $Minutes -Override $Override }
+    }
+}
+function Stop-KaProtection {
+    param([string]$Reason = 'user')
+    Invoke-KaOperationLocked {
+        if (Test-Path -LiteralPath (Join-Path (Get-KaDataRoot) 'leases.json')) {
+            try {
+                if (-not $script:KaLeaseAvailable) { throw 'lease support is missing' }
+                Invoke-KaLeaseStopAll -Reason $Reason
+            } catch {
+                $r = Invoke-KaProtectionStopInternal -Reason $Reason
+                $r['leaseCancellationFailed'] = $true
+                $r['intentWritten'] = $false
+                Add-KaLog ('LEASE-CANCEL-FAILED err=' + (Get-KaErrorToken $_))
+                $r
+            }
+        } else { Invoke-KaProtectionStopInternal -Reason $Reason }
+    }
+}
+function Reconcile-KaProtection {
+    param([int]$StaleTickSec = 90)
+    Invoke-KaOperationLocked {
+        $previousWorker = Read-KaJson (Get-KaPath).state
+        if ($previousWorker -and "$($previousWorker.exitReason)" -in @('battery-policy','battery-limit') -and @(Get-KaWorker).Count -eq 0) {
+            $stopped = if (Test-Path -LiteralPath (Join-Path (Get-KaDataRoot) 'leases.json')) {
+                if (-not $script:KaLeaseAvailable) { throw 'lease support is missing; cannot safely reconcile' }
+                Invoke-KaLeaseStopAll -Reason $previousWorker.exitReason
+            } else { Invoke-KaProtectionStopInternal -Reason $previousWorker.exitReason }
+            return @{ action = 'battery-policy-stop'; wantOn = $false; alive = ([int]$stopped.Remaining -gt 0)
+                      workers = [int]$stopped.Remaining; intentUnwritable = (-not $stopped.intentWritten); at = (Get-KaEpoch) }
+        }
+        if (Test-KaCriticalBattery) {
+            $stopped = if (Test-Path -LiteralPath (Join-Path (Get-KaDataRoot) 'leases.json')) {
+                if (-not $script:KaLeaseAvailable) { throw 'lease support is missing; cannot safely reconcile' }
+                Invoke-KaLeaseStopAll -Reason 'battery-critical'
+            } else { Invoke-KaProtectionStopInternal -Reason 'battery-critical' }
+            return @{ action = 'battery-critical-stop'; wantOn = $false; alive = ([int]$stopped.Remaining -gt 0)
+                      workers = [int]$stopped.Remaining; intentUnwritable = (-not $stopped.intentWritten); at = (Get-KaEpoch) }
+        }
+        if (Test-Path -LiteralPath (Join-Path (Get-KaDataRoot) 'leases.json')) {
+            if (-not $script:KaLeaseAvailable) { throw 'lease support is missing; cannot safely reconcile' }
+            $sweep = Invoke-KaLeaseSweep
+            if ([int]$sweep.activeLeases -gt 0 -or $sweep.pendingPause) {
+                Start-KaLeaseKeeper
+                if (-not $sweep.pendingPause -and @(Get-KaWorker).Count -eq 0) {
+                    [void](Invoke-KaLeaseApplyAggregate -Ledger (Get-KaLeaseLedger) -Now (Get-KaEpoch))
+                }
+            }
+        }
+        $result = Invoke-KaProtectionReconcileInternal -StaleTickSec $StaleTickSec
+        if ($sweep -and [int]$sweep.activeLeases -gt 0 -and $result.action -in @('started','adopted-session')) {
+            [void](Invoke-KaLeaseApplyAggregate -Ledger (Get-KaLeaseLedger) -Now (Get-KaEpoch))
+        }
+        $result
+    }
+}
+
 function Get-KaLidRisk {
     <#
         SETS cannot intercept a lid close: the lid action runs at firmware/ACPI level,
@@ -3953,4 +4318,17 @@ function Get-KaReport {
         [void](Write-KaJson (Get-KaPath).machine $snap -Depth 6)
     }
     return $report
+}
+
+# Optional integration is loaded only when its complete companion is present. A data
+# root that already contains lease state fails closed if the companion is missing.
+$script:KaLeaseAvailable = $false
+$kaLeaseModel = Join-Path $script:KaProgramRoot 'integrations\mcp\lease-model.ps1'
+$kaLeaseStore = Join-Path $script:KaProgramRoot 'integrations\mcp\lease-store.ps1'
+if ((Test-Path -LiteralPath $kaLeaseModel) -and (Test-Path -LiteralPath $kaLeaseStore)) {
+    . $kaLeaseModel
+    . $kaLeaseStore
+    $script:KaLeaseAvailable = $true
+    $automation = Join-Path $script:KaProgramRoot 'integrations\cli\automation.ps1'
+    if (Test-Path -LiteralPath $automation) { . $automation }
 }
