@@ -38,6 +38,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'MCP build failed' }
           python tests\probe-mcp-rpc.py
           if ($LASTEXITCODE -ne 0) { throw 'MCP protocol test failed' }
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests\probe-mcp-bridge.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'MCP idle bridge test failed' }
 
       - name: Inno Setup
         # tests/probe-iss.ps1 compiles packaging\KeepAwake.iss for real. Without a compiler all it
