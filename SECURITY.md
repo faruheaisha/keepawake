@@ -109,15 +109,19 @@ v1.0 **不做 Authenticode 签名**，这是明确的产品决定，不是没做
 
 ## 运行环境：Constrained Language Mode
 
-`ka-gate.ps1` 的 `Test-KaLanguageMode` 在 CLM / AllSigned 策略下**直接拒绝启动**（退出码 2），并指一段
-README 给你看原因。**这是安全设计**：`Add-Type` 在现场编译 C#，CLM 下这条路径会被拦，而一个"部分功能
-静默失效"的防休眠工具比一个明确拒绝启动的工具危险得多——它会让你在以为受保护的状态下把机器睡掉。
-WDAC / AppLocker / Smart App Control 环境因此用不了本工具，这一点写在 README 的适配矩阵里。
+`ka-gate.ps1` 的 `Test-KaLanguageMode` 在 CLM 等受限语言模式下直接拒绝启动（退出码 2）。引擎需要
+`Add-Type` 编译本机调用，不能把该路径失效后的运行状态报告为正常。脚本签名与应用控制另由 Windows
+策略决定：组织强制要求签名时，未签名脚本可能在执行前被拦截。WDAC、AppLocker 和 Smart App Control
+环境下能否运行取决于具体策略；本版本没有完成这些环境的认证。
 
 ## 依赖与供应链
 
-**零第三方依赖**：只有 Windows 自带的 PowerShell 5.1、`powercfg` 与 .NET Framework 类型。
-没有运行时下载、没有包管理器、没有 CDN、没有子模块。审计面就是仓库里那几个 `.ps1` 和 `dashboard/`。
+桌面程序和保护引擎使用 Windows 自带的 PowerShell 5.1、`powercfg` 与 .NET Framework，不在运行时
+下载依赖。审计范围包括 `desktop/` 的 C#、根目录脚本、`integrations/`、可选网页和打包流程。
+
+可选 MCP 配套程序使用官方 C# MCP SDK 和 .NET 10，包含第三方依赖，自包含分发包附带运行时、许可证及
+版权通知。源码与自包含构建分别使用已提交的依赖锁文件，发布前执行锁定还原；构建过程需要下载依赖，
+安装后的保护功能无需联网。不把 MCP 分发包描述为零第三方依赖。
 
 ## 支持哪个版本 / 怎么报问题
 
