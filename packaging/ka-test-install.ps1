@@ -6,7 +6,7 @@
 
     The assertions are README's installer claims, put in front of the thing they describe, so a doc
     line cannot drift from the installer quietly: per-user install with no elevation, exactly the
-    manifest files plus Inno's own two, no Mark-of-the-Web on installed scripts, the five Start Menu
+    manifest files plus Inno's own two, no Mark-of-the-Web on installed scripts, the four Start Menu
     entries, the desktop shortcut really being checked by default, the Add/Remove Programs entry, no
     scheduled task and no panel created by installing, the uninstall hook running stop-server / stop /
     unguard BEFORE files go, and the machine ending where it started.
@@ -42,6 +42,32 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $root 'tests/ka-release-files.ps1')
+
+function Get-InstallLongPath([string]$Path) {
+    # The shell expands RUNNER~1 to runneradmin when reading a shortcut. Resolve
+    # both existing file paths through Windows before comparing their targets.
+    if (-not ('Ka.InstallPath' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+namespace Ka {
+    public static class InstallPath {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern uint GetLongPathName(string path, StringBuilder buffer, uint size);
+        public static string Expand(string path) {
+            var buffer = new StringBuilder(32768);
+            uint length = GetLongPathName(path, buffer, (uint)buffer.Capacity);
+            if (length == 0 || length >= buffer.Capacity)
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            return buffer.ToString();
+        }
+    }
+}
+'@
+    }
+    return [Ka.InstallPath]::Expand([IO.Path]::GetFullPath($Path))
+}
 
 function Get-ListeningPorts {
     try { @(Get-NetTCPConnection -State Listen -ErrorAction Stop | ForEach-Object { $_.LocalPort }) } catch { @() }
@@ -303,8 +329,9 @@ try {
     $shell = New-Object -ComObject WScript.Shell
     foreach ($link in @((Join-Path $sm 'KeepAwake.lnk'), (Join-Path $desktop 'KeepAwake.lnk'))) {
         $shortcut = $shell.CreateShortcut($link)
-        if ($shortcut.TargetPath -eq (Join-Path $app 'KeepAwake.exe') -and -not $shortcut.Arguments) { Ok 'the product shortcut opens the native desktop EXE' }
-        else { Red ("shortcut target is not the native desktop: {0}" -f $link) }
+        $expectedTarget = Join-Path $app 'KeepAwake.exe'
+        if ((Get-InstallLongPath $shortcut.TargetPath) -eq (Get-InstallLongPath $expectedTarget) -and -not $shortcut.Arguments) { Ok 'the product shortcut opens the native desktop EXE' }
+        else { Red ("shortcut target is not the native desktop: {0}; target={1}; expected={2}; args={3}" -f $link, $shortcut.TargetPath, $expectedTarget, $shortcut.Arguments) }
     }
 
     $key = @(Get-ChildItem -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue |
