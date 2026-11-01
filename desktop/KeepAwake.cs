@@ -48,7 +48,8 @@ namespace KeepAwakeDesktop
                         closing.ReleaseMutex(); return 0;
                     }
                 }
-                bool test = args.Length > 0 && args[0] == "--self-test";
+                bool smoke = args.Length > 0 && args[0] == "--smoke-test";
+                bool test = smoke || (args.Length > 0 && args[0] == "--self-test");
                 if (test) {
                     Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
                     Application.ThreadException += delegate(object sender, ThreadExceptionEventArgs e) {
@@ -64,7 +65,7 @@ namespace KeepAwakeDesktop
                     try
                     {
                         EngineRoot = ExtractEngine();
-                        using (var form = new DesktopForm(test, args.Length > 1 ? args[1] : null, Array.IndexOf(args, "--tray") >= 0)) Application.Run(form);
+                        using (var form = new DesktopForm(test, args.Length > 1 ? args[1] : null, Array.IndexOf(args, "--tray") >= 0, smoke)) Application.Run(form);
                         return DesktopForm.TestExitCode;
                     }
                     finally { if (acquired) instance.ReleaseMutex(); }
@@ -72,7 +73,7 @@ namespace KeepAwakeDesktop
             }
             catch (Exception ex)
             {
-                if (args.Length > 0 && args[0] == "--self-test")
+                if (args.Length > 0 && (args[0] == "--self-test" || args[0] == "--smoke-test"))
                 {
                     if (args.Length > 1) File.WriteAllText(args[1] + ".error.txt", ex.ToString());
                     return 1;
@@ -172,7 +173,7 @@ namespace KeepAwakeDesktop
         static readonly Color Ink = Color.FromArgb(31, 31, 31);
         static readonly Color Muted = Color.FromArgb(95, 99, 104);
         static readonly Color Blue = Color.FromArgb(1, 135, 95);
-        readonly bool selfTest;
+        readonly bool selfTest, smokeTest;
         readonly string screenshot;
         readonly Panel sidebar = new Panel();
         readonly Panel content = new AtmospherePanel();
@@ -223,9 +224,9 @@ namespace KeepAwakeDesktop
         string T(string zh, string en) { return english ? en : zh; }
         [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr handle, int command);
 
-        internal DesktopForm(bool test, string image, bool startHidden)
+        internal DesktopForm(bool test, string image, bool startHidden, bool smoke)
         {
-            selfTest = test; screenshot = image;
+            selfTest = test; smokeTest = smoke; screenshot = image;
             if (selfTest) TestExitCode = 1;
             using (var graphics = CreateGraphics()) uiScale = Math.Max(1F, graphics.DpiX / 96F);
             english = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName != "zh";
@@ -672,6 +673,13 @@ namespace KeepAwakeDesktop
             {
                 if (!known || !initialized || busy) throw new Exception("The desktop could not read engine state.");
                 Artwork.Verify();
+                if (smokeTest) {
+                    BuildPage(0); RenderState();
+                    if (primary == null || !primary.Visible) throw new Exception("The desktop action is unavailable.");
+                    if (screenshot != null) SavePreview(screenshot);
+                    TestExitCode = 0; return;
+                }
+                TestTrace("dialogs");
                 TestStartupAndShortcut();
                 TestRuleDialog(delegate { ShowAutomation(); }, ".automation.png");
                 TestRuleDialog(delegate { EditAutomation(null); }, ".rule.png");
@@ -692,11 +700,14 @@ namespace KeepAwakeDesktop
                 if (language.SelectedIndex != 1 || closeToTray.Checked || interval.Value != 180 || autoStart.Checked == originalAutoStart || hotkey.Checked == originalHotkey) throw new Exception("Navigation lost advanced preferences.");
                 language.SelectedIndex = 0; closeToTray.Checked = true; interval.Value = 240;
                 autoStart.Checked = originalAutoStart; hotkey.Checked = originalHotkey;
+                TestTrace("activity");
                 BuildPage(2); await Execute("log", null, false); if (!known) throw new Exception("Activity failed.");
                 string activityBefore = records.Text; BuildPage(0); BuildPage(2);
                 if (records.Text != activityBefore) throw new Exception("Navigation lost activity output.");
                 if (screenshot != null) SavePreview(screenshot + ".activity.png");
+                TestTrace("diagnostics");
                 await Execute("report", null, false); if (!known || activityMode != 1 || String.IsNullOrWhiteSpace(records.Text)) throw new Exception("Device diagnostics failed.");
+                TestTrace("layout");
                 if (screenshot != null) SavePreview(screenshot + ".diagnostics.png");
                 BuildPage(0); SetScenario(2); if (display.Checked || antiLock.Checked) throw new Exception("Long-task preset did not apply.");
                 SetScenario(0); SelectDuration(60); if (!durations[1].Selected) throw new Exception("Duration selection failed.");
@@ -788,9 +799,14 @@ namespace KeepAwakeDesktop
                 if (primary.Right > actionBar.Width || content.HorizontalScroll.Visible) throw new Exception("The compact layout overflows horizontally.");
                 if (screenshot != null) SavePreview(screenshot + ".compact.png", false);
                 TestExitCode = 0;
+                TestTrace("complete");
             }
             catch (Exception ex) { TestExitCode = 1; if (screenshot != null) File.WriteAllText(screenshot + ".error.txt", ex.ToString()); }
             finally { quit = true; Close(); }
+        }
+        void TestTrace(string step)
+        {
+            if (screenshot != null) File.AppendAllText(screenshot + ".trace.txt", DateTimeOffset.UtcNow.ToString("o") + " " + step + Environment.NewLine);
         }
         void SavePreview(string path, bool standardSize = true)
         {

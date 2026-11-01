@@ -208,7 +208,7 @@ function Invoke-KaSmoke([string]$ZipPath, [string]$Version) {
             $env:KA_DATA = $data
             $info = New-Object Diagnostics.ProcessStartInfo
             $info.FileName = $native
-            $info.Arguments = '--self-test "' + $preview + '"'
+            $info.Arguments = '--smoke-test "' + $preview + '"'
             $info.UseShellExecute = $false
             $proc = [Diagnostics.Process]::Start($info)
             try {

@@ -1,7 +1,7 @@
 ﻿<# Build the optional self-contained Windows MCP package and include dependency notices. #>
 [CmdletBinding()]
 param(
-    [ValidateSet('win-x64','win-arm64')][string]$Runtime = 'win-x64',
+    [ValidateSet('win-x64')][string]$Runtime = 'win-x64',
     [string]$Dotnet = 'dotnet.exe',
     [string]$OutDir = ''
 )
@@ -9,15 +9,16 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 if (-not $OutDir) { $OutDir = Join-Path $root 'dist' }
 $OutDir = [IO.Path]::GetFullPath($OutDir)
+$publishLock = Join-Path $PSScriptRoot ('packages.' + $Runtime + '.lock.json')
 $stage = Join-Path $root ('_tmp\mcp-stage-' + [guid]::NewGuid().ToString('N'))
 $publish = Join-Path $stage 'publish'
 $package = Join-Path $stage 'package'
 [void](New-Item -ItemType Directory -Force -Path $publish, $package, (Join-Path $package 'third-party'))
 try {
-    & $Dotnet restore (Join-Path $PSScriptRoot 'KeepAwake.Mcp.csproj') -r $Runtime --locked-mode -p:SelfContained=true -p:PublishSingleFile=true
+    & $Dotnet restore (Join-Path $PSScriptRoot 'KeepAwake.Mcp.csproj') -r $Runtime --locked-mode -p:SelfContained=true -p:PublishSingleFile=true ('-p:NuGetLockFilePath=' + $publishLock)
     if ($LASTEXITCODE -ne 0) { throw "MCP locked restore failed with exit code $LASTEXITCODE" }
     & $Dotnet publish (Join-Path $PSScriptRoot 'KeepAwake.Mcp.csproj') -c Release -r $Runtime --self-contained true --no-restore `
-        -p:PublishSingleFile=true -o $publish
+        -p:PublishSingleFile=true ('-p:NuGetLockFilePath=' + $publishLock) -o $publish
     if ($LASTEXITCODE -ne 0) { throw "MCP publish failed with exit code $LASTEXITCODE" }
     Copy-Item -LiteralPath (Join-Path $publish 'KeepAwake.Mcp.exe') -Destination $package
     foreach ($name in @('ka-core.ps1','ka-gate.ps1','ka-worker.ps1','ka-guard.ps1','LICENSE','NOTICE','PRIVACY.md')) {
@@ -26,12 +27,12 @@ try {
     [void](New-Item -ItemType Directory -Force -Path (Join-Path $package 'integrations'))
     Copy-Item -LiteralPath (Join-Path $root 'integrations\mcp') -Destination (Join-Path $package 'integrations\mcp') -Recurse -Force
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'README.md') -Destination (Join-Path $package 'README.md')
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'packages.lock.json') -Destination (Join-Path $package 'third-party\packages.lock.json')
+    Copy-Item -LiteralPath $publishLock -Destination (Join-Path $package 'third-party\packages.lock.json')
 
     $assets = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $PSScriptRoot 'obj\project.assets.json') | ConvertFrom-Json
     $packageRoot = @($assets.packageFolders.PSObject.Properties.Name | Where-Object { Test-Path -LiteralPath $_ })[0]
     if (-not $packageRoot) { throw 'NuGet package cache could not be located for license verification.' }
-    $lock = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $PSScriptRoot 'packages.lock.json') | ConvertFrom-Json
+    $lock = Get-Content -Raw -Encoding UTF8 -LiteralPath $publishLock | ConvertFrom-Json
     $lines = New-Object 'System.Collections.Generic.List[string]'
     foreach ($dep in $lock.dependencies.'net10.0'.PSObject.Properties) {
         $id = $dep.Name.ToLowerInvariant(); $version = [string]$dep.Value.resolved

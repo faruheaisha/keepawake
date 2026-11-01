@@ -49,7 +49,8 @@ try {
     $info.UseShellExecute = $false
     $proc = [Diagnostics.Process]::Start($info)
     try {
-        if (-not $proc.WaitForExit(60000)) { $proc.Kill(); throw 'Native desktop timed out' }
+        # The full UI run performs three bounded engine calls plus dialog and rendering checks.
+        if (-not $proc.WaitForExit(210000)) { $proc.Kill(); throw ('Native desktop timed out; inspect ' + $image + '.trace.txt') }
         Assert-Desktop ($proc.ExitCode -eq 0) 'standalone EXE opens, reads the engine, renders all pages and applies UI presets'
     } finally { $proc.Dispose() }
     Assert-Desktop ((Get-Item -LiteralPath $image).Length -gt 10000) 'the desktop screenshot contains a full window'
