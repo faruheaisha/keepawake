@@ -23,8 +23,8 @@ $fixes = @(
                      Old = "capturedAt = (Get-Date -Format 's')" },
     @{ File = $core; New = '::Parse("$($bp.capturedAt)", [Globalization.CultureInfo]::InvariantCulture)';
                      Old = '::Parse("$($bp.capturedAt)")' },
-    @{ File = $core; New = "(Get-Date).ToString('yyyy-MM-dd HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture)";
-                     Old = "(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" }
+    @{ File = $core; New = "[DateTimeOffset]::Now.ToString('yyyy-MM-dd HH:mm:sszzz', [Globalization.CultureInfo]::InvariantCulture)";
+                     Old = "[DateTimeOffset]::Now.ToString('yyyy-MM-dd HH:mm:sszzz')" }
 )
 
 $pristine = @{}   # byte arrays, the only thing the restore is allowed to write back

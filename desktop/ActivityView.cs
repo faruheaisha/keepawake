@@ -14,7 +14,7 @@ namespace KeepAwakeDesktop
             var entries = new List<ActivityEvent>();
             foreach (string line in (text ?? "").Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
             {
-                var match = Regex.Match(line, @"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(\S+)(.*)$");
+                var match = Regex.Match(line, @"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[+-]\d{2}:\d{2})?)\s+(\S+)(.*)$");
                 if (!match.Success) { entries.Add(new ActivityEvent { Time = "", Title = english ? "Log entry" : "日志记录", Description = line, Glyph = "activity" }); continue; }
                 string kind = match.Groups[2].Value, details = match.Groups[3].Value;
                 if (kind == "STOP-REQUEST" || (kind == "STOP" && !details.Contains("forced=1"))) continue;
@@ -52,7 +52,7 @@ namespace KeepAwakeDesktop
         {
             int pad = (int)(14 * IconScale), glyph = (int)(26 * IconScale);
             Artwork.Draw(e.Graphics, Entry.Glyph, new Rectangle(pad, (int)(23 * IconScale), glyph, glyph), Color.FromArgb(1, 135, 95));
-            int x = (int)(57 * IconScale), dateWidth = (int)(192 * IconScale);
+            int x = (int)(57 * IconScale), dateWidth = (int)(240 * IconScale);
             using (var title = new Font(Font.FontFamily, 10F))
                 TextRenderer.DrawText(e.Graphics, Entry.Title, title, new Rectangle(x, (int)(12 * IconScale), Math.Max(120, Width - x - dateWidth), (int)(28 * IconScale)), Color.FromArgb(31, 31, 31), TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
             TextRenderer.DrawText(e.Graphics, Entry.Description, Font, new Rectangle(x, (int)(43 * IconScale), Width - x - pad, (int)(24 * IconScale)), Color.FromArgb(95, 99, 104), TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);

@@ -54,6 +54,10 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'ka-gate.ps1')
 if (-not (Test-KaLanguageMode)) { exit 2 }
+if ($Json) {
+    # Redirected JSON must preserve paths and names on non-UTF-8 Windows consoles.
+    [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+}
 . (Join-Path $PSScriptRoot 'ka-core.ps1')
 
 function Get-KaDisplayWidth([string]$t) {

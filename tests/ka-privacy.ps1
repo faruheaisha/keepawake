@@ -341,7 +341,7 @@ $shellPat = 'Start-Process|Invoke-Item|UseShellExecute|WScript\.Shell|Shell\.App
             'cmd(?:\.exe)?\s+/c\s+start|explorer\.exe|openurl|shellexec'
 # Measured 2026-09-26: 11 hand-offs in shipped code, 10 of them Start-Process. The one prose hit
 # (ka-test-install.ps1's own docstring saying never to use -Wait) is skipped with the comment rule
-# below, which is why that file names 2 and not 3.
+# below. The installer probe now also reads shortcut targets and starts the native EXE.
 $shellAllow = @{
     'ka.ps1'                = 2
     'ka-core.ps1'           = 2
@@ -353,7 +353,7 @@ $shellAllow = @{
     'watch.ps1'             = 1
     'KeepAwake.cs'          = 1
     'build.ps1'             = 3 # CLI smoke, desktop smoke (no shell execution), installer compiler
-    'ka-test-install.ps1'   = 2
+    'ka-test-install.ps1'   = 4 # two existing launches, read-only WScript shortcut inspection, native EXE with UseShellExecute=false
 }
 $shellLines = @{}
 $shellTotal = 0

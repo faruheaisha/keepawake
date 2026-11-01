@@ -40,4 +40,29 @@ function Assert-Runtime([bool]$Value, [string]$Message) { if (-not $Value) { thr
     $live = Get-KaProtectedSpan
     Assert-Runtime ($live.known -and $live.spans.Count -eq 1 -and $live.spans[0].from -eq $started) 'an exact owned worker identity establishes a live span'
 }
-Write-Host 'PROBE OK: runtime options and exact process creation identity'
+& {
+    function Read-KaJson { $null }
+    function Get-KaWorker { @() }
+    $path = (Get-KaPath).log
+    $lines = @(
+        '2026-01-02 12:00:00  STARTED pid=201',
+        '2026-01-02 12:10:00  STOPPED pid=201',
+        '2026-11-01 01:15:00-04:00  STARTED pid=202',
+        '2026-11-01 01:15:00-05:00  STOPPED pid=202'
+    )
+    [IO.File]::WriteAllLines($path, $lines, [Text.Encoding]::UTF8)
+    $spans = Get-KaProtectedSpan
+    Assert-Runtime ($spans.spans.Count -eq 2 -and ($spans.spans[0].to - $spans.spans[0].from) -eq 600) 'legacy unambiguous log timestamps remain readable'
+    Assert-Runtime (($spans.spans[1].to - $spans.spans[1].from) -eq 3600) 'the repeated local hour records one real hour of protection'
+    $ambiguous = [datetime]::new(2026, 11, 1, 1, 30, 0)
+    if ([TimeZoneInfo]::Local.IsAmbiguousTime($ambiguous)) {
+        [IO.File]::WriteAllLines($path, ($lines + @('2026-11-01 01:30:00  STARTED pid=203', '2026-11-01 01:40:00  STOPPED pid=203')), [Text.Encoding]::UTF8)
+        $mixed = Get-KaProtectedSpan
+        $during = [DateTimeOffset]::Parse('2026-11-01T01:35:00-04:00').ToUnixTimeSeconds()
+        Assert-Runtime ((Get-KaSpanMatch -Epoch $during -Spans $mixed.spans -CoveredFrom $mixed.coveredFrom -UnknownSpans $mixed.unknownSpans) -eq -1) 'older retained records do not turn the ambiguous interval into false certainty'
+        [IO.File]::WriteAllLines($path, @('2026-11-01 01:30:00  STARTED pid=203', '2026-11-01 01:40:00  STOPPED pid=203'), [Text.Encoding]::UTF8)
+        $old = Get-KaProtectedSpan
+        Assert-Runtime (-not $old.known -and $old.spans.Count -eq 0) 'old repeated-hour timestamps stay unknown instead of inventing an offset'
+    }
+}
+Write-Host 'PROBE OK: runtime options, process creation identity and offset-bearing log evidence'

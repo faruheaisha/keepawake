@@ -19,6 +19,7 @@
 | B12 请求阻塞 | 请求体截止时间；前端轮询合并、超时及恢复 | `probe-http-audit.ps1` |
 | 发布与分发 | tag 必须对应构建提交；Windows 10 最低安装版本；精确资产及哈希清单 | Windows CI、发布工作流 |
 | 桌面通信 | 后台进程使用明确的 Windows 句柄继承列表；界面响应有截止时间 | `probe-watch-process.ps1`、`probe-cli-run.ps1`、`probe-desktop.ps1` |
+| 中文与时区 | 重定向 JSON 使用 UTF-8；日志保存时区偏移并兼容旧格式 | `probe-bat-entry.ps1`、`probe-culture.ps1`、`probe-runtime-identity.ps1` |
 
 ## 功能落地
 

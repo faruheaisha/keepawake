@@ -246,6 +246,7 @@ foreach ($n in $tasksBefore) {
 $rootCountBefore = @(Get-ScheduledTask -TaskPath '\').Count
 $portsBefore = Get-ListeningPorts
 $workerPid = 0
+$installedDesktop = $null
 
 try {
     # ---------------------------------------------------------------- install
@@ -292,13 +293,19 @@ try {
     else { Red ("installed scripts still blocked: {0}" -f ($motw -join ', ')) }
 
     $sm = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\KeepAwake'
-    $wantLnk = @('KeepAwake.lnk', 'KeepAwake - Dashboard.lnk', 'KeepAwake - Tray.lnk', 'KeepAwake - Protect.lnk', 'KeepAwake - Release.lnk', 'Uninstall KeepAwake.lnk') | Sort-Object
+    $wantLnk = @('KeepAwake.lnk', 'KeepAwake - Protect.lnk', 'KeepAwake - Release.lnk', 'Uninstall KeepAwake.lnk') | Sort-Object
     $gotLnk = @(Get-ChildItem -LiteralPath $sm -Filter '*.lnk' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) | Sort-Object
-    if (($gotLnk -join ',') -eq ($wantLnk -join ',')) { Ok 'Start Menu holds exactly the six shortcuts' }
+    if (($gotLnk -join ',') -eq ($wantLnk -join ',')) { Ok 'Start Menu holds exactly the four desktop product shortcuts' }
     else { Red ("Start Menu: got [{0}]" -f ($gotLnk -join ', ')) }
     $desktop = [Environment]::GetFolderPath('Desktop')
     if (Test-Path -LiteralPath (Join-Path $desktop 'KeepAwake.lnk')) { Ok "the desktopicon task is checked by default - shortcut in $desktop" }
     else { Red 'no desktop shortcut although the desktopicon task was not unchecked, so README is wrong about the default' }
+    $shell = New-Object -ComObject WScript.Shell
+    foreach ($link in @((Join-Path $sm 'KeepAwake.lnk'), (Join-Path $desktop 'KeepAwake.lnk'))) {
+        $shortcut = $shell.CreateShortcut($link)
+        if ($shortcut.TargetPath -eq (Join-Path $app 'KeepAwake.exe') -and -not $shortcut.Arguments) { Ok 'the product shortcut opens the native desktop EXE' }
+        else { Red ("shortcut target is not the native desktop: {0}" -f $link) }
+    }
 
     $key = @(Get-ChildItem -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue |
         Where-Object { $_.PSChildName -like '{8B7C1F4E*' })
@@ -326,6 +333,13 @@ try {
     elseif ($st -eq 0 -and $out -match 'Keep-Awake') { Ok "the installed copy answers status (exit 0, $(@(($out -split "`r?`n") | Where-Object { $_.Trim() }).Count) lines, first: $firstLine)" }
     else { Red ("installed ka.ps1 status: exit=$st first line=[$firstLine]") }
 
+    $launch = New-Object Diagnostics.ProcessStartInfo
+    $launch.FileName = Join-Path $app 'KeepAwake.exe'
+    $launch.UseShellExecute = $false
+    $installedDesktop = [Diagnostics.Process]::Start($launch)
+    if ($installedDesktop.WaitForInputIdle(30000) -and -not $installedDesktop.HasExited) { Ok 'the installed native desktop opens against the isolated data root' }
+    else { Red 'the installed desktop did not become ready' }
+
     if ($WithWorker) {
         Write-Output '--- protection up, so the hook has something to release ---'
         $st = Invoke-Ka $app 'start' '' 'the installed ka.ps1 start'
@@ -342,6 +356,8 @@ try {
     $rc = Invoke-Quiet (Join-Path $app 'unins000.exe') ('/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG="' + $uninstLog + '"') 'unins000.exe'
     if ($null -eq $rc) { Red ("unins000.exe: {0} - see {1}" -f $script:TimedOut, $uninstLog) }
     elseif ($rc -eq 0) { Ok 'uninstaller exit 0' } else { Red ("uninstaller exit {0} - see {1}" -f $rc, $uninstLog) }
+    if ($installedDesktop.WaitForExit(30000)) { Ok 'uninstall closes the installed native desktop' }
+    else { Red 'the desktop outlived its uninstall' }
 
     $ulog = @(Get-Content -LiteralPath $uninstLog -ErrorAction SilentlyContinue)
     $hookAt = @()
@@ -390,6 +406,10 @@ try {
 finally {
     # ---------------------------------------------------------------- put the machine back
     Write-Output '--- restore what unguard is allowed to take ---'
+    if ($installedDesktop) {
+        if (-not $installedDesktop.HasExited) { $installedDesktop.Kill() }
+        $installedDesktop.Dispose()
+    }
     Remove-Item Env:KA_DATA -ErrorAction SilentlyContinue
     if ($WithWorker -and $workerPid -and @(Get-Process -Id $workerPid -ErrorAction SilentlyContinue).Count) {
         Stop-Process -Id $workerPid -Force -ErrorAction SilentlyContinue

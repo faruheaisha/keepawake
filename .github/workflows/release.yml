@@ -137,7 +137,7 @@ jobs:
             '',
             '- **`KeepAwake.exe`** - double-click to open the native desktop app. No installation or browser required.',
             '- **`KeepAwake-@VERSION@-portable.zip`** - unzip and double-click `KeepAwake.exe`. Includes the desktop app and optional command-line tools.',
-            '- **`KeepAwake-@VERSION@-setup.exe`** - per-user installer, no admin prompt, native desktop shortcut and optional dashboard / tray entries.',
+            '- **`KeepAwake-@VERSION@-setup.exe`** - per-user installer, no admin prompt, native desktop shortcuts.',
             '- **`KeepAwake-MCP-win-x64.zip`** - optional local MCP companion, including its runtime and third-party notices.',
             '',
             'Check what you downloaded:',

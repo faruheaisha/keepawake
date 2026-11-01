@@ -769,6 +769,8 @@ namespace KeepAwakeDesktop
                 if (notice.Visible) throw new Exception("The default product view contains an unnecessary notification.");
                 var entries = ActivityEvent.Parse("2026-10-03 10:00:00  STARTED pid=123 display=off duration=30 min\n2026-10-03 10:30:00  STOPPED pid=123 reason=expired\n2026-10-03 10:30:00  STOP pid=456 forced=0", false);
                 if (entries.Count != 2 || entries[0].Title != "保护已停止" || entries[1].Description.Contains("pid=")) throw new Exception("Activity is not presented as product events.");
+                var offsetEntries = ActivityEvent.Parse("2026-11-01 01:15:00-04:00  STARTED pid=123 display=off\n2026-11-01 01:15:00-05:00  STOPPED pid=123 reason=expired", false);
+                if (offsetEntries.Count != 2 || offsetEntries[0].Title != "保护已停止" || !offsetEntries[1].Time.EndsWith("-04:00")) throw new Exception("Activity loses events with explicit time offsets.");
                 var sampleWorker = new Dictionary<string, object> { { "keepDisplayOn", true }, { "antiLock", false }, { "antiLockMethod", "key" }, { "antiLockInterval", 240 }, { "batteryFloor", 20 } };
                 var sampleDraft = new Dictionary<string, object> { { "keepDisplayOn", true }, { "antiLock", false }, { "antiLockMethod", "key" }, { "antiLockIntervalSec", 240 }, { "batteryFloorPercent", 20 }, { "minutes", 60 } };
                 var session = new SessionDraft(sampleWorker, sampleDraft);

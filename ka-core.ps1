@@ -669,7 +669,8 @@ function Add-KaLog {
         # InvariantCulture, and a Thai-locale machine writes 2569 through the current culture's
         # Buddhist calendar, which then parses as year 2569 and puts the whole timeline 543
         # years in the future. Writer and reader have to use one calendar.
-        $line = '{0}  {1}' -f (Get-Date).ToString('yyyy-MM-dd HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture), $Message
+        # Preserve the offset too: the fall-back hour occurs twice in local time.
+        $line = '{0}  {1}' -f [DateTimeOffset]::Now.ToString('yyyy-MM-dd HH:mm:sszzz', [Globalization.CultureInfo]::InvariantCulture), $Message
         [IO.File]::AppendAllText($p.log, $line + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding($false)))
         if ($Important) { Write-Host $line }
         $script:KaLogFailed = $false
@@ -3275,14 +3276,29 @@ function Get-KaProtectedSpan {
         if (-not (Test-Path -LiteralPath $f)) { continue }
         try { $lines += @(Get-Content -LiteralPath $f -Encoding UTF8 -ErrorAction Stop) } catch { }
     }
-    $spans = @(); $open = @{}; $lastSeen = @{}; $first = 0
+    $spans = @(); $uncertain = @(); $open = @{}; $lastSeen = @{}; $first = 0
     $culture = [Globalization.CultureInfo]::InvariantCulture
     foreach ($line in $lines) {
-        if ("$line" -notmatch '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(.*)$') { continue }
+        if ("$line" -notmatch '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[+-]\d{2}:\d{2})?)\s+(.*)$') { continue }
         $epoch = 0
         try {
-            $dt = [DateTime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss', $culture)
-            $epoch = [DateTimeOffset]::new($dt).ToUnixTimeSeconds()
+            if ($Matches[1].Length -gt 19) {
+                $epoch = [DateTimeOffset]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:sszzz', $culture).ToUnixTimeSeconds()
+            } else {
+                $dt = [DateTime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss', $culture)
+                # Old logs cannot identify which occurrence of a repeated hour they meant.
+                if ([TimeZoneInfo]::Local.IsAmbiguousTime($dt)) {
+                    $offsets = [TimeZoneInfo]::Local.GetAmbiguousTimeOffsets($dt)
+                    $candidates = @($offsets | ForEach-Object { [DateTimeOffset]::new($dt, $_).ToUnixTimeSeconds() } | Sort-Object)
+                    $shift = [long][Math]::Abs(($offsets[0] - $offsets[1]).TotalSeconds)
+                    # Conservatively exclude the transition around a legacy timestamp, even
+                    # when other retained records establish coverage before that transition.
+                    $uncertain += [pscustomobject]@{ from = ([long]$candidates[0] - $shift); to = ([long]$candidates[-1] + $shift) }
+                    continue
+                }
+                if ([TimeZoneInfo]::Local.IsInvalidTime($dt)) { continue }
+                $epoch = [DateTimeOffset]::new($dt).ToUnixTimeSeconds()
+            }
         } catch { continue }
         if ($first -eq 0 -or $epoch -lt $first) { $first = $epoch }
         $body = $Matches[2]
@@ -3329,6 +3345,7 @@ function Get-KaProtectedSpan {
         spans       = @($merged | ForEach-Object { [PSCustomObject]@{ from = [long]$_[0]; to = [long]$_[1] } })
         coveredFrom = [long]$first
         known       = ($first -gt 0)
+        unknownSpans = @($uncertain)
     }
 }
 
@@ -3338,8 +3355,11 @@ function Get-KaSpanMatch {
         retained log. The third answer has to stay separate: "we cannot tell" reported as
         "nothing was asking" is how a tool starts believing its own alibi.
     #>
-    param([long]$Epoch, $Spans, [long]$CoveredFrom)
+    param([long]$Epoch, $Spans, [long]$CoveredFrom, $UnknownSpans = @())
     if ($Epoch -lt $CoveredFrom) { return -1 }
+    foreach ($span in @($UnknownSpans)) {
+        if ($Epoch -ge [long]$span.from -and $Epoch -le [long]$span.to) { return -1 }
+    }
     foreach ($sp in @($Spans)) {
         if ($Epoch -ge [long]$sp.from -and $Epoch -le [long]$sp.to) { return 1 }
     }
@@ -3512,10 +3532,11 @@ function Get-KaSleepEvidence {
             s3Enters = 0; s3Exits = 0; s3Bypasses = 0; s3Unprotected = 0; s3SpanUnknown = 0
             instrument = ''; canSee = $false; capsS3 = $false; capsS0Idle = $false
             capsKnown = $false; hybridSleep = $false; osBuild = 0; sleepClasses = @() }
-    $spans = @()
+    $spans = @(); $uncertain = @()
     try {
         $spanInfo = Get-KaProtectedSpan
         $spans = @($spanInfo.spans)
+        $uncertain = @($spanInfo.unknownSpans)
         $r.spans = $spans
         $r.spansCoveredFrom = [long]$spanInfo.coveredFrom
         $r.spansKnown = [bool]$spanInfo.known
@@ -3576,7 +3597,7 @@ function Get-KaSleepEvidence {
             if ($data['Reason'] -match '^\d+$') { $evtReason = Get-KaStandbyReasonToken -Code ([int]$Matches[0]) }
             # Was this instant inside a run where the request was actually held? -1 means
             # the log does not reach back this far, which is neither blame nor innocence.
-            $prot = $(if ($r.spansKnown) { Get-KaSpanMatch -Epoch $epoch -Spans $spans -CoveredFrom ([long]$r.spansCoveredFrom) } else { -1 })
+            $prot = $(if ($r.spansKnown) { Get-KaSpanMatch -Epoch $epoch -Spans $spans -CoveredFrom ([long]$r.spansCoveredFrom) -UnknownSpans $uncertain } else { -1 })
             $from = $null; $to = $null
             if ($kind -eq 'session') {
                 if ($data['PreviousSessionType'] -match '^\d+$') { $from = [int]$Matches[0] }

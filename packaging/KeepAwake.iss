@@ -92,6 +92,11 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; One line on purpose - the manifest is the only source of truth about what ships.
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[InstallDelete]
+; Remove only obsolete browser/tray shortcuts left by earlier versions.
+Type: files; Name: "{group}\{#MyAppName} - Dashboard.lnk"
+Type: files; Name: "{group}\{#MyAppName} - Tray.lnk"
+
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\KeepAwake.exe"; WorkingDir: "{app}"; Comment: "Open the native desktop application"
 ; Parameters is quoted as one value with doubled inner quotes - the documented spelling. An

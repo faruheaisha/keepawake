@@ -40,7 +40,7 @@ if (-not $Child) {
         Write-Host '  FAIL ka-lid.ps1 no longer writes an offset-bearing capturedAt'; $bad++ }
     if ($coreSrc -notmatch 'capturedAt\)[^,]*,\s*\[Globalization\.CultureInfo\]::InvariantCulture') {
         Write-Host '  FAIL ka-core.ps1 parses capturedAt with the ambient culture again'; $bad++ }
-    if ($coreSrc -notmatch "ToString\('yyyy-MM-dd HH:mm:ss', \[Globalization\.CultureInfo\]::InvariantCulture\)") {
+    if ($coreSrc -notmatch "ToString\('yyyy-MM-dd HH:mm:sszzz', \[Globalization\.CultureInfo\]::InvariantCulture\)") {
         Write-Host '  FAIL Add-KaLog stamps with the ambient culture again (Get-KaEvidence reads it invariantly)'; $bad++ }
     foreach ($c in $cultures) {
         $m = $rows[$c]
@@ -128,10 +128,10 @@ Add-KaLog 'CULTURE-PROBE line'
 # timeline silently stops meaning anything.
 $stampDelta = -1
 $last = @(Get-Content -LiteralPath $paths.log -Encoding UTF8 | Where-Object { $_ -like '*CULTURE-PROBE line*' })[-1]
-if ($last -match '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s') {
+if ($last -match '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})\s') {
     try {
-        $dt = [DateTime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture)
-        $stampDelta = [Math]::Abs([DateTimeOffset]::new($dt).ToUnixTimeSeconds() - [DateTimeOffset]::Now.ToUnixTimeSeconds())
+        $dt = [DateTimeOffset]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:sszzz', [Globalization.CultureInfo]::InvariantCulture)
+        $stampDelta = [Math]::Abs($dt.ToUnixTimeSeconds() - [DateTimeOffset]::Now.ToUnixTimeSeconds())
     } catch { $stampDelta = -2 }
 } else { $stampDelta = -3 }
 Write-Output ('KA_LOG_STAMP_DELTA=' + $stampDelta)
