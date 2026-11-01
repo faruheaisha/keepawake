@@ -10,9 +10,20 @@ function Call-Bridge($Request) {
     $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
     $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
     $psi.EnvironmentVariables['KA_DATA'] = $data
-    $p = [Diagnostics.Process]::Start($psi)
+    # Framework has no ProcessStartInfo.StandardInputEncoding property. Its input
+    # writer can flush its preamble as soon as the process starts, before Write.
+    $consoleEncoding = [Console]::InputEncoding
     try {
-        $p.StandardInput.Write(($Request | ConvertTo-Json -Compress -Depth 8)); $p.StandardInput.Close()
+        [Console]::InputEncoding = New-Object Text.UTF8Encoding($false)
+        $p = [Diagnostics.Process]::Start($psi)
+    } finally { [Console]::InputEncoding = $consoleEncoding }
+    try {
+        # Framework Process.StandardInput inherits the console encoding. On UTF-8
+        # runners its StreamWriter emits a BOM, unlike the real MCP adapter's explicit
+        # UTF8Encoding(false). Write the actual transport bytes, independent of locale.
+        $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($Request | ConvertTo-Json -Compress -Depth 8))
+        $inputStream = $p.StandardInput.BaseStream
+        $inputStream.Write($bytes, 0, $bytes.Length); $inputStream.Close()
         $outTask = $p.StandardOutput.ReadToEndAsync(); $errTask = $p.StandardError.ReadToEndAsync()
         if (-not $p.WaitForExit(40000)) { $p.Kill(); throw 'bridge timed out' }
         $output = $outTask.GetAwaiter().GetResult(); $errors = $errTask.GetAwaiter().GetResult()
@@ -21,21 +32,18 @@ function Call-Bridge($Request) {
         return @{ code = $p.ExitCode; body = ($lines[0] | ConvertFrom-Json); out = $output; err = $errors }
     } finally { $p.Dispose() }
 }
-$r = Call-Bridge @{ op = 'status'; owner = 'test-client' }
-if ($r.code -ne 0 -or -not $r.body.ok -or $r.body.running -or $r.out.Contains($data)) {
+$originalInputEncoding = [Console]::InputEncoding
+try {
+    # Reproduce the cloud runner's UTF-8 console on every local run as well.
+    [Console]::InputEncoding = New-Object Text.UTF8Encoding($true)
+    $r = Call-Bridge @{ op = 'status'; owner = 'test-client' }
+} finally { [Console]::InputEncoding = $originalInputEncoding }
+$encodedPath = ($data | ConvertTo-Json -Compress).Trim('"')
+if ($r.code -ne 0 -or -not $r.body.ok -or $r.body.running -or $r.out.Contains($encodedPath)) {
     # This request has no capability or user content. Report the individual verdicts;
     # a generic failure hid whether the cloud runner failed to read state or leaked it.
-    Write-Host ('Idle bridge: exit={0}, ok={1}, running={2}, pathInResponse={3}' -f $r.code, $r.body.ok, $r.body.running, $r.out.Contains($data))
+    Write-Host ('Idle bridge: exit={0}, ok={1}, running={2}, pathInResponse={3}' -f $r.code, $r.body.ok, $r.body.running, $r.out.Contains($encodedPath))
     Write-Host ('Idle response: ' + $r.out.Trim())
-    if (-not $r.body.ok) {
-        # Keep exceptions inside this test process, never in the public bridge response.
-        $env:KA_DATA = $data
-        . (Join-Path $root 'ka-core.ps1')
-        try { $null = Get-KaFullState -Quiet } catch {
-            Write-Host ('State read failed: ' + $_.Exception.Message)
-            Write-Host $_.ScriptStackTrace
-        }
-    }
     throw 'status did not return a redacted idle response'
 }
 $secret = 'a' * 64
