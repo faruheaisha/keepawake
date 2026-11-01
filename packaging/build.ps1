@@ -63,12 +63,17 @@ function Get-KaBuildVersion {
 function Get-KaManifest {
     . (Join-Path $root 'tests/ka-release-files.ps1')
     # The manifest is a filesystem spelling (dashboard\app.js); a zip entry is always '/'.
-    @(Get-KaReleaseFile | ForEach-Object { $_.Replace('\', '/') })
+    @(Get-KaReleaseFile | ForEach-Object { $_.Replace('\', '/') }) + @('KeepAwake.exe')
+}
+
+function Get-KaBuildSource([string]$Name) {
+    if ($Name -eq 'KeepAwake.exe') { return (Join-Path $OutDir 'KeepAwake.exe') }
+    return (Join-Path $root ($Name -replace '/', '\'))
 }
 
 function Copy-ManifestTo([string]$Dest, [string[]]$Names) {
     foreach ($n in $Names) {
-        $src = Join-Path $root ($n -replace '/', '\')
+        $src = Get-KaBuildSource $n
         if (-not (Test-Path -LiteralPath $src)) { throw "the manifest names $n but it is not in the tree" }
         $dst = Join-Path $Dest ($n -replace '/', '\')
         $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst)
@@ -84,7 +89,7 @@ function New-KaZip([string]$ZipPath, [string[]]$Names) {
         $arch = New-Object IO.Compression.ZipArchive($fs, [IO.Compression.ZipArchiveMode]::Create)
         try {
             foreach ($n in $Names) {
-                $src = Join-Path $root ($n -replace '/', '\')
+                $src = Get-KaBuildSource $n
                 $bytes = [IO.File]::ReadAllBytes($src)
                 $e = $arch.CreateEntry($n, [IO.Compression.CompressionLevel]::Optimal)
                 $es = $e.Open()
@@ -98,7 +103,7 @@ function Test-KaZip([string]$ZipPath, [string[]]$Names) {
     # Read it back with the same API a user's Explorer uses. What is measured here is the
     # artifact, not the intent: extra entries and short entries both fail the build.
     $want = @{}
-    foreach ($n in $Names) { $want[$n] = (Get-Item -LiteralPath (Join-Path $root ($n -replace '/', '\'))).Length }
+    foreach ($n in $Names) { $want[$n] = (Get-Item -LiteralPath (Get-KaBuildSource $n)).Length }
     $problems = @()
     $z = [IO.Compression.ZipFile]::OpenRead($ZipPath)
     try {
@@ -121,7 +126,7 @@ function Test-KaZip([string]$ZipPath, [string[]]$Names) {
 function Set-KaSums([string]$Dir) {
     $sum = Join-Path $Dir 'SHA256SUMS'
     $lines = @()
-    foreach ($f in @(Get-ChildItem -LiteralPath $Dir -File | Where-Object { $_.Name -ne 'SHA256SUMS' } | Sort-Object Name)) {
+    foreach ($f in @(Get-ChildItem -LiteralPath $Dir -File | Where-Object { $_.Name -eq 'KeepAwake.exe' -or $_.Name -like 'KeepAwake-*-portable.zip' -or $_.Name -like 'KeepAwake-*-setup.exe' -or $_.Name -like 'KeepAwake-MCP-*.zip' } | Sort-Object Name)) {
         $h = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
         $lines += ('{0}  {1}' -f $h, $f.Name)      # two spaces: the sha256sum text format
     }
@@ -195,6 +200,26 @@ function Invoke-KaSmoke([string]$ZipPath, [string]$Version) {
         }
         if ($obj.dataError) { $problems += "the artifact reports a data-root problem: $($obj.dataError)" }
 
+        # Exercise the binary that users double-click, with only scratch data and no protection.
+        $native = Join-Path $app 'KeepAwake.exe'
+        $preview = Join-Path $work 'desktop.png'
+        $prevData = $env:KA_DATA
+        try {
+            $env:KA_DATA = $data
+            $info = New-Object Diagnostics.ProcessStartInfo
+            $info.FileName = $native
+            $info.Arguments = '--smoke-test "' + $preview + '"'
+            $info.UseShellExecute = $false
+            $proc = [Diagnostics.Process]::Start($info)
+            try {
+                if (-not $proc.WaitForExit(60000)) { $proc.Kill(); $problems += 'the desktop EXE timed out' }
+                elseif ($proc.ExitCode -ne 0) { $problems += "the desktop EXE self-test exited $($proc.ExitCode)" }
+                elseif (-not (Test-Path -LiteralPath $preview)) { $problems += 'the desktop EXE produced no window preview' }
+            } finally { $proc.Dispose() }
+        } finally {
+            if ($null -eq $prevData) { Remove-Item Env:KA_DATA -ErrorAction SilentlyContinue } else { $env:KA_DATA = $prevData }
+        }
+
         $after = @(Get-ChildItem -LiteralPath $app -Recurse -File | ForEach-Object { $_.FullName.Substring($app.Length + 1) })
         $wrote = @($after | Where-Object { $before -notcontains $_ })
         if ($wrote.Count) { $problems += ('the run wrote into its own program directory: {0}' -f ($wrote -join ', ')) }
@@ -250,6 +275,8 @@ Write-Host ("packaging KeepAwake v{0}  ({1} files from tests/ka-release-files.ps
 # a fresh SHA256SUMS over artifacts this run never rebuilt.
 if ($Sum -and -not ($Stage -or $Installer -or $Smoke)) { Set-KaSums $OutDir; exit 0 }
 
+& (Join-Path $root 'desktop\build.ps1') -OutputPath (Join-Path $OutDir 'KeepAwake.exe')
+
 if (-not (Test-Path -LiteralPath (Join-Path $root 'tests/ka-release-files.ps1'))) { throw 'tests/ka-release-files.ps1 is missing - there is no manifest to build from' }
 if (-not $names.Count) { throw 'the manifest came back empty' }
 
@@ -270,7 +297,7 @@ if ($Smoke) {
         foreach ($p in $smokes) { Write-Host "  FAIL $p" -ForegroundColor Red }
         throw "the portable zip did not run ($($smokes.Count) problem(s))"
     }
-    Write-Host '  ok   smoke: extracted, ran "status -Json" under in-box PowerShell, answered with this version, and wrote nothing into itself'
+    Write-Host '  ok   smoke: extracted, ran "status -Json", opened and verified the desktop EXE, and wrote nothing into itself'
 }
 
 # -Installer implies staging: Inno has no file list of its own, so it needs the directory the

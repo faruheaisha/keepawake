@@ -12,16 +12,31 @@ $red  = Join-Path $root '_tmp/privacy-red'
 $gate = Join-Path $root 'tests/ka-privacy.ps1'
 
 function Stage-Copy {
+    if (-not ([IO.Path]::GetFullPath($red)).StartsWith(([IO.Path]::GetFullPath($root) + '\_tmp\'), [StringComparison]::OrdinalIgnoreCase)) { throw 'Privacy staging must stay in the project scratch directory.' }
     if (Test-Path -LiteralPath $red) { Remove-Item -LiteralPath $red -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $red | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $red 'dashboard') | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $red 'packaging') | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $red 'desktop') | Out-Null
     # -Path, not -LiteralPath: -LiteralPath does not expand the wildcard and would silently
     # stage nothing.
     Copy-Item -Path (Join-Path $root '*.ps1') -Destination $red
     Copy-Item -Path (Join-Path $root '*.bat') -Destination $red
-    Copy-Item -Path (Join-Path $root 'dashboard\*') -Destination (Join-Path $red 'dashboard')
+    Copy-Item -Path (Join-Path $root 'dashboard\*') -Destination (Join-Path $red 'dashboard') -Recurse
     Copy-Item -Path (Join-Path $root 'packaging\*') -Destination (Join-Path $red 'packaging')
+    $integration = Join-Path $root 'integrations\mcp'
+    if (Test-Path -LiteralPath $integration) {
+        $dest = Join-Path $red 'integrations\mcp'
+        New-Item -ItemType Directory -Force -Path $dest | Out-Null
+        Copy-Item -Path (Join-Path $integration '*') -Destination $dest -Recurse -Force
+    }
+    $cliIntegration = Join-Path $root 'integrations\cli'
+    if (Test-Path -LiteralPath $cliIntegration) {
+        $dest = Join-Path $red 'integrations\cli'
+        New-Item -ItemType Directory -Force -Path $dest | Out-Null
+        Copy-Item -Path (Join-Path $cliIntegration '*') -Destination $dest -Recurse -Force
+    }
+    Copy-Item -Path (Join-Path $root 'desktop\*') -Destination (Join-Path $red 'desktop') -Recurse
     if (-not (Test-Path -LiteralPath (Join-Path $red 'ka-core.ps1'))) {
         throw "staging failed: nothing was copied into $red"
     }
@@ -119,8 +134,8 @@ Stage-Copy
 $clean = Run-Gate
 if ($clean.code -ne 0) { $fail += "the un-mutated copy failed the gate (exit $($clean.code)) - a rule is over-broad, not under-broad" }
 # The xmlns exemption must stay narrow, and its count is measured, not asserted from the docs:
-# favicon.svg plus one CSS data: URI.
-if ($clean.text -notmatch '2 xmlns namespace') { $fail += 'xmlns exemption count drifted from the measured 2' }
+# Dashboard SVG/CSS, native manifest and the 16 desktop SVG assets.
+if ($clean.text -notmatch '20 xmlns namespace') { $fail += 'xmlns exemption count drifted from the measured 20 (dashboard + native manifest + 17 desktop SVGs)' }
 Write-Output ("clean copy: exit={0} {1}" -f $clean.code, $(if ($clean.code -eq 0) { 'passed, as it must' } else { 'FAILED' }))
 
 foreach ($d in $defects) {

@@ -81,13 +81,31 @@ function Get-KaLidActionText {
 }
 
 function Get-KaLid {
-    $v = Get-PowerSetting $KaLidSub $KaLidAction
+    param([string]$Scheme = 'SCHEME_CURRENT')
+    $v = Get-PowerSetting $KaLidSub $KaLidAction -Scheme $Scheme
     @{
         found  = [bool]$v.Found
         ac     = $v.Ac
         dc     = $v.Dc
         acText = $(if (-not $v.Found -or $null -eq $v.Ac) { Get-KaText 'lid.hidden' } else { Get-KaLidActionText $v.Ac })
         dcText = $(if (-not $v.Found -or $null -eq $v.Dc) { '?' } else { Get-KaLidActionText $v.Dc })
+    }
+}
+
+function Set-KaLidValues {
+    param([string]$Scheme, [int]$Ac, [int]$Dc)
+    # Bind every write to the verified plan, even if another process switches plans.
+    foreach ($step in @(@('/setacvalueindex', $Scheme, $KaLidSub, $KaLidAction, "$Ac"),
+                         @('/setdcvalueindex', $Scheme, $KaLidSub, $KaLidAction, "$Dc"))) {
+        $LASTEXITCODE = 0
+        & powercfg @step 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "powercfg $($step[0]) exited $LASTEXITCODE" }
+    }
+    # Do not change the plan the user selected during this operation.
+    if ((Get-KaActiveScheme).guid -eq $Scheme) {
+        $LASTEXITCODE = 0
+        & powercfg /setactive $Scheme 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "powercfg /setactive exited $LASTEXITCODE" }
     }
 }
 
@@ -167,6 +185,14 @@ $r = @{ Action = $Action; Ok = $false; Verified = $false; Reason = ''; Before = 
 $r.Before = Get-KaLid
 $r.LidPresent = $script:KaLidPresent
 
+$policyLock = $null; $policyOwned = $false
+try {
+    if ($Action -ne 'status' -and (Test-KaAdmin)) {
+        # The backup and power plan are machine-wide, including across elevated sessions.
+        $policyLock = New-Object Threading.Mutex($false, 'Global\KeepAwake-LidPolicy')
+        try { $policyOwned = $policyLock.WaitOne(30000) } catch [Threading.AbandonedMutexException] { $policyOwned = $true }
+        if (-not $policyOwned) { throw 'The lid policy is being changed by another KeepAwake process.' }
+    }
 switch ($Action) {
 
     'status' {
@@ -203,25 +229,60 @@ switch ($Action) {
         # be impossible on exactly the machines that need this the most.
         try { & powercfg /attributes $KaLidSub $KaLidAction -ATTRIB_HIDE 2>$null | Out-Null } catch { }
 
-        if (-not (Test-Path -LiteralPath $backupPath)) {
+        if (Test-Path -LiteralPath $backupPath) {
+            $existingBackup = Read-KaJson $backupPath
+            if (-not $existingBackup -or -not $existingBackup.schemeGuid -or -not $scheme.guid -or
+                $existingBackup.schemeGuid -ne $scheme.guid -or $existingBackup.found -isnot [bool] -or -not $existingBackup.found -or
+                "$($existingBackup.ac)" -notmatch '^[0-3]$' -or "$($existingBackup.dc)" -notmatch '^[0-3]$') {
+                $r.Reason = Get-KaText 'lid.backup.conflict'
+                break
+            }
+            $verifiedBackup = $existingBackup
+        } else {
             $lid = Get-KaLid
-            [void](Write-KaJson $backupPath @{
+            if (-not $lid.found -or "$($lid.ac)" -notmatch '^[0-3]$' -or "$($lid.dc)" -notmatch '^[0-3]$' -or -not $scheme.guid) {
+                $r.Reason = Get-KaText 'lid.backup.unreadable'
+                break
+            }
+            $backedUp = Write-KaJson $backupPath @{
                 ac = $lid.ac; dc = $lid.dc; found = [bool]$lid.found
                 schemeGuid = $scheme.guid; schemeName = $scheme.name
                 capturedAt = (Get-Date -Format 'o')   # 's' has no UTC offset; the reader would guess
-            } -Depth 3)
+            } -Depth 3
+            $checkBackup = Read-KaJson $backupPath
+            if (-not $backedUp -or -not $checkBackup -or $checkBackup.schemeGuid -ne $scheme.guid -or
+                $checkBackup.found -isnot [bool] -or -not $checkBackup.found -or
+                "$($checkBackup.ac)" -notmatch '^[0-3]$' -or "$($checkBackup.dc)" -notmatch '^[0-3]$' -or
+                [int]$checkBackup.ac -ne [int]$lid.ac -or [int]$checkBackup.dc -ne [int]$lid.dc) {
+                $r.Reason = Get-KaText 'lid.backup.writefail'
+                break
+            }
+            $verifiedBackup = $checkBackup
         }
 
         try {
-            & powercfg /setacvalueindex SCHEME_CURRENT $KaLidSub $KaLidAction 0 2>$null | Out-Null
-            & powercfg /setdcvalueindex SCHEME_CURRENT $KaLidSub $KaLidAction 0 2>$null | Out-Null
-            & powercfg /setactive SCHEME_CURRENT 2>$null | Out-Null
+            Set-KaLidValues -Scheme $scheme.guid -Ac 0 -Dc 0
+            $r.After = Get-KaLid -Scheme $scheme.guid
+            if (-not $r.After.found -or $null -eq $r.After.ac -or $null -eq $r.After.dc -or
+                [int]$r.After.ac -ne 0 -or [int]$r.After.dc -ne 0) { throw 'lid setting read-back did not match the requested values' }
         } catch {
-            $r.Reason = Get-KaText 'lid.apply.writefail' @{ msg = $_.Exception.Message }
+            $failure = $_.Exception.Message
+            $r.RollbackAttempted = $true; $r.RollbackVerified = $false
+            $rollbackWrote = $false
+            try {
+                Set-KaLidValues -Scheme $scheme.guid -Ac ([int]$verifiedBackup.ac) -Dc ([int]$verifiedBackup.dc)
+                $rollbackWrote = $true
+            } catch { }
+            try {
+                $r.After = Get-KaLid -Scheme $scheme.guid
+                $r.RollbackVerified = [bool]($rollbackWrote -and $r.After.found -and $null -ne $r.After.ac -and $null -ne $r.After.dc -and
+                    [int]$r.After.ac -eq [int]$verifiedBackup.ac -and [int]$r.After.dc -eq [int]$verifiedBackup.dc)
+            } catch { }
+            $r.Reason = Get-KaText $(if ($r.RollbackVerified) { 'lid.apply.rollbackok' } else { 'lid.apply.rollbackfail' }) @{ msg = $failure }
+            Add-KaLog "LID apply pid=$PID verified=False rollback=$($r.RollbackVerified)"
             break
         }
 
-        $r.After = Get-KaLid
         $r.Ok = $true
         $r.Verified = [bool]($r.After.found -and [int]$r.After.ac -eq 0 -and [int]$r.After.dc -eq 0)
         $r.Reason = if ($r.Verified) {
@@ -247,7 +308,13 @@ switch ($Action) {
             break
         }
         $b = Read-KaJson $backupPath
+        if (-not $b -or $b.found -isnot [bool] -or -not $b.found -or -not $b.schemeGuid -or $null -eq $b.ac -or $null -eq $b.dc -or
+            "$($b.ac)" -notmatch '^[0-3]$' -or "$($b.dc)" -notmatch '^[0-3]$') {
+            $r.Reason = Get-KaText 'lid.backup.invalid'
+            break
+        }
         $scheme = Get-KaActiveScheme
+        if (-not $scheme.guid) { $r.Reason = Get-KaText 'lid.backup.unreadable'; break }
         if ($b.schemeGuid -and $scheme.guid -and ($b.schemeGuid -ne $scheme.guid)) {
             # Writing now would change a plan that was never modified and leave the
             # original one silently broken. Say so and stop.
@@ -257,18 +324,16 @@ switch ($Action) {
             break
         }
         try {
-            if ($null -ne $b.ac) { & powercfg /setacvalueindex SCHEME_CURRENT $KaLidSub $KaLidAction $b.ac 2>$null | Out-Null }
-            if ($null -ne $b.dc) { & powercfg /setdcvalueindex SCHEME_CURRENT $KaLidSub $KaLidAction $b.dc 2>$null | Out-Null }
-            & powercfg /setactive SCHEME_CURRENT 2>$null | Out-Null
+            Set-KaLidValues -Scheme $b.schemeGuid -Ac ([int]$b.ac) -Dc ([int]$b.dc)
         } catch {
             $r.Reason = Get-KaText 'lid.apply.writefail' @{ msg = $_.Exception.Message }
             break
         }
-        $r.After = Get-KaLid
-        $r.Ok = $true
-        $same = (($null -eq $b.ac) -or ([int]$r.After.ac -eq [int]$b.ac)) -and `
-                (($null -eq $b.dc) -or ($null -eq $r.After.dc) -or ([int]$r.After.dc -eq [int]$b.dc))
+        $r.After = Get-KaLid -Scheme $b.schemeGuid
+        $same = $r.After.found -and $null -ne $r.After.ac -and $null -ne $r.After.dc -and `
+                ([int]$r.After.ac -eq [int]$b.ac) -and ([int]$r.After.dc -eq [int]$b.dc)
         $r.Verified = [bool]$same
+        $r.Ok = [bool]$same
         $r.Reason = $(if ($same) {
             try { Remove-Item -LiteralPath $backupPath -Force -ErrorAction Stop; Get-KaText 'lid.restore.ok' }
             catch { Get-KaText 'lid.restore.okkeep' @{ msg = $_.Exception.Message } }
@@ -280,6 +345,11 @@ switch ($Action) {
     }
 }
 
+} catch {
+    $r.Ok = $false; $r.Reason = Get-KaText 'lid.apply.writefail' @{ msg = $_.Exception.Message }
+} finally {
+    if ($policyLock) { if ($policyOwned) { $policyLock.ReleaseMutex() }; $policyLock.Dispose() }
+}
 Show-KaLidResult -R $r
 if ($Pause) { try { [void](Read-Host (Get-KaText 'lid.pause')) } catch { } }
 if (-not $r.Ok) { exit 1 }

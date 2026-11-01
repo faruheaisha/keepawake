@@ -16,6 +16,12 @@
 
 ## 模块边界（谁做什么、尤其**不许**做什么）
 
+原生桌面入口 `desktop/KeepAwake.cs` 编译为 AnyCPU 的 .NET Framework WinForms EXE，采用浅色 Material 风格。它内嵌根目录引擎脚本，按内容哈希释放到用户数据根的 `app/`，通过隐藏的系统 PowerShell 子进程调用 `ka-desktop.ps1`；后台保护仍由 `ka-core.ps1` 与独立 worker 管理。界面关闭不撤销保护；单实例由用户 SID + 数据目录决定，重复启动向现有窗口发送唤起消息。`desktop.json` 由桥接脚本经核心的原子 JSON 写入函数保存。GUI 状态轮询和用户操作串行进行，输入请求通过 Base64 JSON 传递。默认值保存与当前会话应用分开，重新应用会重新计时。
+
+桌面版的 Google Play 风格、SVG 尺寸、首页顺序和参考产品见 [DESKTOP-UX.md](DESKTOP-UX.md)，品牌图生成提示词见 [ICON-PROMPT.md](ICON-PROMPT.md)。
+
+桌面代码按职责拆分：`KeepAwake.cs` 管理启动、桥接、生命周期与状态；`DesktopPages.cs` 管理页面布局；`DesktopFeedback.cs` 管理临时通知与错误；`SessionDraft.cs` 比较草稿与已确认会话；`ActivityView.cs` 将日志转成展示事件；`Controls.cs` / `Visuals.cs` 提供可复用控件、本地 SVG 与图片纹理；`Atmosphere.cs` 管理背景渐变、状态插画与动效生命周期。构建器编译 `desktop/` 中所有 C# 源文件。圆角按钮和开关在绘制形状前必须绘制父级背景，不能依赖原生按钮主题为自绘缓冲区填色；复合输入控件仅缩放外层，再按实际尺寸排布子控件，避免 DPI 下重复缩放。
+
 | 文件 | 职责 | 不许做的事 |
 | --- | --- | --- |
 | `ka.bat` / `on.bat` / `off.bat` / `panel.bat` / `tray.bat` | 双击入口，纯转调 `ka.ps1` | 不含任何业务逻辑（内容纯 ASCII，只做 cmd→PowerShell 的转接） |

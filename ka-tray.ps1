@@ -92,6 +92,7 @@ $MiHeader     = New-MenuItem (Get-KaText 'tray.mi.headerLoading')
 $MiHeader.Enabled = $false
 $MiStart      = New-MenuItem (Get-KaText 'tray.mi.start')
 $MiStop       = New-MenuItem (Get-KaText 'tray.mi.stop')
+$MiPause      = New-MenuItem (Get-KaText 'tray.mi.pause')
 $MiDuration   = New-MenuItem (Get-KaText 'tray.mi.duration')
 $MiDisplay    = New-MenuItem (Get-KaText 'tray.mi.display')
 $MiAntiLock   = New-MenuItem (Get-KaText 'tray.mi.antilock')
@@ -105,7 +106,7 @@ $MiStopServer = New-MenuItem (Get-KaText 'tray.mi.stopServer')
 $MiQuit       = New-MenuItem (Get-KaText 'tray.mi.quit')
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
-foreach ($i in @($MiHeader, (New-Sep), $MiStart, $MiDuration, $MiStop, (New-Sep),
+foreach ($i in @($MiHeader, (New-Sep), $MiStart, $MiDuration, $MiStop, $MiPause, (New-Sep),
                  $MiDisplay, $MiAntiLock, $MiMethod, $MiInterval, (New-Sep),
                  $MiOpen, $MiGuard, $MiStopServer, (New-Sep), $MiQuit)) {
     $menu.Items.Add($i) | Out-Null
@@ -203,6 +204,7 @@ function Update-TrayLabels {
     #>
     $MiStart.Text = Get-KaText 'tray.mi.start'
     $MiStop.Text = Get-KaText 'tray.mi.stop'
+    $MiPause.Text = Get-KaText 'tray.mi.pause'
     $MiDuration.Text = Get-KaText 'tray.mi.duration'
     $MiDisplay.Text = Get-KaText 'tray.mi.display'
     $MiAntiLock.Text = Get-KaText 'tray.mi.antilock'
@@ -231,6 +233,22 @@ function Format-Remaining {
     return (Get-KaText 'tray.rem.m' @{ m = $m })
 }
 
+function Get-KaTrayNotice {
+    param($State, $Intent, [bool]$Unrecorded, [bool]$Paused)
+    if ($Paused) { return 'paused' }
+    if ($Unrecorded) { return 'unrecorded' }
+    if (-not $State) {
+        if ("$($Intent.desired)" -eq 'awake') { return 'worker-missing' }
+        return 'off'
+    }
+    if ($State.stale) { return 'stale' }
+    if ($State.error) { return 'worker-error' }
+    if ("$($State.note)" -eq 'lock-screen') { return 'locked' }
+    if ("$($State.note)" -eq 'il-mismatch') { return 'input-blocked' }
+    if ($State.displayDowngrade) { return 'battery-floor' }
+    return 'healthy'
+}
+
 function Start-Protect {
     param([double]$Minutes = 0)
     try {
@@ -248,6 +266,7 @@ function Start-Protect {
 function Stop-Protect {
     try {
         $r = Stop-KaProtection -Reason 'tray'
+        if ([int]$r.Remaining -gt 0 -or $r.intentWritten -eq $false -or $r.leaseCancellationFailed) { throw (Get-KaText 'tray.bal.stopFail') }
         $extra = if ([int]$r.Forced -gt 0) { Get-KaText 'tray.bal.forcedExtra' @{ n = $r.Forced } } else { '' }
         Show-Balloon (Get-KaText 'tray.bal.stopped') (Get-KaText 'tray.bal.stoppedBody' @{ n = $r.Stopped; extra = $extra }) 'ok'
     } catch { Show-Balloon (Get-KaText 'tray.bal.stopFail') $_.Exception.Message 'error' }
@@ -278,9 +297,8 @@ function Apply-Change {
 
 function Open-Dashboard {
     try {
-        $r = Start-KaServer
-        if (-not $r.Ok) { Show-Balloon (Get-KaText 'tray.bal.openFail') "$($r.Reason)" 'error'; return }
-        Start-Process $r.Url
+        Start-Process powershell.exe -ArgumentList @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+            '-File', ('"{0}"' -f (Join-Path $PSScriptRoot 'ka-desktop.ps1')), 'launch') -WindowStyle Hidden
     } catch { Show-Balloon (Get-KaText 'tray.bal.openFail') $_.Exception.Message 'error' }
 }
 
@@ -317,10 +335,33 @@ function Refresh-State {
         if ($want -ne $script:TrayLang) { $script:TrayLang = $want; Update-TrayLabels }
         $intent = Get-KaIntent
         $running = [bool]$st
+        $paused = $false
+        if ($script:KaLeaseAvailable -and (Test-Path -LiteralPath (Get-KaLeaseLedgerPath))) {
+            $ledger = Get-KaLeaseLedger
+            $paused = [bool]($ledger.pause -and [long]$ledger.pause.untilUptimeMs -gt (Get-KaLeaseUptimeMs) -and
+                [math]::Abs([long]$ledger.pause.bootEpoch - (Get-KaLeaseBootEpoch)) -le 5)
+        }
         # state.json is exactly what is missing when the data directory cannot be written, so
         # "no record" must never be read as "not protecting". The mutex answers that question
         # without the file; an unanswerable $null stays unknown, never off.
         $unrecorded = (-not $running) -and ((Test-KaWorkerMutex) -eq $true)
+
+        $notice = Get-KaTrayNotice -State $st -Intent $intent -Unrecorded $unrecorded -Paused $paused
+        if (-not $SelfTest -and $script:TrayNoticeReady -and $notice -ne $script:TrayNoticePrevious) {
+            $key = switch ($notice) {
+                'worker-missing' { 'tray.notice.missing' }
+                'unrecorded'    { 'tray.notice.unrecorded' }
+                'stale'         { 'tray.notice.stale' }
+                'worker-error'  { 'tray.notice.error' }
+                'locked'        { 'tray.notice.locked' }
+                'input-blocked' { 'tray.notice.input' }
+                'battery-floor' { 'tray.notice.battery' }
+                'healthy'       { if ($script:TrayNoticePrevious -notin @('off','paused','healthy')) { 'tray.notice.recovered' } }
+            }
+            if ($key) { Show-Balloon 'Keep Awake' (Get-KaText $key) $(if ($notice -eq 'healthy') { 'ok' } else { 'error' }) }
+        }
+        $script:TrayNoticePrevious = $notice
+        $script:TrayNoticeReady = $true
 
         # Show what the worker really does when one is running; config only governs the
         # next start, and a checkmark that disagrees with reality is a bug report away.
@@ -337,9 +378,12 @@ function Refresh-State {
         $MiMethodMouse.Checked = ($eff.antiLockMethod -eq 'mouse')
         $MiInterval.Text = Get-KaText 'tray.mi.intervalNow' @{ n = $eff.antiLockIntervalSec }
         $MiMethod.Text = Get-KaText 'tray.mi.methodNow' @{ method = $eff.antiLockMethod }
-        $MiStart.Enabled = -not ($running -or $unrecorded)
-        $MiStop.Enabled  = [bool]$running -or $unrecorded
-        foreach ($i in $MiDuration.DropDownItems) { $i.Enabled = -not ($running -or $unrecorded) }
+        $MiStart.Enabled = -not ($running -or $unrecorded -or $paused)
+        $MiStop.Enabled  = [bool]$running -or $unrecorded -or $paused
+        $MiPause.Enabled = [bool]$running -or $unrecorded -or $paused
+        $MiPause.Tag = if ($paused) { 'resume' } else { 'pause' }
+        $MiPause.Text = Get-KaText $(if ($paused) { 'tray.mi.resume' } else { 'tray.mi.pause' })
+        foreach ($i in $MiDuration.DropDownItems) { $i.Enabled = -not ($running -or $unrecorded -or $paused) }
         # A checkmark on a Disabled task promises a recovery that will never happen.
         $MiGuard.Checked = [bool](Get-KaGuardStatus).enabled
 
@@ -358,6 +402,10 @@ function Refresh-State {
                       (Get-KaNoteText "$($st.note)" @{ pct = $st.batteryPercent; floor = $st.batteryFloor }),
                       (Get-KaErrorText "$($st.error)")) | Where-Object { $_ }) -join ' | '
             Set-TrayText $tip
+        } elseif ($paused) {
+            $tray.Icon = $icons.warn
+            $MiHeader.Text = Get-KaText 'tray.state.paused'
+            Set-TrayText ('Keep Awake - ' + (Get-KaText 'tray.state.paused'))
         } elseif ($unrecorded) {
             # Alive and holding the request, invisible to every file-based surface. Saying
             # "not running" here would be the loudest lie this menu can tell.
@@ -384,6 +432,16 @@ function Refresh-State {
 
 $MiStart.Add_Click({ Start-Protect })
 $MiStop.Add_Click({ Stop-Protect })
+$MiPause.Add_Click({
+    try {
+        $resume = "$($MiPause.Tag)" -eq 'resume'
+        $r = if ($resume) { Invoke-KaLeaseResume } else { Invoke-KaLeasePause -Minutes 15 }
+        if (-not $r.ok) { throw (Get-KaText 'tray.bal.pauseFail') }
+        $label = Get-KaText $(if ($resume) { 'tray.mi.resume' } else { 'tray.mi.pause' })
+        Show-Balloon 'Keep Awake' $label 'ok'
+    } catch { Show-Balloon (Get-KaText 'tray.bal.pauseFail') $_.Exception.Message 'error' }
+    Refresh-State
+})
 $MiDisplay.Add_Click({ Apply-Change -Patch @{ keepDisplayOn = -not $MiDisplay.Checked } })
 $MiAntiLock.Add_Click({ Apply-Change -Patch @{ antiLock = -not $MiAntiLock.Checked } })
 $MiMethodKey.Add_Click({ Apply-Change -Patch @{ antiLockMethod = 'key' } })

@@ -42,7 +42,8 @@ $famBomLf  = @('.ps1')
 # Interpreted by cmd.exe / ISCC, which want CRLF, choke on a BOM, and decode bytes < 0x80 only.
 $famCrlf   = @('.bat', '.cmd', '.iss')
 # Read by a browser or a human. Shape reported, never asserted.
-$famReport = @('.md', '.html', '.js', '.css', '.svg', '.txt')
+$famReport = @('.md', '.html', '.js', '.css', '.svg', '.txt', '.cs', '.manifest')
+$famBinary = @('.png', '.ico')
 
 function Get-KaByteFamily([string]$Name) {
     $ext = [IO.Path]::GetExtension($Name)
@@ -50,6 +51,7 @@ function Get-KaByteFamily([string]$Name) {
     if ($famBomLf -contains $ext)  { return 'bom-lf' }
     if ($famCrlf -contains $ext)   { return 'crlf' }
     if ($famReport -contains $ext) { return 'report' }
+    if ($famBinary -contains $ext) { return 'binary' }
     return 'unknown'
 }
 
@@ -69,6 +71,12 @@ $missing = @()
 foreach ($f in ($targets | Sort-Object -Unique)) {
     if (-not (Test-Path -LiteralPath $f)) { $missing += $f; Write-Host ('  {0,-14} named but not in the tree' -f (Split-Path -Leaf $f)); continue }
     $bytes = [IO.File]::ReadAllBytes($f)
+    if ((Get-KaByteFamily $f) -eq 'binary') {
+        $signature = [BitConverter]::ToString($bytes, 0, [Math]::Min(8, $bytes.Length))
+        $valid = if ([IO.Path]::GetExtension($f) -eq '.png') { $signature -eq '89-50-4E-47-0D-0A-1A-0A' } else { $signature -like '00-00-01-00-*' }
+        if (-not $valid) { $missing += $f; Write-Host "  invalid image signature: $f" }
+        continue
+    }
     $text = [Text.Encoding]::UTF8.GetString($bytes)
     $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
     $crlf = ([regex]::Matches($text, "`r`n")).Count

@@ -1459,11 +1459,16 @@ some-driver.sys   SYSTEM
         $culture = [Globalization.CultureInfo]::InvariantCulture
         $started = @{}; $released = @{}; $globalStop = @()
         foreach ($line in $lines) {
-            if ("$line" -notmatch '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(.*)$') { continue }
+            if ("$line" -notmatch '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[+-]\d{2}:\d{2})?)\s+(.*)$') { continue }
             $ep = 0
             try {
-                $dt = [DateTime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss', $culture)
-                $ep = [DateTimeOffset]::new($dt).ToUnixTimeSeconds()
+                if ($Matches[1].Length -gt 19) {
+                    $ep = [DateTimeOffset]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:sszzz', $culture).ToUnixTimeSeconds()
+                } else {
+                    $dt = [DateTime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss', $culture)
+                    if ([TimeZoneInfo]::Local.IsAmbiguousTime($dt) -or [TimeZoneInfo]::Local.IsInvalidTime($dt)) { continue }
+                    $ep = [DateTimeOffset]::new($dt).ToUnixTimeSeconds()
+                }
             } catch { continue }
             $body = $Matches[2]
             if ($body -match '^STOP\s') { $globalStop += [long]$ep; continue }

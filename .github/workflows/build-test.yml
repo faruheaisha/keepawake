@@ -26,6 +26,21 @@ jobs:
       - name: Engine under test
         run: 'Write-Host ("PowerShell {0} on {1}" -f $PSVersionTable.PSVersion, [Environment]::OSVersion.VersionString)'
 
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.403'
+
+      - name: MCP protocol and independent task ownership
+        run: |
+          dotnet restore mcp-server\KeepAwake.Mcp.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'MCP restore failed' }
+          dotnet build mcp-server\KeepAwake.Mcp.csproj -c Release --no-restore
+          if ($LASTEXITCODE -ne 0) { throw 'MCP build failed' }
+          python tests\probe-mcp-rpc.py
+          if ($LASTEXITCODE -ne 0) { throw 'MCP protocol test failed' }
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests\probe-mcp-bridge.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'MCP idle bridge test failed' }
+
       - name: Inno Setup
         # tests/probe-iss.ps1 compiles packaging\KeepAwake.iss for real. Without a compiler all it
         # can say is SKIPPED, and then the one artifact a downloader double-clicks would still be
@@ -52,7 +67,7 @@ jobs:
 
       - name: Package (zip + staging + setup.exe + smoke)
         # -Installer here as well, so the artifact a developer downloads from a CI run is the same
-        # three files a release publishes. release.yml still re-builds and re-verifies in its own
+        # four files a release publishes. release.yml still re-builds and re-verifies in its own
         # job: this zip was tested here, not there.
         run: powershell -NoProfile -ExecutionPolicy Bypass -File packaging\build.ps1 -Stage -Installer -Smoke
 

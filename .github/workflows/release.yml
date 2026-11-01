@@ -41,6 +41,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.403'
+
       - name: The tag and ka-core.ps1 must name the same version
         run: |
           # Publish is the last step of an ~11-minute job. Without this line a missing token
@@ -75,16 +79,30 @@ jobs:
           choco install innosetup -y --no-progress
           if ($LASTEXITCODE -ne 0) { throw "choco install innosetup exited $LASTEXITCODE" }
 
-      - name: Build both artifacts (zip + setup.exe + SHA256SUMS)
+      - name: Build desktop EXE, zip, installer and checksums
         # -Installer implies -Stage, and -Smoke re-verifies the zip this job is about to publish,
         # in this job, from these bytes - not the copy the other job happened to test.
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File packaging\build.ps1 -Installer -Smoke
           if ($LASTEXITCODE -ne 0) { throw "packaging\build.ps1 exited $LASTEXITCODE" }
 
-      - name: The release carries three files and the hashes describe them
+      - name: Build optional MCP companion and refresh checksums
         run: |
-          $want = @("KeepAwake-$env:KA_VERSION-portable.zip", "KeepAwake-$env:KA_VERSION-setup.exe", 'SHA256SUMS')
+          powershell -NoProfile -ExecutionPolicy Bypass -File mcp-server\build.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'MCP package build failed' }
+          $probeDir = Join-Path $env:RUNNER_TEMP 'keepawake-mcp-probe'
+          Expand-Archive -LiteralPath 'dist\KeepAwake-MCP-win-x64.zip' -DestinationPath $probeDir
+          $env:KA_MCP_ROOT = $probeDir
+          $env:KA_MCP_EXE = Join-Path $probeDir 'KeepAwake.Mcp.exe'
+          python tests\probe-mcp-rpc.py
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged MCP protocol test failed' }
+          Remove-Item Env:KA_MCP_ROOT, Env:KA_MCP_EXE
+          powershell -NoProfile -ExecutionPolicy Bypass -File packaging\build.ps1 -Sum
+          if ($LASTEXITCODE -ne 0) { throw 'Checksum refresh failed' }
+
+      - name: The release carries five files and the hashes describe them
+        run: |
+          $want = @('KeepAwake.exe', "KeepAwake-$env:KA_VERSION-portable.zip", "KeepAwake-$env:KA_VERSION-setup.exe", 'KeepAwake-MCP-win-x64.zip', 'SHA256SUMS')
           $got = @(Get-ChildItem dist -File | ForEach-Object { $_.Name })
           $extra = @($got | Where-Object { $want -notcontains $_ })
           $missing = @($want | Where-Object { $got -notcontains $_ })
@@ -115,10 +133,12 @@ jobs:
         # of the array.
         run: |
           $t = @(
-            'Two ways to run it:',
+            'Downloads:',
             '',
-            '- **`KeepAwake-@VERSION@-portable.zip`** - unzip it and double-click `on.bat`. Protection lasts until `off.bat`; nothing is installed and nothing is registered. `panel.bat` opens the dashboard.',
-            '- **`KeepAwake-@VERSION@-setup.exe`** - per-user installer, no admin prompt, Start Menu entries for the dashboard and the tray.',
+            '- **`KeepAwake.exe`** - double-click to open the native desktop app. No installation or browser required.',
+            '- **`KeepAwake-@VERSION@-portable.zip`** - unzip and double-click `KeepAwake.exe`. Includes the desktop app and optional command-line tools.',
+            '- **`KeepAwake-@VERSION@-setup.exe`** - per-user installer, no admin prompt, native desktop shortcuts.',
+            '- **`KeepAwake-MCP-win-x64.zip`** - optional local MCP companion, including its runtime and third-party notices.',
             '',
             'Check what you downloaded:',
             '',
@@ -141,7 +161,7 @@ jobs:
 
       - name: Publish
         run: |
-          $files = @("dist\KeepAwake-$env:KA_VERSION-portable.zip", "dist\KeepAwake-$env:KA_VERSION-setup.exe", 'dist\SHA256SUMS')
+          $files = @('dist\KeepAwake.exe', "dist\KeepAwake-$env:KA_VERSION-portable.zip", "dist\KeepAwake-$env:KA_VERSION-setup.exe", 'dist\KeepAwake-MCP-win-x64.zip', 'dist\SHA256SUMS')
           $notes = Join-Path $env:RUNNER_TEMP 'notes.md'
           $extra = @()
           if ($env:KA_VERSION -match '-') { $extra += '--prerelease' }
@@ -157,6 +177,12 @@ jobs:
           $seen = [int]$LASTEXITCODE
           $ErrorActionPreference = $eap
           if ($seen -eq 0) {
+              git fetch --no-tags origin "refs/tags/${env:KA_TAG}:refs/tags/${env:KA_TAG}"
+              if ($LASTEXITCODE -ne 0) { throw "cannot fetch existing release tag $env:KA_TAG" }
+              $tagCommit = (git rev-parse "$env:KA_TAG^{}" | Select-Object -Last 1).Trim()
+              if ($LASTEXITCODE -ne 0 -or $tagCommit -ne '${{ github.sha }}') {
+                  throw "refusing to replace release assets: $env:KA_TAG points to $tagCommit, not this build commit"
+              }
               Write-Host "release $env:KA_TAG already exists - replacing its files and notes"
               gh release upload $env:KA_TAG --clobber @files
               if ($LASTEXITCODE -ne 0) { throw "gh release upload exited $LASTEXITCODE" }
@@ -176,7 +202,7 @@ jobs:
           # @() around a missing property yields one $null, not zero entries - filter it, or an
           # empty release reads as "1 asset, and none of them ours".
           $names = @((ConvertFrom-Json $json).assets | ForEach-Object { $_.name } | Where-Object { $_ })
-          $want = @("KeepAwake-$env:KA_VERSION-portable.zip", "KeepAwake-$env:KA_VERSION-setup.exe", 'SHA256SUMS')
+          $want = @('KeepAwake.exe', "KeepAwake-$env:KA_VERSION-portable.zip", "KeepAwake-$env:KA_VERSION-setup.exe", 'KeepAwake-MCP-win-x64.zip', 'SHA256SUMS')
           $missing = @($want | Where-Object { $names -notcontains $_ })
           $stray = @($names | Where-Object { $want -notcontains $_ })
           if ($missing.Count -or $stray.Count) {

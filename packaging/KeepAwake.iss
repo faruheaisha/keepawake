@@ -66,7 +66,7 @@ DisableDirPage=auto
 OutputDir={#OutDir}
 OutputBaseFilename=KeepAwake-{#MyAppVersion}-setup
 UninstallDisplayName={#MyAppName}
-MinVersion=0,6.1sp1
+MinVersion=0,10.0
 ; The Restart Manager would offer to close "powershell.exe" to unlock the files - and that
 ; is the image of every PowerShell window the user owns. InitializeUninstall stops our own
 ; worker and panel by name instead, so nothing unrelated is ever asked to leave.
@@ -92,21 +92,25 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; One line on purpose - the manifest is the only source of truth about what ships.
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[InstallDelete]
+; Remove only obsolete browser/tray shortcuts left by earlier versions.
+Type: files; Name: "{group}\{#MyAppName} - Dashboard.lnk"
+Type: files; Name: "{group}\{#MyAppName} - Tray.lnk"
+
 [Icons]
+Name: "{group}\{#MyAppName}"; Filename: "{app}\KeepAwake.exe"; WorkingDir: "{app}"; Comment: "Open the native desktop application"
 ; Parameters is quoted as one value with doubled inner quotes - the documented spelling. An
 ; unquoted value holding bare " characters is at the mercy of the section-line parser, and
 ; the semicolon is that parser's field separator.
-Name: "{group}\{#MyAppName} - Dashboard"; Filename: "{#PSExe}"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\ka.ps1"" serve"; WorkingDir: "{app}"; Comment: "Open the dashboard on 127.0.0.1"
-Name: "{group}\{#MyAppName} - Tray"; Filename: "{#PSExe}"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\ka.ps1"" tray"; WorkingDir: "{app}"; Comment: "Status, start and stop from the notification area"
 Name: "{group}\{#MyAppName} - Protect"; Filename: "{#PSExe}"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\ka.ps1"" start"; WorkingDir: "{app}"; Comment: "Keep this machine awake until you release it"
 Name: "{group}\{#MyAppName} - Release"; Filename: "{#PSExe}"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\ka.ps1"" stop"; WorkingDir: "{app}"; Comment: "Drop the power request and let the machine sleep"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{#PSExe}"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\ka.ps1"" serve"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\KeepAwake.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
 ; postinstall only, and never in a silent run: an unattended CI install must not park a
 ; console window nobody is watching. A portable user gets the same window from panel.bat.
-Filename: "{#PSExe}"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\ka.ps1"" serve"; WorkingDir: "{app}"; Description: "{#MyAppName} dashboard"; Flags: postinstall skipifsilent nowait
+Filename: "{app}\KeepAwake.exe"; WorkingDir: "{app}"; Description: "Open {#MyAppName}"; Flags: postinstall skipifsilent nowait
 
 [Code]
 function KaArgs(const AArgs: String): String;
@@ -135,7 +139,22 @@ begin
 end;
 
 function InitializeUninstall(): Boolean;
+var
+  DesktopExit: Integer;
+  StartupValue: String;
 begin
+  // Remove only the sign-in entry owned by this installation. A portable or newer
+  // installation may have replaced the same per-user entry with a different path.
+  if RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run',
+                         'KeepAwakeDesktop', StartupValue) then
+    if CompareText(StartupValue, '"' + ExpandConstant('{app}\KeepAwake.exe') + '" --tray') = 0 then
+      if not RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'KeepAwakeDesktop') then
+        Log('KeepAwake: could not remove its sign-in entry');
+  // Close only the native UI sharing this user's data root before deleting its EXE.
+  if FileExists(ExpandConstant('{app}\KeepAwake.exe')) then
+    if not Exec(ExpandConstant('{app}\KeepAwake.exe'), '--shutdown', ExpandConstant('{app}'),
+                SW_HIDE, ewWaitUntilTerminated, DesktopExit) then
+      Log('KeepAwake: desktop shutdown could not be started');
   // Runs while {app}\ka.ps1 still exists. After the files are gone nothing can ask the
   // worker to release its power request, and a panel would keep holding its port with no
   // script behind it. unguard last: the logon task is the one artefact that outlives the

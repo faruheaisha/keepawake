@@ -81,6 +81,10 @@
       <p class="signal__detail" id="stateDetail">—</p>
       <div id="modes" class="pills"></div>
       <div id="alerts" class="alerts"></div>
+      <details id="leaseSection" class="explainer" hidden>
+        <summary data-i18n="leases.title">任务保护</summary>
+        <div id="leaseList"></div>
+      </details>
     </div>
 
     <div class="gauge" style="grid-area:gauge" title="定时保护的剩余时间" data-i18n-title="gauge.tip">
@@ -177,6 +181,9 @@
             <span class="unit" data-i18n="unit.min">分</span>
           </span>
         </div>
+        <label class="field__inline" for="expireAt"><span data-i18n="ctl.until">结束时间</span>
+          <input id="expireAt" class="num num--datetime" type="datetime-local">
+        </label>
       </div>
 
       <div class="switches">
@@ -230,6 +237,7 @@
       <div class="actions">
         <button id="btnStart" class="btn btn--go" data-i18n="btn.start">启动保护</button>
         <button id="btnStop" class="btn btn--stop" disabled data-i18n="btn.stop">停止</button>
+        <button id="btnPause" class="btn btn--quiet" disabled data-i18n="btn.pause">暂停 15 分钟</button>
         <button id="btnSave" class="btn btn--quiet" data-i18n="btn.save">存为默认 <small data-i18n="btn.saveSub">写 config.json</small></button>
         <span class="grow"></span>
         <button id="btnRefresh" class="btn btn--quiet" data-i18n="btn.refresh">刷新</button>
@@ -378,6 +386,7 @@
         <p data-i18n="panel.log.desc">启动、心跳、降级、恢复、退出原因都会落在这里。远程排障时，这台机器上的日志本身没用 —— 但它解释了上一次为什么没连上。</p>
       </div>
       <div class="panel__tools">
+        <button id="btnDiagnostic" class="btn btn--quiet btn--sm" data-i18n="diagnostic.open">导出诊断</button>
         <button id="btnLog" class="btn btn--quiet btn--sm" data-i18n="btn.log">刷新日志</button>
         <label class="check"><input type="checkbox" id="autoLog" checked><span data-i18n="check.autoLog">自动跟随</span></label>
       </div>
@@ -446,6 +455,15 @@
 </div>
 
 <div id="toasts" class="toasts" aria-live="polite"></div>
+<dialog id="diagnosticDialog" class="diagnostic-dialog" aria-labelledby="diagnosticTitle">
+  <h3 id="diagnosticTitle" data-i18n="diagnostic.title">诊断预览</h3>
+  <p data-i18n="diagnostic.note">仅包含状态与汇总，不含路径、用户名、任务内容或日志。请检查后再分享。</p>
+  <pre id="diagnosticPreview" class="log mono" tabindex="0"></pre>
+  <div class="actions">
+    <button id="diagnosticSave" type="button" class="btn btn--go" data-i18n="diagnostic.save">保存 JSON</button>
+    <button id="diagnosticClose" type="button" class="btn btn--quiet" data-i18n="diagnostic.close">关闭</button>
+  </div>
+</dialog>
 
 <script src="/i18n.js"></script>
 <script src="/app.js"></script>

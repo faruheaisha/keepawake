@@ -69,10 +69,25 @@ function Get-KaReleaseFile {
     $dash = Join-Path $root 'dashboard'
     $code += @(Get-ChildItem -LiteralPath $dash -File -Recurse |
         ForEach-Object { 'dashboard\' + $_.FullName.Substring($dash.Length + 1) })
+    $integration = Join-Path $root 'integrations\mcp'
+    if (Test-Path -LiteralPath $integration) {
+        $code += @(Get-ChildItem -LiteralPath $integration -File -Recurse |
+            ForEach-Object { 'integrations\mcp\' + $_.FullName.Substring($integration.Length + 1) })
+    }
+    $cliIntegration = Join-Path $root 'integrations\cli'
+    if (Test-Path -LiteralPath $cliIntegration) {
+        $code += @(Get-ChildItem -LiteralPath $cliIntegration -File -Recurse |
+            ForEach-Object { 'integrations\cli\' + $_.FullName.Substring($cliIntegration.Length + 1) })
+    }
+    $desktop = Join-Path $root 'desktop'
+    if (Test-Path -LiteralPath $desktop) {
+        $code += @(Get-ChildItem -LiteralPath $desktop -File -Recurse |
+            ForEach-Object { 'desktop\' + $_.FullName.Substring($desktop.Length + 1) })
+    }
 
-    $docs = @('README.md', 'PRIVACY.md', 'SECURITY.md', 'CHANGELOG.md', 'PITFALLS.md', 'LICENSE', 'NOTICE')
+    $docs = @('README.md', 'PRIVACY.md', 'SECURITY.md', 'CHANGELOG.md', 'PITFALLS.md', 'LICENSE', 'NOTICE', '.github\CONTRIBUTING.md', '.github\TRADEMARKS.md')
     # Read by git and by nobody who downloaded a zip.
-    $plumbing = @('.gitignore', '.gitattributes')
+    $plumbing = @('.gitignore', '.gitattributes', '.git') # linked worktrees use a .git file
 
     # A discovery that quietly returns nothing is worse than a list, because it looks like a pass.
     # These are the files an entry point has to be able to dot-source; if any of them is not in

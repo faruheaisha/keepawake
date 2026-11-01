@@ -6,7 +6,7 @@
 
     The assertions are README's installer claims, put in front of the thing they describe, so a doc
     line cannot drift from the installer quietly: per-user install with no elevation, exactly the
-    manifest files plus Inno's own two, no Mark-of-the-Web on installed scripts, the five Start Menu
+    manifest files plus Inno's own two, no Mark-of-the-Web on installed scripts, the four Start Menu
     entries, the desktop shortcut really being checked by default, the Add/Remove Programs entry, no
     scheduled task and no panel created by installing, the uninstall hook running stop-server / stop /
     unguard BEFORE files go, and the machine ending where it started.
@@ -42,6 +42,32 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $root 'tests/ka-release-files.ps1')
+
+function Get-InstallLongPath([string]$Path) {
+    # The shell expands RUNNER~1 to runneradmin when reading a shortcut. Resolve
+    # both existing file paths through Windows before comparing their targets.
+    if (-not ('Ka.InstallPath' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+namespace Ka {
+    public static class InstallPath {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern uint GetLongPathName(string path, StringBuilder buffer, uint size);
+        public static string Expand(string path) {
+            var buffer = new StringBuilder(32768);
+            uint length = GetLongPathName(path, buffer, (uint)buffer.Capacity);
+            if (length == 0 || length >= buffer.Capacity)
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            return buffer.ToString();
+        }
+    }
+}
+'@
+    }
+    return [Ka.InstallPath]::Expand([IO.Path]::GetFullPath($Path))
+}
 
 function Get-ListeningPorts {
     try { @(Get-NetTCPConnection -State Listen -ErrorAction Stop | ForEach-Object { $_.LocalPort }) } catch { @() }
@@ -162,7 +188,7 @@ $hookData = Join-Path $work 'scratch-data'
 $taskBackup = Join-Path $work 'tasks'
 foreach ($d in @($work, $taskBackup)) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
 
-$manifest = @(Get-KaReleaseFile | ForEach-Object { $_.Replace('\', '/') }) | Sort-Object
+$manifest = @(@(Get-KaReleaseFile | ForEach-Object { $_.Replace('\', '/') }) + 'KeepAwake.exe') | Sort-Object
 $bad = New-Object System.Collections.ArrayList
 function Ok([string]$m) { Write-Output ('  ok   ' + $m) }
 function Red([string]$m) { [void]$bad.Add($m); Write-Output ('  FAIL ' + $m) }
@@ -246,6 +272,7 @@ foreach ($n in $tasksBefore) {
 $rootCountBefore = @(Get-ScheduledTask -TaskPath '\').Count
 $portsBefore = Get-ListeningPorts
 $workerPid = 0
+$installedDesktop = $null
 
 try {
     # ---------------------------------------------------------------- install
@@ -292,13 +319,20 @@ try {
     else { Red ("installed scripts still blocked: {0}" -f ($motw -join ', ')) }
 
     $sm = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\KeepAwake'
-    $wantLnk = @('KeepAwake - Dashboard.lnk', 'KeepAwake - Tray.lnk', 'KeepAwake - Protect.lnk', 'KeepAwake - Release.lnk', 'Uninstall KeepAwake.lnk') | Sort-Object
+    $wantLnk = @('KeepAwake.lnk', 'KeepAwake - Protect.lnk', 'KeepAwake - Release.lnk', 'Uninstall KeepAwake.lnk') | Sort-Object
     $gotLnk = @(Get-ChildItem -LiteralPath $sm -Filter '*.lnk' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) | Sort-Object
-    if (($gotLnk -join ',') -eq ($wantLnk -join ',')) { Ok 'Start Menu holds exactly the five shortcuts' }
+    if (($gotLnk -join ',') -eq ($wantLnk -join ',')) { Ok 'Start Menu holds exactly the four desktop product shortcuts' }
     else { Red ("Start Menu: got [{0}]" -f ($gotLnk -join ', ')) }
     $desktop = [Environment]::GetFolderPath('Desktop')
     if (Test-Path -LiteralPath (Join-Path $desktop 'KeepAwake.lnk')) { Ok "the desktopicon task is checked by default - shortcut in $desktop" }
     else { Red 'no desktop shortcut although the desktopicon task was not unchecked, so README is wrong about the default' }
+    $shell = New-Object -ComObject WScript.Shell
+    foreach ($link in @((Join-Path $sm 'KeepAwake.lnk'), (Join-Path $desktop 'KeepAwake.lnk'))) {
+        $shortcut = $shell.CreateShortcut($link)
+        $expectedTarget = Join-Path $app 'KeepAwake.exe'
+        if ((Get-InstallLongPath $shortcut.TargetPath) -eq (Get-InstallLongPath $expectedTarget) -and -not $shortcut.Arguments) { Ok 'the product shortcut opens the native desktop EXE' }
+        else { Red ("shortcut target is not the native desktop: {0}; target={1}; expected={2}; args={3}" -f $link, $shortcut.TargetPath, $expectedTarget, $shortcut.Arguments) }
+    }
 
     $key = @(Get-ChildItem -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue |
         Where-Object { $_.PSChildName -like '{8B7C1F4E*' })
@@ -326,6 +360,13 @@ try {
     elseif ($st -eq 0 -and $out -match 'Keep-Awake') { Ok "the installed copy answers status (exit 0, $(@(($out -split "`r?`n") | Where-Object { $_.Trim() }).Count) lines, first: $firstLine)" }
     else { Red ("installed ka.ps1 status: exit=$st first line=[$firstLine]") }
 
+    $launch = New-Object Diagnostics.ProcessStartInfo
+    $launch.FileName = Join-Path $app 'KeepAwake.exe'
+    $launch.UseShellExecute = $false
+    $installedDesktop = [Diagnostics.Process]::Start($launch)
+    if ($installedDesktop.WaitForInputIdle(30000) -and -not $installedDesktop.HasExited) { Ok 'the installed native desktop opens against the isolated data root' }
+    else { Red 'the installed desktop did not become ready' }
+
     if ($WithWorker) {
         Write-Output '--- protection up, so the hook has something to release ---'
         $st = Invoke-Ka $app 'start' '' 'the installed ka.ps1 start'
@@ -342,6 +383,8 @@ try {
     $rc = Invoke-Quiet (Join-Path $app 'unins000.exe') ('/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG="' + $uninstLog + '"') 'unins000.exe'
     if ($null -eq $rc) { Red ("unins000.exe: {0} - see {1}" -f $script:TimedOut, $uninstLog) }
     elseif ($rc -eq 0) { Ok 'uninstaller exit 0' } else { Red ("uninstaller exit {0} - see {1}" -f $rc, $uninstLog) }
+    if ($installedDesktop.WaitForExit(30000)) { Ok 'uninstall closes the installed native desktop' }
+    else { Red 'the desktop outlived its uninstall' }
 
     $ulog = @(Get-Content -LiteralPath $uninstLog -ErrorAction SilentlyContinue)
     $hookAt = @()
@@ -390,6 +433,10 @@ try {
 finally {
     # ---------------------------------------------------------------- put the machine back
     Write-Output '--- restore what unguard is allowed to take ---'
+    if ($installedDesktop) {
+        if (-not $installedDesktop.HasExited) { $installedDesktop.Kill() }
+        $installedDesktop.Dispose()
+    }
     Remove-Item Env:KA_DATA -ErrorAction SilentlyContinue
     if ($WithWorker -and $workerPid -and @(Get-Process -Id $workerPid -ErrorAction SilentlyContinue).Count) {
         Stop-Process -Id $workerPid -Force -ErrorAction SilentlyContinue

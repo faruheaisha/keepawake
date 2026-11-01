@@ -103,8 +103,14 @@ function Read-KaBody {
         $ms = New-Object IO.MemoryStream
         $buf = New-Object byte[] 8192
         $total = 0
+        $deadline = [Diagnostics.Stopwatch]::StartNew()
         while ($true) {
-            $n = $stream.Read($buf, 0, $buf.Length)
+            $remaining = 5000 - [int]$deadline.ElapsedMilliseconds
+            if ($remaining -le 0) { throw 'Request body read timed out' }
+            $pending = $stream.BeginRead($buf, 0, $buf.Length, $null, $null)
+            if (-not $pending.AsyncWaitHandle.WaitOne([Math]::Min(2000, $remaining))) { throw 'Request body read timed out' }
+            $n = $stream.EndRead($pending)
+            $pending.AsyncWaitHandle.Close()
             if ($n -le 0) { break }
             $total += $n
             if ($total -gt $MaxBytes) { throw (Get-KaText 'server.bodyTooBig' @{ size = $total }) }
@@ -113,6 +119,7 @@ function Read-KaBody {
         $ms.Position = 0
         $text = (New-Object IO.StreamReader($ms, [Text.Encoding]::UTF8)).ReadToEnd()
         if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+        if (-not $text.TrimStart().StartsWith('{')) { throw 'JSON object required' }
         return $text | ConvertFrom-Json
     } catch {
         return @{ __badBody = "$($_.Exception.Message)" }
@@ -208,6 +215,7 @@ function Invoke-KaApi {
                 '/api/state' { return @{ status = 200; body = (ConvertTo-KaJsonSafe (Get-KaStateCached)) } }
                 '/api/config' { return @{ status = 200; body = (ConvertTo-KaJsonSafe (Get-KaConfig)) } }
                 '/api/report' { return @{ status = 200; body = (ConvertTo-KaJsonSafe (Get-KaReport)) } }
+                '/api/diagnostic' { return @{ status = 200; body = (ConvertTo-KaJsonSafe (Get-KaDiagnosticExport)) } }
                 '/api/machine' {
                     $m = Read-KaJson $paths.machine
                     return @{ status = 200; body = (ConvertTo-KaJsonSafe @{ ok = [bool]$m; machine = $m }) }
@@ -246,9 +254,55 @@ function Invoke-KaApi {
 
             switch ($Path) {
                 '/api/start' {
+                    if ($null -ne $Body -and $Body -isnot [pscustomobject]) {
+                        return @{ status = 400; body = (Invoke-KaReason (Get-KaText 'api.invalidStart')) }
+                    }
+                    $names = @($b.PSObject.Properties | ForEach-Object { $_.Name })
+                    $allowed = @('minutes','expireAt','keepDisplayOn','antiLock','awayMode','batteryAllowDisplayOff',
+                                 'antiLockMethod','antiLockIntervalSec','reassertSec','batteryFloorPercent')
+                    if (@($names | Where-Object { $_ -notin $allowed }).Count) {
+                        return @{ status = 400; body = (Invoke-KaReason (Get-KaText 'api.invalidStart')) }
+                    }
                     $minutes = 0.0
-                    if ($b.minutes) { [void][double]::TryParse("$($b.minutes)", [ref]$minutes) }
-                    $minutes = [double](Get-KaBounded $minutes 0 10080 0)
+                    if ('minutes' -in $names) {
+                        if ($b.minutes -isnot [ValueType] -or $b.minutes -is [bool] -or
+                            $null -eq $b.minutes -or
+                            -not [double]::TryParse("$($b.minutes)", [ref]$minutes) -or
+                            [double]::IsNaN($minutes) -or [double]::IsInfinity($minutes) -or $minutes -lt 0 -or $minutes -gt 10080) {
+                            return @{ status = 400; body = (Invoke-KaReason (Get-KaText 'api.invalidMinutes')) }
+                        }
+                    }
+                    if ('expireAt' -in $names) {
+                        if ($b.expireAt -isnot [string] -or -not $b.expireAt -or $minutes -gt 0) {
+                            return @{ status = 400; body = (Invoke-KaReason (Get-KaText 'api.invalidMinutes')) }
+                        }
+                        $target = Get-KaMinutesUntil -Text ($b.expireAt -replace 'T',' ')
+                        if (-not $target.Ok -or $target.Minutes -gt 10080) {
+                            return @{ status = 400; body = (Invoke-KaReason (Get-KaText 'api.invalidMinutes')) }
+                        }
+                        $minutes = [double]$target.Minutes
+                    }
+                    foreach ($key in @('keepDisplayOn','antiLock','awayMode','batteryAllowDisplayOff')) {
+                        if ($key -in $names -and $b.$key -isnot [bool]) {
+                            return @{ status = 400; body = (Invoke-KaReason (Get-KaText 'api.invalidBoolean' @{ key = $key })) }
+                        }
+                    }
+                    if ('antiLockMethod' -in $names -and ($b.antiLockMethod -isnot [string] -or $b.antiLockMethod -cnotin @('key','mouse'))) {
+                        return @{ status = 400; body = (Invoke-KaReason (Get-KaText 'api.invalidStart')) }
+                    }
+                    $numeric = @{ antiLockIntervalSec = @(10,3600); reassertSec = @(15,3600); batteryFloorPercent = @(0,90) }
+                    foreach ($key in $numeric.Keys) {
+                        if ($key -notin $names) { continue }
+                        $value = $b.$key
+                        if ($null -eq $value -or $value -isnot [ValueType] -or $value -is [bool]) {
+                            return @{ status = 400; body = (Invoke-KaReason (Get-KaText 'api.invalidStart')) }
+                        }
+                        $number = [double]$value
+                        if ([double]::IsNaN($number) -or [double]::IsInfinity($number) -or $number -ne [math]::Floor($number) -or
+                            $number -lt $numeric[$key][0] -or $number -gt $numeric[$key][1]) {
+                            return @{ status = 400; body = (Invoke-KaReason (Get-KaText 'api.invalidStart')) }
+                        }
+                    }
                     $ov = @{}
                     if ($null -ne $b.keepDisplayOn) { $ov.keepDisplayOn = [bool]$b.keepDisplayOn }
                     if ($null -ne $b.antiLock)      { $ov.antiLock = [bool]$b.antiLock }
@@ -268,7 +322,34 @@ function Invoke-KaApi {
                 '/api/stop' {
                     $r = Stop-KaProtection -Reason 'dashboard'
                     Invalidate-KaStateCache
-                    return @{ status = 200; body = (ConvertTo-KaJsonSafe (@{ ok = $true } + $r)) }
+                    $ok = ([int]$r.Remaining -eq 0 -and $r.intentWritten -ne $false -and -not $r.leaseCancellationFailed)
+                    if (-not $ok) { $r['reason'] = Get-KaText 'api.stopIncomplete' }
+                    return @{ status = $(if ($ok) { 200 } else { 500 }); body = (ConvertTo-KaJsonSafe (@{ ok = $ok } + $r)) }
+                }
+                '/api/leases/release' {
+                    if (-not $script:KaLeaseAvailable) { return @{ status = 503; body = (Invoke-KaReason (Get-KaText 'api.internal')) } }
+                    if (-not $b.id -or "$($b.id)" -cnotmatch '^[0-9a-f]{32}$') {
+                        return @{ status = 400; body = (Invoke-KaReason (Get-KaText 'api.badJson' @{ msg = 'id' })) }
+                    }
+                    $r = Invoke-KaLeaseUserRelease -Id "$($b.id)"
+                    Invalidate-KaStateCache
+                    return @{ status = $(if ($r.ok) { 200 } else { 404 }); body = (ConvertTo-KaJsonSafe $r) }
+                }
+                '/api/pause' {
+                    if (-not $script:KaLeaseAvailable) { return @{ status = 503; body = (Invoke-KaReason (Get-KaText 'api.internal')) } }
+                    if ($b.minutes -isnot [ValueType] -or $b.minutes -is [bool] -or
+                        [double]$b.minutes -ne [math]::Floor([double]$b.minutes) -or [double]$b.minutes -lt 1 -or [double]$b.minutes -gt 1440) {
+                        return @{ status = 400; body = (Invoke-KaReason (Get-KaText 'api.invalidMinutes')) }
+                    }
+                    $r = Invoke-KaLeasePause -Minutes ([int]$b.minutes)
+                    Invalidate-KaStateCache
+                    return @{ status = $(if ($r.ok) { 200 } else { 409 }); body = (ConvertTo-KaJsonSafe $r) }
+                }
+                '/api/resume' {
+                    if (-not $script:KaLeaseAvailable) { return @{ status = 503; body = (Invoke-KaReason (Get-KaText 'api.internal')) } }
+                    $r = Invoke-KaLeaseResume
+                    Invalidate-KaStateCache
+                    return @{ status = $(if ($r.ok) { 200 } else { 409 }); body = (ConvertTo-KaJsonSafe $r) }
                 }
                 '/api/config' {
                     $patch = @{}
@@ -344,6 +425,7 @@ function Send-KaStatic {
         # The dashboard re-reads state every couple of seconds; caching index.html would
         # make an upgrade look like it never happened.
         $Ctx.Response.Headers.Add('Cache-Control', 'no-store')
+        $Ctx.Response.Headers.Add('X-Frame-Options', 'DENY')
         $Ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
         $Ctx.Response.OutputStream.Flush()
     } catch { } finally {

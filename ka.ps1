@@ -54,6 +54,10 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'ka-gate.ps1')
 if (-not (Test-KaLanguageMode)) { exit 2 }
+if ($Json) {
+    # Redirected JSON must preserve paths and names on non-UTF-8 Windows consoles.
+    [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+}
 . (Join-Path $PSScriptRoot 'ka-core.ps1')
 
 function Get-KaDisplayWidth([string]$t) {
@@ -434,8 +438,6 @@ switch ($Action) {
         if ($Method)      { $ov.antiLockMethod = $Method; $ov.antiLock = $true }
         if ($IntervalSec) { $ov.antiLockIntervalSec = $IntervalSec }
 
-        if ($Force) { [void](Stop-KaWorker -Reason 'force') }
-
         $mins = $Minutes
         if ($ExpireAt) {
             if ($Minutes -gt 0) {
@@ -451,7 +453,7 @@ switch ($Action) {
             Write-Host (Get-KaText 'cli.willRelease' @{
                 at = $u.At.ToString('yyyy-MM-dd HH:mm:ss'); mins = [math]::Ceiling($mins) }) -ForegroundColor DarkGray
         }
-        $r = Start-KaProtection -Minutes $mins -Override $ov
+        $r = Start-KaProtection -Minutes $mins -Override $ov -Force:$Force
         if (-not $r.Ok) {
             Write-Host (Get-KaText 'cli.startFail' @{ reason = $r.Reason }) -ForegroundColor Red
             Write-Host (Get-KaText 'cli.startFailHint') -ForegroundColor DarkGray
@@ -486,6 +488,7 @@ switch ($Action) {
 
     'stop' {
         $r = Stop-KaProtection -Reason 'cli'
+        if ([int]$r.Remaining -gt 0) { Write-Host (Get-KaText 'api.stopIncomplete') -ForegroundColor Red; exit 1 }
         if ($r.Stopped -eq 0) { Write-Host (Get-KaText 'cli.stopNone') -ForegroundColor DarkGray }
         else {
             $msg = Get-KaText 'cli.stopped' @{ n = $r.Stopped }
@@ -499,6 +502,7 @@ switch ($Action) {
         }
         if ($r.intentWritten -eq $false) {
             Write-Host (Get-KaText 'cli.intentUnwritable' @{ path = (Get-KaPath).intent }) -ForegroundColor Yellow
+            exit 3
         }
         Write-Host (Get-KaText 'cli.intentOff') -ForegroundColor DarkGray
     }

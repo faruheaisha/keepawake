@@ -1,9 +1,10 @@
 # 安全说明 / Security
 
-> **English (summary).** KeepAwake is a local PowerShell utility with one listening socket bound to the
-> loopback interface, no outbound network calls, no auto-elevation except behind one explicit command
+> **English (summary).** KeepAwake is a local Windows desktop application. Its optional legacy web panel
+> listens only on loopback; the desktop and optional stdio MCP companion open no listening socket. There
+> is no telemetry or automatic updater, and no auto-elevation except behind one explicit command
 > (`lid apply`, which raises a single UAC prompt), no service, no driver, no registry policy writes.
-> Binaries are unsigned in v1.0 by design — see《没有代码签名》。To report an issue, use the private
+> Binaries are unsigned in this release — see《没有代码签名》。To report an issue, use the private
 > vulnerability reporting on this repository's Security tab.
 
 先说清这份文档的边界：这个工具的定位是**"让一台你自己有权限的机器别睡着"**。它不是安全产品，不守护任何
@@ -12,7 +13,9 @@
 
 ## 面板的暴露面
 
-面板（`panel.bat` / `ka.bat serve`）是唯一开口的东西。
+原生桌面 GUI 不启动 HTTP 服务、不打开监听端口。`KeepAwake.exe` 使用系统 PowerShell 通过本机子进程调用既有引擎，参数以 Base64 JSON 传递，不把用户输入拼入 PowerShell 表达式。内嵌引擎按内容哈希释放到用户数据根并校验内容。EXE 使用普通用户权限，仍受企业 PowerShell 语言模式和应用控制策略约束；同账户用户对本机缓存的改写不构成安全隔离。EXE 与安装器均未签名。
+
+旧网页面板（显式执行 `ka.bat serve`）是唯一开口的东西。`panel.bat` 现在打开桌面窗口。
 
 - **只绑回环**：`ka-server.ps1` 的 `Prefixes.Add` 只有 `http://127.0.0.1:<port>/` 与 `http://localhost:<port>/`
   两种，**没有** `+`、`*` 或 `0.0.0.0`。局域网与互联网不可达，不需要防火墙规则。
@@ -73,11 +76,15 @@
 （`%ProgramData%\KeepAwake\ka-lid-backup.json`），`restore` 能还原，面板"合盖预报"会用事件日志告诉你
 **写了 ≠ 平台遵守**：改完之后是否真的没睡，看证据不看承诺。
 
+AC/DC 写入须有可读回的原值备份；修改失败时尝试恢复该备份并读回确认，恢复失败会保留备份并明确报错。
+写入绑定具体电源计划，避免中途切换计划时把数值写进其他计划。`apply` 还会显示隐藏的合盖设置项；
+`restore` 恢复 AC/DC 动作，当前不恢复该选项在控制面板中的隐藏状态。
+
 ## 它在系统里留下什么
 
 | 面 | 实际做的事 |
 | --- | --- |
-| 注册表 | **只读三处**：`HKLM\...\Control\Power` 的 `HibernateEnabled`、`HKLM\...\Policies\System` 的 `InactivityTimeoutSecs`、`HKLM\...\CurrentVersion` 的 `CurrentBuildNumber`。全文没有 `Set-ItemProperty` / `New-ItemProperty` / `reg add`。**不改任何策略**。 |
+| 注册表 | 读取电源、策略和 Windows 版本信息。用户在桌面设置中显式开启登录启动时，才写入当前用户 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\KeepAwakeDesktop`；关闭该选项会删除它。**不改任何策略**。 |
 | 电源计划 | 默认**不改**。`powercfg` 只用于读取；`lid apply` 是唯一写入路径，需要管理员、自带备份。 |
 | 内核电源请求 | `SetThreadExecutionState`，**进程作用域**——worker 退出即消失，重启即消失，不会残留在系统里。 |
 | 计划任务 | `ka.bat guard` 注册 `KeepAwake-Logon` / `KeepAwake-Guard`（当前用户范围，标准账户可装）；`-Boot` 额外注册 `KeepAwake-Boot`（需管理员，实测标准账户 `Access is denied`，此时给一行明确拒绝而不是假绿）。`ka.bat unguard` 删除。 |
@@ -106,15 +113,19 @@ v1.0 **不做 Authenticode 签名**，这是明确的产品决定，不是没做
 
 ## 运行环境：Constrained Language Mode
 
-`ka-gate.ps1` 的 `Test-KaLanguageMode` 在 CLM / AllSigned 策略下**直接拒绝启动**（退出码 2），并指一段
-README 给你看原因。**这是安全设计**：`Add-Type` 在现场编译 C#，CLM 下这条路径会被拦，而一个"部分功能
-静默失效"的防休眠工具比一个明确拒绝启动的工具危险得多——它会让你在以为受保护的状态下把机器睡掉。
-WDAC / AppLocker / Smart App Control 环境因此用不了本工具，这一点写在 README 的适配矩阵里。
+`ka-gate.ps1` 的 `Test-KaLanguageMode` 在 CLM 等受限语言模式下直接拒绝启动（退出码 2）。引擎需要
+`Add-Type` 编译本机调用，不能把该路径失效后的运行状态报告为正常。脚本签名与应用控制另由 Windows
+策略决定：组织强制要求签名时，未签名脚本可能在执行前被拦截。WDAC、AppLocker 和 Smart App Control
+环境下能否运行取决于具体策略；本版本没有完成这些环境的认证。
 
 ## 依赖与供应链
 
-**零第三方依赖**：只有 Windows 自带的 PowerShell 5.1、`powercfg` 与 .NET Framework 类型。
-没有运行时下载、没有包管理器、没有 CDN、没有子模块。审计面就是仓库里那几个 `.ps1` 和 `dashboard/`。
+桌面程序和保护引擎使用 Windows 自带的 PowerShell 5.1、`powercfg` 与 .NET Framework，不在运行时
+下载依赖。审计范围包括 `desktop/` 的 C#、根目录脚本、`integrations/`、可选网页和打包流程。
+
+可选 MCP 配套程序使用官方 C# MCP SDK 和 .NET 10，包含第三方依赖，自包含分发包附带运行时、许可证及
+版权通知。源码与自包含构建分别使用已提交的依赖锁文件，发布前执行锁定还原；构建过程需要下载依赖，
+安装后的保护功能无需联网。不把 MCP 分发包描述为零第三方依赖。
 
 ## 支持哪个版本 / 怎么报问题
 
