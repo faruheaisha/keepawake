@@ -53,5 +53,58 @@ foreach ($case in @('backup-fails', 'backup-other-plan', 'restore-corrupt')) {
 }
 
 
+foreach ($case in @('dc-fails', 'readback-mismatch', 'rollback-fails', 'success', 'plan-switch', 'restore-success', 'restore-nonzero', 'restore-mismatch', 'backup-invalid')) {
+    & {
+        . (Get-AuditFunction 'Read-KaJson')
+        . (Get-AuditFunction 'Set-KaLidValues' $lidAst)
+        $backupPath = Join-Path $outDir ('transaction-' + $case + '.json')
+        [IO.File]::WriteAllText($backupPath, '{"ac":1,"dc":2,"found":true,"schemeGuid":"B"}')
+        if ($case -eq 'backup-invalid') { [IO.File]::WriteAllText($backupPath, '{"ac":"oops","dc":2,"found":true,"schemeGuid":"B"}') }
+        $Action = if ($case -like 'restore-*') { 'restore' } else { 'apply' }
+        $Force = $false; $script:KaNoLid = $false; $KaLidSub = 'fixture'; $KaLidAction = 'fixture'
+        $r = @{ Ok = $false; Verified = $false; Reason = '' }
+        $script:plan = 'B'; $script:ac = if ($Action -eq 'restore') { 0 } else { 1 }
+        $script:dc = if ($Action -eq 'restore') { 0 } else { 2 }
+        $script:injected = $false; $script:calls = @()
+        function Test-KaAdmin { $true }
+        function Get-KaActiveScheme { @{ guid = $script:plan; name = 'Fixture plan' } }
+        function Get-KaLid { param($Scheme) @{ found = $true; ac = $script:ac; dc = $script:dc } }
+        function Get-KaText { param($Key, $Vars) $Key }
+        function Add-KaLog { }
+        function powercfg {
+            $script:calls += ,@($args)
+            if ($args[0] -eq '/setdcvalueindex' -and -not $script:injected -and $case -in @('dc-fails','rollback-fails','restore-nonzero')) {
+                $script:injected = $true
+                Set-Variable -Name LASTEXITCODE -Value 7 -Scope 1
+                return
+            }
+            if ($args[0] -eq '/setacvalueindex' -and $case -eq 'rollback-fails' -and $script:injected) {
+                Set-Variable -Name LASTEXITCODE -Value 8 -Scope 1
+                return
+            }
+            if ($args[0] -eq '/setdcvalueindex' -and -not $script:injected -and $case -in @('readback-mismatch','restore-mismatch')) {
+                $script:injected = $true; return # platform reports success but ignores the value
+            }
+            if ($args[0] -eq '/setacvalueindex') { $script:ac = [int]$args[4]; if ($case -eq 'plan-switch') { $script:plan = 'C' } }
+            if ($args[0] -eq '/setdcvalueindex') { $script:dc = [int]$args[4] }
+        }
+        . $lidBlock
+        $kept = Test-Path -LiteralPath $backupPath
+        $passed = switch ($case) {
+            'dc-fails'          { -not $r.Ok -and $r.RollbackVerified -and $script:ac -eq 1 -and $script:dc -eq 2 -and $kept }
+            'readback-mismatch' { -not $r.Ok -and $r.RollbackVerified -and $script:ac -eq 1 -and $script:dc -eq 2 -and $kept }
+            'rollback-fails'    { -not $r.Ok -and $r.RollbackAttempted -and -not $r.RollbackVerified -and $kept }
+            'success'          { $r.Ok -and $r.Verified -and $script:ac -eq 0 -and $script:dc -eq 0 -and $kept }
+            'plan-switch'      { $r.Ok -and $r.Verified -and $script:plan -eq 'C' -and
+                @($script:calls | Where-Object { $_[0] -like '/set*' -and $_[1] -ne 'B' }).Count -eq 0 -and
+                @($script:calls | Where-Object { $_[0] -eq '/setactive' }).Count -eq 0 }
+            'restore-nonzero'  { -not $r.Ok -and -not $r.Verified -and $kept }
+            'restore-success'  { $r.Ok -and $r.Verified -and $script:ac -eq 1 -and $script:dc -eq 2 -and -not $kept }
+            'restore-mismatch'{ -not $r.Ok -and -not $r.Verified -and $kept }
+            'backup-invalid'   { -not $r.Ok -and @($script:calls | Where-Object { $_[0] -like '/set*' }).Count -eq 0 -and $kept }
+        }
+        Record ('lid-transaction-' + $case) ([bool]$passed) @{ ok = $r.Ok; verified = $r.Verified; rollback = $r.RollbackVerified; ac = $script:ac; dc = $script:dc; backupRetained = $kept }
+    }
+}
 if (@($results | Where-Object { -not $_.reproduced }).Count) { exit 1 }
 Write-Host "PROBE OK: lid backup guards"

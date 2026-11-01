@@ -12,7 +12,7 @@
 | B02 多屏鼠标 | 虚拟桌面标志与发送数量校验 | `probe-audit-fixes.ps1`；物理多屏仍需验收 |
 | B03 参数应用 | 比较完整运行参数，响应包括重声明周期 | `probe-runtime-identity.ps1`、桌面真实会话测试 |
 | B05 起停竞争 | 用户及规范化数据根对应的跨进程操作锁 | `probe-operation-lock.ps1`、`probe-lease-concurrency.ps1` |
-| B06–B08 合盖备份 | 写入并读回备份后才能修改；拒绝跨计划与损坏备份 | `probe-lid-audit.ps1`；真实电源设置由一次性 VM 测试 |
+| B06–B08 合盖备份 | 备份读回后才写入；检查退出码、失败回滚并验证；拒绝跨计划与损坏备份 | `probe-lid-audit.ps1`；真实电源设置由一次性 VM 测试 |
 | B09 HTTP 参数 | 严格类型、范围及未知字段验证 | `probe-http-audit.ps1` |
 | B10 JSON 并发 | 唯一临时文件与原子替换，事务共用操作锁 | `probe-audit-fixes.ps1` 的 600 次并发写入 |
 | B11 证据归属 | 检查实际 worker 的路径、数据根和创建时刻 | `probe-runtime-identity.ps1` |

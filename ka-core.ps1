@@ -1096,6 +1096,8 @@ $script:KaUi = @{
         'lid.status.nolid'              = '内核能力位显示本机没有盖开关（台式机或虚拟机）：上面的合盖值因此不适用，除非这台机器实际带盖。'
         'lid.apply.nolid'               = '内核能力位显示本机没有盖开关（台式机或虚拟机），合盖动作不适用，未做任何修改。确实要强行写入请运行：ka.bat lid apply -Force'
         'lid.apply.writefail'           = 'powercfg 写入失败：{msg}'
+        'lid.apply.rollbackok'          = '修改失败，已读回确认恢复备份原值；备份保留。原因：{msg}'
+        'lid.apply.rollbackfail'        = '修改失败，无法确认已恢复原值；备份保留，请重试恢复或检查电源设置。原因：{msg}'
         'lid.backup.conflict'           = '合盖备份无效或属于其他电源方案，请先处理原备份。'
         'lid.backup.unreadable'         = '无法读取当前合盖设置和电源方案，未修改合盖动作。'
         'lid.backup.writefail'          = '无法写入并验证合盖备份，未修改合盖动作。'
@@ -1507,6 +1509,8 @@ $script:KaUi = @{
         'lid.status.nolid'              = 'The kernel capability bit reports no lid switch on this machine (desktop or virtual machine): the lid values above do not apply unless it actually has one.'
         'lid.apply.nolid'               = 'The kernel capability bit reports no lid switch on this machine (desktop or virtual machine), so the lid action does not apply and nothing was changed. To write it anyway: ka.bat lid apply -Force'
         'lid.apply.writefail'           = 'powercfg write failed: {msg}'
+        'lid.apply.rollbackok'          = 'Apply failed; the original backup values were restored and verified. The backup is retained. Reason: {msg}'
+        'lid.apply.rollbackfail'        = 'Apply failed and rollback could not be verified. The backup is retained; retry restore or inspect the power settings. Reason: {msg}'
         'lid.backup.conflict'           = 'The lid backup is invalid or belongs to another power plan; restore it first.'
         'lid.backup.unreadable'         = 'Cannot read the current lid settings and power plan; lid actions were not changed.'
         'lid.backup.writefail'          = 'Cannot write and verify the lid backup; lid actions were not changed.'
@@ -1923,12 +1927,12 @@ function Get-PowerSetting {
         back as 0 ("never") no matter what the machine was configured to do. Falling through
         both rules returns Found=$false: an honest 未知 beats a plausible wrong number.
     #>
-    param([string]$Subgroup, [string]$Setting, [string]$Text)
+    param([string]$Subgroup, [string]$Setting, [string]$Text, [string]$Scheme = 'SCHEME_CURRENT')
 
     $result = @{ Ac = $null; Dc = $null; Found = $false; Source = '' }
     try {
         $out = if ($PSBoundParameters.ContainsKey('Text')) { $Text }
-               else { (& powercfg /q SCHEME_CURRENT $Subgroup $Setting 2>$null) -join "`n" }
+               else { (& powercfg /q $Scheme $Subgroup $Setting 2>$null) -join "`n" }
         if (-not $out) { return $result }
         $lines = @($out -split "`r?`n" | ForEach-Object { "$_" })
 
