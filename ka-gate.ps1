@@ -87,11 +87,11 @@ function Test-KaLanguageMode {
     if ((Get-KaStartupLanguage) -eq 'zh') {
         Write-KaGateLine "防休眠无法启动：本机 PowerShell 的语言模式是 $mode，不是 FullLanguage。"
         Write-KaGateLine '本工具启动时用 Add-Type 现场编译 Win32 调用，而该语言模式禁止定义新类型。常见来源：WDAC、AppLocker、智能应用控制、企业软件限制策略。'
-        Write-KaGateLine '已按代码 2 退出，本机未做任何改动。怎么办见 README.md「换一台 Windows 会怎样」。'
+        Write-KaGateLine '已按代码 2 退出，本机未做任何改动。请查看 SECURITY.md 的运行环境说明。'
     } else {
         Write-KaGateLine "Keep-Awake cannot start: this PowerShell session is in language mode $mode, not FullLanguage."
         Write-KaGateLine 'The tool compiles its Win32 calls with Add-Type at startup, and defining new types is forbidden in this language mode. Typical sources: WDAC, AppLocker, Smart App Control, an enterprise software-restriction policy.'
-        Write-KaGateLine 'Exited with code 2 without changing anything on this machine. See the machine-matrix section of README.md.'
+        Write-KaGateLine 'Exited with code 2 without changing anything on this machine. See the runtime policy section of SECURITY.md.'
     }
     return $false
 }

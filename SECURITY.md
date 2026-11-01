@@ -4,7 +4,7 @@
 > listens only on loopback; the desktop and optional stdio MCP companion open no listening socket. There
 > is no telemetry or automatic updater, and no auto-elevation except behind one explicit command
 > (`lid apply`, which raises a single UAC prompt), no service, no driver, no registry policy writes.
-> Binaries are unsigned in v1.0 by design — see《没有代码签名》。To report an issue, use the private
+> Binaries are unsigned in this release — see《没有代码签名》。To report an issue, use the private
 > vulnerability reporting on this repository's Security tab.
 
 先说清这份文档的边界：这个工具的定位是**"让一台你自己有权限的机器别睡着"**。它不是安全产品，不守护任何
